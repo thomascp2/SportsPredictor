@@ -1,0 +1,49 @@
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Model files (large)
+ml_training/model_registry/
+
+# Logs
+logs/
+*.log
+
+# Backups
+backups/
+*/backups/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+*.pem
+credentials.json
+
+# Temporary
+*.tmp
+*.temp
+.cache/
+
+# Data exports
+*.csv
+!requirements.csv
