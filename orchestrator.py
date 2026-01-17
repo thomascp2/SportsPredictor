@@ -1,0 +1,2403 @@
+#!/usr/bin/env python3
+"""
+Sports Prediction Project Orchestrator (NHL & NBA)
+===================================================
+
+Master controller for managing both NHL and NBA prediction systems.
+Runs continuously (or via scheduler) and manages all operations
+with Claude API providing intelligent oversight and analysis.
+
+MISSION: Build prediction juggernauts for both NHL and NBA through systematic
+         data collection and continuous improvement, ultimately training
+         world-class ML models for each sport.
+
+Key Responsibilities:
+- Execute daily prediction pipeline (fetch -> generate -> grade -> verify)
+- Monitor data quality and feature health (ML readiness focus)
+- Detect and diagnose issues automatically
+- Call Claude API for analysis, debugging, and recommendations
+- Track progress toward ML training goals (10,000+ predictions per sport)
+- Optimize system performance based on results
+- Send status updates and alerts
+
+Usage:
+    python sports_orchestrator.py --sport nhl --mode test
+    python sports_orchestrator.py --sport nba --mode test
+    python sports_orchestrator.py --sport nhl --mode once --operation prediction
+    python sports_orchestrator.py --sport nba --mode once --operation grading
+    python sports_orchestrator.py --sport nhl --mode continuous
+    python sports_orchestrator.py --sport all --mode test  # Test both sports
+"""
+
+import os
+import sys
+import time
+import json
+import sqlite3
+import subprocess
+import traceback
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass, asdict
+
+# Optional: schedule library for continuous mode
+try:
+    import schedule
+    SCHEDULE_AVAILABLE = True
+except ImportError:
+    SCHEDULE_AVAILABLE = False
+    print("NOTE: 'schedule' not installed. Continuous mode unavailable. Run: pip install schedule")
+
+# Optional: Claude API for intelligent analysis
+try:
+    from anthropic import Anthropic
+    CLAUDE_AVAILABLE = True
+except ImportError:
+    CLAUDE_AVAILABLE = False
+    print("NOTE: 'anthropic' not installed. AI analysis unavailable. Run: pip install anthropic")
+
+# Optional: requests for API health checks and Discord notifications
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+    print("NOTE: 'requests' not installed. API health checks and Discord unavailable. Run: pip install requests")
+
+# Discord webhook from environment
+DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
+
+# Optional: PrizePicks integration
+try:
+    sys.path.insert(0, str(Path(__file__).parent / "shared"))
+    from prizepicks_client import PrizePicksIngestion, PrizePicksDatabase
+    PRIZEPICKS_AVAILABLE = True
+except ImportError:
+    PRIZEPICKS_AVAILABLE = False
+    print("NOTE: prizepicks_client not found. PrizePicks integration unavailable.")
+
+# Optional: ML Training integration
+try:
+    sys.path.insert(0, str(Path(__file__).parent / "ml_training"))
+    from production_predictor import ProductionPredictor
+    from model_manager import ModelRegistry
+    ML_AVAILABLE = True
+except ImportError:
+    ML_AVAILABLE = False
+    print("NOTE: ML training modules not found. ML predictions unavailable.")
+
+# Optional: API Health Monitor & Self-Healing
+try:
+    sys.path.insert(0, str(Path(__file__).parent / "shared"))
+    from api_health_monitor import APIHealthMonitor
+    API_MONITOR_AVAILABLE = True
+except ImportError:
+    API_MONITOR_AVAILABLE = False
+    print("NOTE: API health monitor not found. Self-healing unavailable.")
+
+
+# ============================================================================
+# SPORT-SPECIFIC CONFIGURATION
+# ============================================================================
+
+class SportConfig:
+    """Configuration for a specific sport"""
+
+    def __init__(self, sport: str):
+        self.sport = sport.upper()
+        self.root = Path(__file__).parent
+
+        if self.sport == "NHL":
+            self._init_nhl()
+        elif self.sport == "NBA":
+            self._init_nba()
+        else:
+            raise ValueError(f"Unknown sport: {sport}. Use 'nhl' or 'nba'")
+
+    def _init_nhl(self):
+        """Initialize NHL-specific configuration"""
+        self.project_root = self.root / "nhl"
+        self.db_path = self.project_root / "database" / "nhl_predictions_v2.db"
+
+        # Scripts
+        self.prediction_script = "scripts/generate_predictions_daily_V5.py"
+        self.grading_script = "scripts/v2_auto_grade_yesterday_v3_RELIABLE.py"
+        self.schedule_script = "scripts/fetch_game_schedule_FINAL.py"
+
+        # Timing (CST)
+        self.grading_time = "02:00"      # 2 AM - grade yesterday first
+        self.prizepicks_time = "07:30"   # 7:30 AM - fetch PrizePicks lines
+        self.prediction_time = "08:00"   # 8 AM - then generate today's predictions
+
+        # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 30, 2026)
+        self.ml_training_target_per_prop = 7500
+        self.ml_training_start_date = "2026-01-30"
+
+        # Prop types and lines (5 combos total)
+        self.prop_lines = {
+            'points': [0.5, 1.5],
+            'shots': [1.5, 2.5, 3.5]
+        }
+        self.total_prop_combos = sum(len(lines) for lines in self.prop_lines.values())  # 5
+
+        # Data Quality Thresholds
+        self.min_feature_completeness = 0.95
+        self.min_probability_variety = 50
+        self.min_opponent_feature_rate = 0.90
+        self.opponent_feature_lookback_days = 14  # Only check last 14 days for opp features
+        self.min_daily_predictions = 400
+        self.max_daily_predictions = 600
+
+        # Performance Thresholds (NHL: UNDER is much stronger)
+        self.target_under_accuracy = 0.70
+        self.target_over_accuracy = 0.55
+
+        # API Health Check URL
+        self.api_health_url = "https://api-web.nhle.com/v1/schedule/now"
+
+        # Display (using text for Windows compatibility)
+        self.emoji = "[NHL]"
+        self.full_name = "NHL Hockey"
+
+    def _init_nba(self):
+        """Initialize NBA-specific configuration"""
+        self.project_root = self.root / "nba"
+        self.db_path = self.project_root / "database" / "nba_predictions.db"
+
+        # Scripts
+        self.prediction_script = "scripts/generate_predictions_daily.py"
+        self.grading_script = "scripts/auto_grade_multi_api_FIXED.py"
+        self.schedule_script = None  # NBA uses API directly in prediction script
+
+        # Timing (CST)
+        self.grading_time = "09:00"      # 9 AM - grade yesterday first
+        self.prizepicks_time = "09:30"   # 9:30 AM - fetch PrizePicks lines
+        self.prediction_time = "10:00"   # 10 AM - then generate today's predictions
+
+        # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 27, 2026)
+        self.ml_training_target_per_prop = 7500
+        self.ml_training_start_date = "2026-01-27"
+
+        # Prop types and lines (14 combos total from CORE_PROPS)
+        self.prop_lines = {
+            'points': [15.5, 20.5, 25.5],
+            'rebounds': [7.5, 10.5],
+            'assists': [5.5, 7.5],
+            'threes': [2.5],
+            'stocks': [2.5],
+            'pra': [30.5, 35.5, 40.5],
+            'minutes': [28.5, 32.5]
+        }
+        self.total_prop_combos = sum(len(lines) for lines in self.prop_lines.values())  # 14
+
+        # Data Quality Thresholds
+        self.min_feature_completeness = 0.95
+        self.min_probability_variety = 50
+        self.min_opponent_feature_rate = 0.90
+        self.opponent_feature_lookback_days = 14  # Only check last 14 days for opp features
+        self.min_daily_predictions = 200
+        self.max_daily_predictions = 500
+
+        # Performance Thresholds
+        self.target_under_accuracy = 0.65
+        self.target_over_accuracy = 0.55
+
+        # API Health Check URL (ESPN is more reliable)
+        self.api_health_url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+
+        # Display (using text for Windows compatibility)
+        self.emoji = "[NBA]"
+        self.full_name = "NBA Basketball"
+
+
+class GlobalConfig:
+    """Global configuration shared across sports"""
+
+    # Health Check
+    HEALTH_CHECK_INTERVAL_MINUTES = 60
+
+    # Error Handling
+    MAX_CONSECUTIVE_FAILURES = 3
+    RETRY_DELAY_SECONDS = 300
+    CALIBRATION_DRIFT_THRESHOLD = 0.05
+
+    # Claude API
+    CLAUDE_MODEL = "claude-sonnet-4-20250514"
+    CLAUDE_MAX_TOKENS = 4000
+
+    # Paths
+    ROOT = Path(__file__).parent
+    LOGS_DIR = ROOT / "logs"
+    BACKUPS_DIR = ROOT / "backups"
+    STATE_FILE = ROOT / "data" / "orchestrator_state.json"
+
+
+# ============================================================================
+# DATA STRUCTURES
+# ============================================================================
+
+@dataclass
+class PipelineResult:
+    """Result from a pipeline execution"""
+    success: bool
+    timestamp: str
+    sport: str
+    operation: str
+    details: Dict
+    errors: List[str]
+    warnings: List[str]
+
+
+@dataclass
+class HealthStatus:
+    """System health metrics"""
+    timestamp: str
+    sport: str
+    database_accessible: bool
+    api_responsive: bool
+    predictions_count: int
+    graded_count: int
+    feature_completeness: float
+    probability_variety: int
+    opponent_feature_rate: float
+    recent_errors: List[str]
+    ml_readiness_score: float  # 0-100
+
+
+@dataclass
+class MLReadinessReport:
+    """Comprehensive ML training readiness assessment"""
+    sport: str
+    total_predictions: int
+    predictions_per_prop: Dict[str, int]  # e.g., {"points_0.5": 1234, "shots_2.5": 5678}
+    min_prop_count: int  # The bottleneck - lowest count across all prop/lines
+    min_prop_name: str   # Which prop/line is the bottleneck
+    target_per_prop: int
+    predictions_with_features: int
+    predictions_with_opponent_features: int
+    unique_probabilities: int
+    feature_completeness: float
+    opponent_feature_rate: float  # Only for last N days
+    data_quality_score: float  # 0-100
+    estimated_training_date: str
+    days_until_training: int
+    readiness_percentage: float  # 0-100 (based on bottleneck prop)
+    blocking_issues: List[str]
+    recommendations: List[str]
+
+
+# ============================================================================
+# ORCHESTRATOR
+# ============================================================================
+
+class SportsOrchestrator:
+    """
+    Master controller for NHL and NBA prediction systems
+
+    This class manages the entire lifecycle of prediction systems,
+    from data collection to ML training preparation. It executes tasks,
+    monitors health, and leverages Claude API for intelligent decision-making.
+    """
+
+    def __init__(self, sport: str):
+        """Initialize orchestrator for a specific sport"""
+        self.config = SportConfig(sport)
+        self.global_config = GlobalConfig()
+        self.state = self._load_state()
+
+        # Initialize Claude API
+        api_key = os.getenv('ANTHROPIC_API_KEY')
+        if CLAUDE_AVAILABLE and api_key:
+            # Strip whitespace/newlines from API key (Windows env var issue)
+            api_key = api_key.strip()
+            self.claude = Anthropic(api_key=api_key)
+            self.claude_enabled = True
+        else:
+            self.claude = None
+            self.claude_enabled = False
+
+        # Initialize API Health Monitor
+        if API_MONITOR_AVAILABLE:
+            self.api_monitor = APIHealthMonitor()
+            self.api_monitor_enabled = True
+        else:
+            self.api_monitor = None
+            self.api_monitor_enabled = False
+
+        # Ensure directories exist
+        self.global_config.LOGS_DIR.mkdir(exist_ok=True)
+        self.global_config.BACKUPS_DIR.mkdir(exist_ok=True)
+
+        # Initialize state tracking for this sport
+        sport_key = self.config.sport.lower()
+        if sport_key not in self.state:
+            self.state[sport_key] = {
+                'started_at': datetime.now().isoformat(),
+                'last_prediction_gen': None,
+                'last_grading': None,
+                'last_health_check': None,
+                'consecutive_failures': 0,
+                'total_runs': 0,
+                'ml_training_started': False
+            }
+
+        print(f"\n{self.config.emoji} {self.config.full_name} Orchestrator initialized")
+        print(f"   Claude API: {'Enabled' if self.claude_enabled else 'Disabled'}")
+        print(f"   API Monitor: {'Enabled' if self.api_monitor_enabled else 'Disabled'}")
+        print(f"   ML Target: {self.config.ml_training_target_per_prop:,} per prop/line ({self.config.total_prop_combos} combos)")
+        print(f"   Current predictions: {self._count_predictions():,}")
+        print(f"   Database: {self.config.db_path}")
+        print()
+
+    # ========================================================================
+    # CORE EXECUTION METHODS
+    # ========================================================================
+
+    def run_daily_prediction_pipeline(self) -> PipelineResult:
+        """
+        Execute the full daily prediction pipeline
+
+        Steps:
+        1. Fetch game schedule for today (if applicable)
+        2. Generate predictions for all games
+        3. Verify predictions saved correctly
+        4. Assess data quality
+        5. Get Claude analysis if needed
+
+        Returns:
+            PipelineResult with execution details
+        """
+        print("=" * 80)
+        print(f"{self.config.emoji} DAILY PREDICTION PIPELINE - {self.config.sport}")
+        print("=" * 80)
+        print()
+
+        target_date = datetime.now().strftime('%Y-%m-%d')
+        errors = []
+        warnings = []
+        details = {}
+        sport_key = self.config.sport.lower()
+
+        try:
+            step = 1
+
+            # Step 1: Fetch schedule (NHL only)
+            if self.config.schedule_script:
+                print(f"[{step}/4] Fetching game schedule for {target_date}...")
+                schedule_result = self._run_script(
+                    self.config.schedule_script,
+                    [target_date]
+                )
+
+                if not schedule_result['success']:
+                    errors.append(f"Schedule fetch failed: {schedule_result.get('error')}")
+                    details['schedule_fetch'] = schedule_result
+                else:
+                    details['schedule_fetch'] = {'success': True}
+                    print(f"   Schedule fetched")
+                step += 1
+
+            # Step 2: Generate predictions
+            print(f"[{step}/4] Generating predictions...")
+
+            # Build args based on sport
+            args = [target_date]
+            if self.config.sport == "NHL":
+                args.append('--force')
+
+            prediction_result = self._run_script(
+                self.config.prediction_script,
+                args
+            )
+
+            if not prediction_result['success']:
+                errors.append(f"Prediction generation failed: {prediction_result.get('error')}")
+                details['prediction_gen'] = prediction_result
+                # Show error output for debugging
+                if prediction_result.get('error'):
+                    print(f"   ERROR: {prediction_result.get('error')[:200]}")
+            else:
+                details['prediction_gen'] = prediction_result
+                print(f"   Predictions generated")
+            step += 1
+
+            # Step 3: Verify predictions
+            print(f"[{step}/4] Verifying data quality...")
+            verification = self._verify_predictions(target_date)
+            details['verification'] = verification
+
+            if verification.get('issues'):
+                for issue in verification['issues']:
+                    warnings.append(issue)
+                print(f"   {len(verification['issues'])} warnings detected")
+            else:
+                print(f"   All quality checks passed")
+            step += 1
+
+            # Step 4: Assess ML readiness
+            print(f"[{step}/4] Assessing ML readiness...")
+            ml_readiness = self._assess_ml_readiness()
+            details['ml_readiness'] = asdict(ml_readiness)
+            print(f"   ML Readiness: {ml_readiness.readiness_percentage:.1f}%")
+            print(f"   Progress: {ml_readiness.min_prop_count:,}/{self.config.ml_training_target_per_prop:,} (bottleneck: {ml_readiness.min_prop_name})")
+
+            # Get Claude analysis if there are issues or if we're approaching ML training
+            if (errors or warnings or ml_readiness.readiness_percentage > 80) and self.claude_enabled:
+                print()
+                print("[Claude Analysis] Getting intelligent insights...")
+                analysis = self._get_claude_analysis({
+                    'operation': 'daily_prediction_pipeline',
+                    'sport': self.config.sport,
+                    'date': target_date,
+                    'errors': errors,
+                    'warnings': warnings,
+                    'details': details,
+                    'ml_readiness': asdict(ml_readiness)
+                })
+                details['claude_analysis'] = analysis
+                print("   Analysis complete")
+
+            # Update state
+            self.state[sport_key]['last_prediction_gen'] = datetime.now().isoformat()
+            self.state[sport_key]['total_runs'] += 1
+            if not errors:
+                self.state[sport_key]['consecutive_failures'] = 0
+            else:
+                self.state[sport_key]['consecutive_failures'] += 1
+            self._save_state()
+
+            success = len(errors) == 0
+
+            # Send Discord notification
+            self.send_prediction_notification(target_date, details)
+
+            return PipelineResult(
+                success=success,
+                timestamp=datetime.now().isoformat(),
+                sport=self.config.sport,
+                operation='daily_prediction_pipeline',
+                details=details,
+                errors=errors,
+                warnings=warnings
+            )
+
+        except Exception as e:
+            error_msg = f"Pipeline crashed: {str(e)}"
+            errors.append(error_msg)
+            self._log_error(traceback.format_exc(), "PIPELINE_CRASH")
+
+            return PipelineResult(
+                success=False,
+                timestamp=datetime.now().isoformat(),
+                sport=self.config.sport,
+                operation='daily_prediction_pipeline',
+                details=details,
+                errors=errors,
+                warnings=warnings
+            )
+
+    def run_daily_grading(self) -> PipelineResult:
+        """
+        Grade yesterday's predictions
+
+        Steps:
+        1. Grade all predictions from yesterday
+        2. Calculate accuracy metrics
+        3. Check for calibration drift
+        4. Get Claude analysis of performance
+
+        Returns:
+            PipelineResult with grading details
+        """
+        print("=" * 80)
+        print(f"{self.config.emoji} DAILY GRADING PIPELINE - {self.config.sport}")
+        print("=" * 80)
+        print()
+
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        errors = []
+        warnings = []
+        details = {}
+        sport_key = self.config.sport.lower()
+
+        try:
+            # Step 0: API Health Check (for NBA only, with auto-healing)
+            if self.config.sport == "NBA" and self.api_monitor_enabled:
+                print(f"[0/4] Running API health check...")
+                api_health = self._check_and_heal_apis(yesterday)
+                details['api_health'] = api_health
+
+                if api_health.get('healed'):
+                    warnings.append(f"API auto-healed: {api_health.get('healed_apis')}")
+                    print(f"   APIs auto-healed: {', '.join(api_health.get('healed_apis', []))}")
+                elif api_health.get('all_healthy'):
+                    print(f"   All APIs healthy")
+                else:
+                    print(f"   Health check complete")
+
+            # Step 1: Run grading script
+            step_num = 1 if self.config.sport == "NHL" else 1
+            total_steps = 3 if self.config.sport == "NHL" else 4
+            print(f"[{step_num}/{total_steps}] Grading predictions for {yesterday}...")
+            grading_result = self._run_script(
+                self.config.grading_script,
+                [yesterday]
+            )
+
+            if not grading_result['success']:
+                errors.append(f"Grading failed: {grading_result.get('error')}")
+                details['grading'] = grading_result
+                # Show error output for debugging
+                if grading_result.get('error'):
+                    print(f"   ERROR: {grading_result.get('error')[:300]}")
+            else:
+                details['grading'] = grading_result
+                print(f"   Grading complete")
+
+            # Step 2: Calculate accuracy metrics
+            step_num = 2 if self.config.sport == "NHL" else 2
+            total_steps = 3 if self.config.sport == "NHL" else 4
+            print(f"[{step_num}/{total_steps}] Calculating performance metrics...")
+            metrics = self._calculate_accuracy_metrics(yesterday)
+            details['metrics'] = metrics
+
+            # Check for concerning patterns
+            if metrics.get('under_accuracy', 0) < self.config.target_under_accuracy:
+                warnings.append(f"UNDER accuracy below target: {metrics['under_accuracy']:.1%}")
+
+            if metrics.get('over_accuracy', 0) < self.config.target_over_accuracy:
+                warnings.append(f"OVER accuracy below target: {metrics['over_accuracy']:.1%}")
+
+            print(f"   UNDER: {metrics.get('under_accuracy', 0):.1%}")
+            print(f"   OVER: {metrics.get('over_accuracy', 0):.1%}")
+
+            # Step 3: Check calibration
+            step_num = 3 if self.config.sport == "NHL" else 3
+            total_steps = 3 if self.config.sport == "NHL" else 4
+            print(f"[{step_num}/{total_steps}] Checking calibration drift...")
+            calibration = self._check_calibration_drift()
+            details['calibration'] = calibration
+
+            if calibration.get('drift', 0) > self.global_config.CALIBRATION_DRIFT_THRESHOLD:
+                warnings.append(f"Calibration drift detected: {calibration['drift']:.1%}")
+                print(f"   Drift: {calibration['drift']:.1%}")
+            else:
+                print(f"   Calibration stable")
+
+            # Get Claude analysis of performance
+            if self.claude_enabled and (errors or warnings):
+                print()
+                print("[Claude Analysis] Analyzing performance trends...")
+                analysis = self._get_claude_analysis({
+                    'operation': 'daily_grading',
+                    'sport': self.config.sport,
+                    'date': yesterday,
+                    'errors': errors,
+                    'warnings': warnings,
+                    'metrics': metrics,
+                    'calibration': calibration
+                })
+                details['claude_analysis'] = analysis
+                print("   Analysis complete")
+
+            # Update state
+            self.state[sport_key]['last_grading'] = datetime.now().isoformat()
+            self._save_state()
+
+            success = len(errors) == 0
+
+            # Send Discord notification
+            self.send_grading_notification(yesterday, details)
+
+            return PipelineResult(
+                success=success,
+                timestamp=datetime.now().isoformat(),
+                sport=self.config.sport,
+                operation='daily_grading',
+                details=details,
+                errors=errors,
+                warnings=warnings
+            )
+
+        except Exception as e:
+            error_msg = f"Grading crashed: {str(e)}"
+            errors.append(error_msg)
+            self._log_error(traceback.format_exc(), "GRADING_CRASH")
+
+            return PipelineResult(
+                success=False,
+                timestamp=datetime.now().isoformat(),
+                sport=self.config.sport,
+                operation='daily_grading',
+                details=details,
+                errors=errors,
+                warnings=warnings
+            )
+
+    def run_health_check(self) -> HealthStatus:
+        """
+        Comprehensive system health check
+
+        Checks:
+        - Database accessibility
+        - API health
+        - Data quality metrics
+        - Feature completeness
+        - Recent errors
+        - ML readiness
+
+        Returns:
+            HealthStatus object
+        """
+        print(f"\n{self.config.emoji} Running {self.config.sport} health check...")
+        sport_key = self.config.sport.lower()
+
+        try:
+            # Database check
+            db_ok = self._check_database_health()
+
+            # API check
+            api_ok = self._check_api_health()
+
+            # Count predictions
+            total_preds = self._count_predictions()
+            graded_preds = self._count_graded_predictions()
+
+            # Data quality
+            feature_completeness = self._check_feature_completeness()
+            prob_variety = self._check_probability_variety()
+            opp_feature_rate = self._check_opponent_feature_rate()
+
+            # Recent errors
+            recent_errors = self._get_recent_errors(hours=24)
+
+            # Calculate ML readiness score
+            ml_score = self._calculate_ml_readiness_score(
+                total_preds,
+                feature_completeness,
+                opp_feature_rate,
+                prob_variety
+            )
+
+            health = HealthStatus(
+                timestamp=datetime.now().isoformat(),
+                sport=self.config.sport,
+                database_accessible=db_ok,
+                api_responsive=api_ok,
+                predictions_count=total_preds,
+                graded_count=graded_preds,
+                feature_completeness=feature_completeness,
+                probability_variety=prob_variety,
+                opponent_feature_rate=opp_feature_rate,
+                recent_errors=recent_errors,
+                ml_readiness_score=ml_score
+            )
+
+            # Update state
+            self.state[sport_key]['last_health_check'] = datetime.now().isoformat()
+            self._save_state()
+
+            # Log health status
+            status = "HEALTHY" if db_ok and api_ok and not recent_errors else "ISSUES DETECTED"
+            print(f"   Status: {status}")
+            print(f"   Database: {'OK' if db_ok else 'FAIL'}")
+            print(f"   API: {'OK' if api_ok else 'FAIL'}")
+            print(f"   Predictions: {total_preds:,}")
+            print(f"   Graded: {graded_preds:,}")
+            print(f"   Feature Completeness: {feature_completeness:.1%}")
+            print(f"   ML Readiness: {ml_score:.1f}/100")
+
+            return health
+
+        except Exception as e:
+            self._log_error(traceback.format_exc(), "HEALTH_CHECK_ERROR")
+
+            return HealthStatus(
+                timestamp=datetime.now().isoformat(),
+                sport=self.config.sport,
+                database_accessible=False,
+                api_responsive=False,
+                predictions_count=0,
+                graded_count=0,
+                feature_completeness=0.0,
+                probability_variety=0,
+                opponent_feature_rate=0.0,
+                recent_errors=[str(e)],
+                ml_readiness_score=0.0
+            )
+
+    # ========================================================================
+    # ML READINESS ASSESSMENT
+    # ========================================================================
+
+    def _assess_ml_readiness(self) -> MLReadinessReport:
+        """
+        Comprehensive assessment of ML training readiness
+
+        This is THE MOST IMPORTANT function - it ensures we're on track
+        to build prediction juggernauts by monitoring data quality
+        and feature health.
+
+        Key: We need 10k predictions PER PROP TYPE PER LINE.
+        ML readiness is based on the BOTTLENECK (lowest count prop/line).
+
+        Returns:
+            MLReadinessReport with detailed assessment
+        """
+        db_path = str(self.config.db_path)
+        target_per_prop = self.config.ml_training_target_per_prop
+
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+
+            # Total predictions
+            cursor.execute('SELECT COUNT(*) FROM predictions')
+            total_preds = cursor.fetchone()[0]
+
+            # Count predictions per prop type per line
+            predictions_per_prop = {}
+            for prop_type, lines in self.config.prop_lines.items():
+                for line in lines:
+                    key = f"{prop_type}_{line}"
+                    cursor.execute(
+                        'SELECT COUNT(*) FROM predictions WHERE prop_type = ? AND line = ?',
+                        (prop_type, line)
+                    )
+                    predictions_per_prop[key] = cursor.fetchone()[0]
+
+            # Find the bottleneck (minimum count)
+            if predictions_per_prop:
+                min_prop_name = min(predictions_per_prop, key=predictions_per_prop.get)
+                min_prop_count = predictions_per_prop[min_prop_name]
+            else:
+                min_prop_name = "unknown"
+                min_prop_count = 0
+
+            # Check schema to determine how features are stored
+            cursor.execute('PRAGMA table_info(predictions)')
+            columns = [col[1] for col in cursor.fetchall()]
+            has_features_json = 'features_json' in columns
+            has_f_columns = any(col.startswith('f_') for col in columns)
+
+            # Predictions with features
+            if has_features_json:
+                cursor.execute('SELECT COUNT(*) FROM predictions WHERE features_json IS NOT NULL')
+                with_features = cursor.fetchone()[0]
+            elif has_f_columns:
+                f_cols = [col for col in columns if col.startswith('f_')]
+                if f_cols:
+                    cursor.execute(f'SELECT COUNT(*) FROM predictions WHERE {f_cols[0]} IS NOT NULL')
+                    with_features = cursor.fetchone()[0]
+                else:
+                    with_features = 0
+            else:
+                with_features = 0
+
+            # Check opponent features - ONLY for last N days
+            lookback_days = self.config.opponent_feature_lookback_days
+            cutoff_date = (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
+
+            if has_features_json:
+                # NHL schema: count predictions with 'opp_' in features_json for recent predictions
+                # Use SQL LIKE instead of sampling for accuracy
+                cursor.execute(
+                    '''SELECT COUNT(*) FROM predictions
+                       WHERE features_json IS NOT NULL
+                       AND game_date >= ?
+                       AND features_json LIKE "%opp_%"''',
+                    (cutoff_date,)
+                )
+                recent_with_opp = cursor.fetchone()[0]
+
+                cursor.execute(
+                    'SELECT COUNT(*) FROM predictions WHERE features_json IS NOT NULL AND game_date >= ?',
+                    (cutoff_date,)
+                )
+                recent_total = cursor.fetchone()[0]
+
+                if recent_total > 0:
+                    opp_rate = recent_with_opp / recent_total
+                    with_opp_total = recent_with_opp
+                else:
+                    opp_rate = 0.0
+                    with_opp_total = 0
+            elif has_f_columns:
+                # NBA: check for opp_ columns or use feature completeness
+                opp_cols = [col for col in columns if 'opp_' in col.lower()]
+                if opp_cols:
+                    cursor.execute(f'SELECT COUNT(*) FROM predictions WHERE {opp_cols[0]} IS NOT NULL AND game_date >= ?', (cutoff_date,))
+                    recent_with_opp = cursor.fetchone()[0]
+                    cursor.execute('SELECT COUNT(*) FROM predictions WHERE game_date >= ?', (cutoff_date,))
+                    recent_total = cursor.fetchone()[0]
+                    opp_rate = recent_with_opp / recent_total if recent_total > 0 else 0.0
+                    with_opp_total = int(with_features * opp_rate)
+                else:
+                    # NBA doesn't have explicit opp columns - use feature rate as proxy
+                    opp_rate = with_features / total_preds if total_preds > 0 else 0.0
+                    with_opp_total = with_features
+            else:
+                opp_rate = 0.0
+                with_opp_total = 0
+
+            # Unique probabilities
+            cursor.execute('SELECT COUNT(DISTINCT ROUND(probability, 3)) FROM predictions')
+            unique_probs = cursor.fetchone()[0]
+
+            conn.close()
+
+        except Exception as e:
+            # Return empty report if database fails
+            return MLReadinessReport(
+                sport=self.config.sport,
+                total_predictions=0,
+                predictions_per_prop={},
+                min_prop_count=0,
+                min_prop_name="unknown",
+                target_per_prop=target_per_prop,
+                predictions_with_features=0,
+                predictions_with_opponent_features=0,
+                unique_probabilities=0,
+                feature_completeness=0.0,
+                opponent_feature_rate=0.0,
+                data_quality_score=0.0,
+                estimated_training_date="Unknown",
+                days_until_training=999,
+                readiness_percentage=0.0,
+                blocking_issues=[f"Database error: {str(e)}"],
+                recommendations=["Fix database connection"]
+            )
+
+        # Calculate metrics
+        feature_completeness = with_features / total_preds if total_preds > 0 else 0.0
+
+        # Data quality score (0-100)
+        quality_score = (
+            (feature_completeness * 40) +
+            (min(opp_rate, 1.0) * 30) +
+            (min(unique_probs / 100, 1.0) * 30)
+        )
+
+        # Progress toward ML training - based on BOTTLENECK prop/line
+        progress = min_prop_count / target_per_prop if target_per_prop > 0 else 0
+        readiness_pct = min(progress * 100, 100.0)
+
+        # Estimate training date
+        try:
+            target_date = datetime.strptime(self.config.ml_training_start_date, '%Y-%m-%d')
+            days_until = (target_date - datetime.now()).days
+        except:
+            target_date = datetime.now() + timedelta(days=30)
+            days_until = 30
+
+        # Blocking issues
+        blocking_issues = []
+
+        # Check each prop/line combo
+        props_below_target = []
+        for prop_key, count in predictions_per_prop.items():
+            if count < target_per_prop:
+                remaining = target_per_prop - count
+                props_below_target.append(f"{prop_key}: {count:,} ({remaining:,} needed)")
+
+        if props_below_target:
+            blocking_issues.append(
+                f"Props below {target_per_prop:,} target:\n      " + "\n      ".join(props_below_target)
+            )
+
+        if feature_completeness < self.config.min_feature_completeness:
+            blocking_issues.append(
+                f"Feature completeness: {feature_completeness:.1%} (need {self.config.min_feature_completeness:.0%})"
+            )
+
+        if opp_rate < self.config.min_opponent_feature_rate:
+            blocking_issues.append(
+                f"Opponent features (last {lookback_days}d): {opp_rate:.1%} (need {self.config.min_opponent_feature_rate:.0%})"
+            )
+
+        if unique_probs < self.config.min_probability_variety:
+            blocking_issues.append(
+                f"Probability variety: {unique_probs} unique (need {self.config.min_probability_variety})"
+            )
+
+        # Recommendations
+        recommendations = []
+        if feature_completeness < 1.0:
+            recommendations.append("Investigate why some predictions lack features")
+
+        if opp_rate < 0.95:
+            recommendations.append(f"Check opponent feature extraction (only {opp_rate:.0%} in last {lookback_days} days)")
+
+        if min_prop_count < target_per_prop:
+            recommendations.append(f"Focus on collecting more {min_prop_name} predictions (bottleneck)")
+
+        if quality_score < 80:
+            recommendations.append("Improve data quality before ML training")
+
+        all_props_ready = all(count >= target_per_prop for count in predictions_per_prop.values())
+        if all_props_ready and opp_rate >= self.config.min_opponent_feature_rate:
+            recommendations.append(f"READY FOR ML TRAINING! All {self.config.sport} requirements met.")
+
+        return MLReadinessReport(
+            sport=self.config.sport,
+            total_predictions=total_preds,
+            predictions_per_prop=predictions_per_prop,
+            min_prop_count=min_prop_count,
+            min_prop_name=min_prop_name,
+            target_per_prop=target_per_prop,
+            predictions_with_features=with_features,
+            predictions_with_opponent_features=with_opp_total,
+            unique_probabilities=unique_probs,
+            feature_completeness=feature_completeness,
+            opponent_feature_rate=opp_rate,
+            data_quality_score=quality_score,
+            estimated_training_date=target_date.strftime('%Y-%m-%d'),
+            days_until_training=days_until,
+            readiness_percentage=readiness_pct,
+            blocking_issues=blocking_issues,
+            recommendations=recommendations
+        )
+
+    # ========================================================================
+    # CLAUDE API INTEGRATION
+    # ========================================================================
+
+    def _get_claude_analysis(self, context: Dict) -> str:
+        """
+        Get Claude's analysis of system state and recommendations
+
+        This is where Claude becomes your intelligent assistant, analyzing
+        results, diagnosing issues, and recommending improvements.
+
+        Args:
+            context: Dict with operation details, errors, metrics, etc.
+
+        Returns:
+            Claude's analysis as text
+        """
+        if not self.claude_enabled:
+            return "Claude API not available"
+
+        try:
+            # Build comprehensive context for Claude
+            prompt = self._build_analysis_prompt(context)
+
+            # Call Claude API
+            response = self.claude.messages.create(
+                model=self.global_config.CLAUDE_MODEL,
+                max_tokens=self.global_config.CLAUDE_MAX_TOKENS,
+                messages=[{
+                    "role": "user",
+                    "content": prompt
+                }]
+            )
+
+            analysis = response.content[0].text
+
+            # Log the analysis
+            self._log_claude_analysis(context['operation'], analysis)
+
+            return analysis
+
+        except Exception as e:
+            error_msg = f"Claude API error: {str(e)}"
+            self._log_error(traceback.format_exc(), "CLAUDE_API_ERROR")
+            return error_msg
+
+    def _build_analysis_prompt(self, context: Dict) -> str:
+        """
+        Build comprehensive prompt for Claude analysis
+
+        The prompt guides Claude to focus on:
+        1. ML readiness (the ultimate goal)
+        2. Data quality issues
+        3. Performance patterns
+        4. Actionable recommendations
+        """
+        operation = context.get('operation', 'unknown')
+        sport = context.get('sport', self.config.sport)
+
+        prompt = f"""You are the intelligent oversight system for a {sport} prediction project.
+
+MISSION: Help build a {sport} prediction juggernaut by ensuring high-quality data collection
+for eventual ML training. We need {self.config.ml_training_target_per_prop:,}+ predictions per prop/line with complete
+features and opponent defensive stats before training begins.
+
+CURRENT OPERATION: {operation}
+SPORT: {sport}
+TIMESTAMP: {datetime.now().isoformat()}
+
+CONTEXT:
+{json.dumps(context, indent=2, default=str)}
+
+Your analysis should focus on:
+
+1. ML READINESS (PRIORITY #1):
+   - Are we collecting features correctly?
+   - Is opponent data being captured?
+   - Is probability variety sufficient?
+   - Are there data quality issues that could hurt ML training?
+
+2. IMMEDIATE ISSUES:
+   - Critical errors that need fixing NOW
+   - Data quality problems
+   - System health concerns
+
+3. PERFORMANCE INSIGHTS:
+   - Accuracy trends (UNDER vs OVER)
+   - Calibration drift
+   - Feature correlation patterns
+
+4. ACTIONABLE RECOMMENDATIONS:
+   - Specific fixes for errors
+   - Optimizations to improve data quality
+   - Feature engineering ideas
+   - System improvements
+
+Provide a CONCISE, ACTIONABLE analysis. Be direct and specific.
+Focus on what matters for building a world-class ML model.
+"""
+
+        return prompt
+
+    # ========================================================================
+    # HELPER METHODS
+    # ========================================================================
+
+    def _run_script(self, script_name: str, args: List[str] = None) -> Dict:
+        """Run a Python script and capture result"""
+        try:
+            script_path = self.config.project_root / script_name
+            cmd = [sys.executable, str(script_path)]
+            if args:
+                cmd.extend(args)
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout
+                cwd=str(self.config.project_root)
+            )
+
+            # Parse output for key metrics
+            output = result.stdout
+
+            return {
+                'success': result.returncode == 0,
+                'output': output,
+                'error': result.stderr if result.returncode != 0 else None
+            }
+
+        except subprocess.TimeoutExpired:
+            return {
+                'success': False,
+                'error': 'Script timed out after 5 minutes'
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def _count_predictions(self) -> int:
+        """Count total predictions in database"""
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM predictions')
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except:
+            return 0
+
+    def _count_graded_predictions(self) -> int:
+        """Count graded predictions"""
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM prediction_outcomes')
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except:
+            return 0
+
+    def _verify_predictions(self, date: str) -> Dict:
+        """Verify predictions for a date"""
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            cursor = conn.cursor()
+
+            cursor.execute('SELECT COUNT(*) FROM predictions WHERE game_date = ?', (date,))
+            count = cursor.fetchone()[0]
+
+            cursor.execute('''
+                SELECT COUNT(*) FROM predictions
+                WHERE game_date = ? AND features_json IS NOT NULL
+            ''', (date,))
+            with_features = cursor.fetchone()[0]
+
+            cursor.execute('''
+                SELECT COUNT(DISTINCT ROUND(probability, 3))
+                FROM predictions WHERE game_date = ?
+            ''', (date,))
+            unique_probs = cursor.fetchone()[0]
+
+            conn.close()
+
+            issues = []
+            if count < self.config.min_daily_predictions:
+                issues.append(f"Low prediction count: {count} (expected {self.config.min_daily_predictions}+)")
+
+            if count > self.config.max_daily_predictions:
+                issues.append(f"High prediction count: {count} (expected <{self.config.max_daily_predictions})")
+
+            if count > 0 and with_features < count * 0.95:
+                issues.append(f"Missing features: {with_features}/{count}")
+
+            if unique_probs < 30:
+                issues.append(f"Low probability variety: {unique_probs} unique values")
+
+            return {
+                'count': count,
+                'with_features': with_features,
+                'unique_probs': unique_probs,
+                'issues': issues
+            }
+        except Exception as e:
+            return {
+                'count': 0,
+                'with_features': 0,
+                'unique_probs': 0,
+                'issues': [f"Verification failed: {str(e)}"]
+            }
+
+    def _calculate_accuracy_metrics(self, date: str) -> Dict:
+        """Calculate accuracy metrics for a date"""
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            cursor = conn.cursor()
+
+            # Check schema to determine prediction column name
+            cursor.execute('PRAGMA table_info(prediction_outcomes)')
+            columns = [col[1] for col in cursor.fetchall()]
+            # NHL uses 'predicted_outcome', NBA uses 'prediction'
+            pred_col = 'predicted_outcome' if 'predicted_outcome' in columns else 'prediction'
+
+            # Overall accuracy
+            cursor.execute('''
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN outcome = 'HIT' THEN 1 ELSE 0 END) as hits
+                FROM prediction_outcomes
+                WHERE game_date = ?
+            ''', (date,))
+
+            row = cursor.fetchone()
+            total = row[0] if row else 0
+            hits = row[1] if row else 0
+
+            # UNDER accuracy
+            cursor.execute(f'''
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN outcome = 'HIT' THEN 1 ELSE 0 END) as hits
+                FROM prediction_outcomes
+                WHERE game_date = ? AND {pred_col} = 'UNDER'
+            ''', (date,))
+
+            row = cursor.fetchone()
+            under_total = row[0] if row else 0
+            under_hits = row[1] if row else 0
+
+            # OVER accuracy
+            cursor.execute(f'''
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN outcome = 'HIT' THEN 1 ELSE 0 END) as hits
+                FROM prediction_outcomes
+                WHERE game_date = ? AND {pred_col} = 'OVER'
+            ''', (date,))
+
+            row = cursor.fetchone()
+            over_total = row[0] if row else 0
+            over_hits = row[1] if row else 0
+
+            conn.close()
+
+            return {
+                'overall_accuracy': hits / total if total > 0 else 0,
+                'under_accuracy': under_hits / under_total if under_total > 0 else 0,
+                'over_accuracy': over_hits / over_total if over_total > 0 else 0,
+                'total': total,
+                'hits': hits
+            }
+        except:
+            return {
+                'overall_accuracy': 0,
+                'under_accuracy': 0,
+                'over_accuracy': 0,
+                'total': 0,
+                'hits': 0
+            }
+
+    def _check_feature_completeness(self) -> float:
+        """Check what % of predictions have features"""
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            cursor = conn.cursor()
+
+            cursor.execute('SELECT COUNT(*) FROM predictions')
+            total = cursor.fetchone()[0]
+
+            # Check schema to determine how features are stored
+            cursor.execute('PRAGMA table_info(predictions)')
+            columns = [col[1] for col in cursor.fetchall()]
+
+            if 'features_json' in columns:
+                cursor.execute('SELECT COUNT(*) FROM predictions WHERE features_json IS NOT NULL')
+                with_features = cursor.fetchone()[0]
+            else:
+                # NBA schema: check f_* columns
+                f_cols = [col for col in columns if col.startswith('f_')]
+                if f_cols:
+                    cursor.execute(f'SELECT COUNT(*) FROM predictions WHERE {f_cols[0]} IS NOT NULL')
+                    with_features = cursor.fetchone()[0]
+                else:
+                    with_features = 0
+
+            conn.close()
+
+            return with_features / total if total > 0 else 0.0
+        except:
+            return 0.0
+
+    def _check_probability_variety(self) -> int:
+        """Check number of unique probability values"""
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(DISTINCT ROUND(probability, 3)) FROM predictions')
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except:
+            return 0
+
+    def _check_opponent_feature_rate(self) -> float:
+        """Check what % of recent predictions have opponent features (last N days)"""
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            cursor = conn.cursor()
+
+            # Check schema
+            cursor.execute('PRAGMA table_info(predictions)')
+            columns = [col[1] for col in cursor.fetchall()]
+
+            lookback_days = self.config.opponent_feature_lookback_days
+            cutoff_date = (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
+
+            if 'features_json' in columns:
+                # NHL schema: count with SQL LIKE for accuracy
+                cursor.execute(
+                    '''SELECT COUNT(*) FROM predictions
+                       WHERE features_json IS NOT NULL
+                       AND game_date >= ?
+                       AND features_json LIKE "%opp_%"''',
+                    (cutoff_date,)
+                )
+                with_opp = cursor.fetchone()[0]
+
+                cursor.execute(
+                    'SELECT COUNT(*) FROM predictions WHERE features_json IS NOT NULL AND game_date >= ?',
+                    (cutoff_date,)
+                )
+                total = cursor.fetchone()[0]
+                conn.close()
+
+                return with_opp / total if total > 0 else 0.0
+            else:
+                # NBA schema: check for opp_ columns or assume feature completeness = opponent rate
+                opp_cols = [col for col in columns if 'opp_' in col.lower()]
+                if opp_cols:
+                    cursor.execute(f'SELECT COUNT(*) FROM predictions WHERE {opp_cols[0]} IS NOT NULL AND game_date >= ?', (cutoff_date,))
+                    with_opp = cursor.fetchone()[0]
+                    cursor.execute('SELECT COUNT(*) FROM predictions WHERE game_date >= ?', (cutoff_date,))
+                    total = cursor.fetchone()[0]
+                    conn.close()
+                    return with_opp / total if total > 0 else 0.0
+                else:
+                    # NBA doesn't have explicit opponent columns - return feature completeness
+                    conn.close()
+                    return self._check_feature_completeness()
+        except:
+            return 0.0
+
+    def _check_database_health(self) -> bool:
+        """Check if database is accessible"""
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            cursor = conn.cursor()
+            cursor.execute('SELECT 1')
+            conn.close()
+            return True
+        except:
+            return False
+
+    def _check_api_health(self) -> bool:
+        """Check if sport API is responsive"""
+        if not REQUESTS_AVAILABLE:
+            return True  # Assume OK if requests not available
+
+        try:
+            response = requests.get(self.config.api_health_url, timeout=5)
+            return response.status_code == 200
+        except:
+            return False
+
+    def _check_calibration_drift(self) -> Dict:
+        """Check for calibration drift in recent predictions"""
+        # Placeholder - would implement actual calibration analysis
+        return {'drift': 0.02}
+
+    def _calculate_ml_readiness_score(
+        self,
+        total_preds: int,
+        feature_completeness: float,
+        opp_feature_rate: float,
+        prob_variety: int
+    ) -> float:
+        """Calculate overall ML readiness score (0-100)"""
+
+        # Volume score (0-40 points)
+        volume_score = min(total_preds / (self.config.ml_training_target_per_prop * self.config.total_prop_combos), 1.0) * 40
+
+        # Quality score (0-60 points)
+        quality_score = (
+            (feature_completeness * 20) +  # Features present
+            (opp_feature_rate * 20) +       # Opponent features present
+            (min(prob_variety / 100, 1.0) * 20)  # Probability variety
+        )
+
+        return volume_score + quality_score
+
+    def _get_recent_errors(self, hours: int = 24) -> List[str]:
+        """Get recent errors from logs"""
+        # Placeholder - would parse error logs
+        return []
+
+    def _check_and_heal_apis(self, test_date: str) -> Dict:
+        """
+        Check API health and auto-heal if needed.
+
+        This runs before grading to ensure APIs are working correctly.
+        If an API fails validation, attempts to auto-heal the script.
+
+        Returns:
+            Dict with health check results and healing status
+        """
+        if not self.api_monitor_enabled:
+            return {'skipped': True, 'reason': 'API monitor not enabled'}
+
+        result = {
+            'all_healthy': True,
+            'healed': False,
+            'healed_apis': [],
+            'failed_apis': [],
+            'checks': {}
+        }
+
+        # Only run for NBA (ESPN API)
+        if self.config.sport != "NBA":
+            return {'skipped': True, 'reason': 'Only runs for NBA'}
+
+        try:
+            # Check ESPN NBA APIs
+            scoreboard_check = self.api_monitor.validate_espn_nba_scoreboard(test_date)
+            result['checks']['espn_nba_scoreboard'] = {
+                'valid': scoreboard_check.is_valid,
+                'differences': scoreboard_check.differences
+            }
+
+            if not scoreboard_check.is_valid:
+                result['all_healthy'] = False
+                result['failed_apis'].append('espn_nba_scoreboard')
+
+                # Attempt auto-heal
+                print(f"   [WARN] ESPN Scoreboard API validation failed")
+                print(f"         Attempting auto-heal...")
+
+                heal_result = self.api_monitor.self_heal_api_script(
+                    'espn_nba_scoreboard',
+                    scoreboard_check,
+                    self.config.project_root / "scripts" / "espn_nba_api.py"
+                )
+
+                if heal_result.success:
+                    result['healed'] = True
+                    result['healed_apis'].append('espn_nba_scoreboard')
+                    print(f"   [OK] Auto-healed ESPN Scoreboard API")
+                else:
+                    print(f"   [FAIL] Auto-heal failed: {heal_result.fix_description[:100]}")
+
+            # Check ESPN NBA Summary API
+            if scoreboard_check.raw_response_sample and 'events' in scoreboard_check.raw_response_sample:
+                events = scoreboard_check.raw_response_sample.get('events', [])
+                if events:
+                    game_id = events[0]['id']
+                    summary_check = self.api_monitor.validate_espn_nba_summary(game_id)
+                    result['checks']['espn_nba_summary'] = {
+                        'valid': summary_check.is_valid,
+                        'differences': summary_check.differences
+                    }
+
+                    if not summary_check.is_valid:
+                        result['all_healthy'] = False
+                        result['failed_apis'].append('espn_nba_summary')
+
+                        # Attempt auto-heal
+                        print(f"   [WARN] ESPN Summary API validation failed")
+                        print(f"         Attempting auto-heal...")
+
+                        heal_result = self.api_monitor.self_heal_api_script(
+                            'espn_nba_summary',
+                            summary_check,
+                            self.config.project_root / "scripts" / "espn_nba_api.py"
+                        )
+
+                        if heal_result.success:
+                            result['healed'] = True
+                            result['healed_apis'].append('espn_nba_summary')
+                            print(f"   [OK] Auto-healed ESPN Summary API")
+                        else:
+                            print(f"   [FAIL] Auto-heal failed: {heal_result.fix_description[:100]}")
+
+            return result
+
+        except Exception as e:
+            error_msg = f"API health check error: {str(e)}"
+            self._log_error(traceback.format_exc(), "API_HEALTH_CHECK_ERROR")
+            return {
+                'all_healthy': False,
+                'healed': False,
+                'error': error_msg
+            }
+
+    def _log_error(self, error_text: str, error_type: str):
+        """Log error to file"""
+        log_file = self.global_config.LOGS_DIR / f"orchestrator_errors_{self.config.sport.lower()}_{datetime.now().strftime('%Y%m%d')}.log"
+        try:
+            with open(log_file, 'a') as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"[{error_type}] {datetime.now().isoformat()}\n")
+                f.write(error_text)
+                f.write(f"\n{'='*80}\n")
+        except:
+            pass
+
+    def _log_claude_analysis(self, operation: str, analysis: str):
+        """Log Claude's analysis"""
+        log_file = self.global_config.LOGS_DIR / f"claude_analysis_{self.config.sport.lower()}_{datetime.now().strftime('%Y%m%d')}.log"
+        try:
+            with open(log_file, 'a') as f:
+                f.write(f"\n{'='*80}\n")
+                f.write(f"[{operation}] {datetime.now().isoformat()}\n")
+                f.write(analysis)
+                f.write(f"\n{'='*80}\n")
+        except:
+            pass
+
+    # ========================================================================
+    # DISCORD NOTIFICATIONS
+    # ========================================================================
+
+    def _send_discord_notification(self, message: str):
+        """Send a message to Discord webhook"""
+        if not DISCORD_WEBHOOK_URL or not REQUESTS_AVAILABLE:
+            return False
+
+        try:
+            payload = {"content": message}
+            response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+            return response.status_code == 204
+        except Exception as e:
+            self._log_error(f"Discord notification failed: {e}", "DISCORD_ERROR")
+            return False
+
+    def _is_prizepicks_eligible(self, prop_type: str, line: float, prediction: str) -> bool:
+        """
+        Check if a prediction is eligible for PrizePicks betting.
+
+        PrizePicks constraints (general rules - player/matchup dependent):
+
+        NHL:
+        - Points 0.5: OVER and UNDER allowed
+        - Points 1.5: OVER only (can't bet UNDER 1.5 points)
+        - Shots 1.5: OVER only
+        - Shots 2.5: OVER and UNDER allowed
+        - Shots 3.5: OVER only
+
+        NBA:
+        - Most lines allow both, but very low lines may be OVER only
+
+        TODO: Build PrizePicks line ingestion script for accurate daily lines
+        """
+        prop_type = prop_type.lower()
+        prediction = prediction.upper()
+
+        if self.config.sport == "NHL":
+            # Points constraints
+            if prop_type == 'points':
+                if line == 1.5 and prediction == 'UNDER':
+                    return False  # Can't bet UNDER 1.5 points
+            # Shots constraints
+            elif prop_type == 'shots':
+                if line == 1.5 and prediction == 'UNDER':
+                    return False  # OVER only on 1.5 shots
+                if line == 3.5 and prediction == 'UNDER':
+                    return False  # OVER only on 3.5 shots
+
+        elif self.config.sport == "NBA":
+            # NBA generally more flexible, but filter very low unders
+            if line <= 5.5 and prediction == 'UNDER':
+                # Be cautious with very low UNDER bets
+                pass  # Allow for now, revisit with PrizePicks data
+
+        return True
+
+    def _get_top_picks(self, date: str, n: int = 3) -> List[Dict]:
+        """
+        Get top N picks for a date that are eligible for PrizePicks.
+
+        Criteria:
+        - Must be PrizePicks eligible (filtered by line/prediction rules)
+        - Highest probability predictions
+        - Preference for UNDER (historically better hit rate)
+        - Avoid duplicate players
+
+        Returns list of dicts with pick details.
+
+        NOTE: For accurate PrizePicks lines, a daily line ingestion script
+        should be built to scrape/fetch actual available lines.
+        """
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            cursor = conn.cursor()
+
+            # Get more predictions to filter through
+            query = '''
+                SELECT
+                    player_name,
+                    prop_type,
+                    line,
+                    prediction,
+                    probability,
+                    team,
+                    opponent
+                FROM predictions
+                WHERE game_date = ?
+                ORDER BY
+                    CASE WHEN prediction = 'UNDER' THEN 0 ELSE 1 END,
+                    probability DESC
+                LIMIT ?
+            '''
+
+            cursor.execute(query, (date, n * 10))  # Get extra to filter
+            rows = cursor.fetchall()
+            conn.close()
+
+            picks = []
+            seen_players = set()
+
+            for row in rows:
+                player = row[0]
+                prop_type = row[1]
+                line = row[2]
+                prediction = row[3]
+                probability = row[4]
+
+                # Skip if not PrizePicks eligible
+                if not self._is_prizepicks_eligible(prop_type, line, prediction):
+                    continue
+
+                # Avoid duplicate players in top picks
+                if player in seen_players:
+                    continue
+                seen_players.add(player)
+
+                pick = {
+                    'player': player,
+                    'prop': prop_type,
+                    'line': line,
+                    'prediction': prediction,
+                    'probability': probability,
+                    'team': row[5] if len(row) > 5 else 'N/A',
+                    'opponent': row[6] if len(row) > 6 else 'N/A',
+                }
+
+                picks.append(pick)
+                if len(picks) >= n:
+                    break
+
+            return picks
+
+        except Exception as e:
+            self._log_error(f"Error getting top picks: {e}", "TOP_PICKS_ERROR")
+            return []
+
+    def _format_top_picks_message(self, picks: List[Dict]) -> str:
+        """Format top picks for Discord message"""
+        if not picks:
+            return ""
+
+        msg = "\n**TOP PICKS:**\n"
+        for i, pick in enumerate(picks, 1):
+            prob_pct = pick['probability'] * 100 if pick['probability'] <= 1 else pick['probability']
+            msg += f"{i}. **{pick['player']}** ({pick['team']})\n"
+            msg += f"   {pick['prop'].upper()} {pick['prediction']} {pick['line']} @ {prob_pct:.0f}%\n"
+            msg += f"   vs {pick['opponent']}\n"
+
+        return msg
+
+    def send_prediction_notification(self, date: str, details: Dict):
+        """Send Discord notification for prediction pipeline"""
+        sport = self.config.sport
+        emoji = self.config.emoji
+
+        # Get prediction count
+        count = details.get('verification', {}).get('count', 0)
+
+        # Get ML readiness info
+        ml = details.get('ml_readiness', {})
+        min_prop = ml.get('min_prop_name', 'N/A')
+        min_count = ml.get('min_prop_count', 0)
+        target = ml.get('target_per_prop', 10000)
+
+        # Get verification details
+        verification = details.get('verification', {})
+        unique_probs = verification.get('unique_probs', 0)
+
+        message = f"""
+{emoji} **{sport} PREDICTIONS - {date}**
+
+**Generated:** {count} predictions
+**Probability Variety:** {unique_probs} unique values
+**ML Progress:** {min_count:,}/{target:,} ({min_prop})
+"""
+
+        self._send_discord_notification(message)
+
+    def send_grading_notification(self, date: str, details: Dict):
+        """Send Discord notification for grading pipeline"""
+        sport = self.config.sport
+        emoji = self.config.emoji
+
+        metrics = details.get('metrics', {})
+        total = metrics.get('total', 0)
+        hits = metrics.get('hits', 0)
+        overall = metrics.get('overall_accuracy', 0) * 100
+        under = metrics.get('under_accuracy', 0) * 100
+        over = metrics.get('over_accuracy', 0) * 100
+
+        message = f"""
+{emoji} **{sport} GRADING - {date}**
+
+**Results:** {hits}/{total} ({overall:.1f}%)
+**UNDER:** {under:.1f}%
+**OVER:** {over:.1f}%
+"""
+
+        self._send_discord_notification(message)
+
+    def _load_state(self) -> Dict:
+        """Load orchestrator state from file"""
+        if self.global_config.STATE_FILE.exists():
+            try:
+                with open(self.global_config.STATE_FILE, 'r') as f:
+                    return json.load(f)
+            except:
+                return {}
+        return {}
+
+    def _save_state(self):
+        """Save orchestrator state to file"""
+        try:
+            with open(self.global_config.STATE_FILE, 'w') as f:
+                json.dump(self.state, f, indent=2)
+        except:
+            pass
+
+    # ========================================================================
+    # PRIZEPICKS INTEGRATION
+    # ========================================================================
+
+    def run_prizepicks_ingestion(self) -> Dict:
+        """
+        Fetch current PrizePicks lines for this sport.
+
+        Should run before prediction generation to have accurate lines.
+
+        Returns:
+            Dict with ingestion results
+        """
+        if not PRIZEPICKS_AVAILABLE:
+            print(f"{self.config.emoji} PrizePicks integration not available")
+            return {'success': False, 'error': 'Module not installed'}
+
+        print(f"\n{self.config.emoji} PRIZEPICKS LINE INGESTION")
+        print("=" * 60)
+
+        try:
+            ingestion = PrizePicksIngestion()
+            results = ingestion.run_ingestion([self.config.sport])
+
+            sport_result = results['sports'].get(self.config.sport, {})
+
+            if sport_result.get('lines_saved', 0) > 0:
+                print(f"[OK] Saved {sport_result['lines_saved']} {self.config.sport} lines")
+                return {'success': True, **sport_result}
+            else:
+                print(f"[WARN] No lines available for {self.config.sport}")
+                return {'success': False, 'error': 'No lines available'}
+
+        except Exception as e:
+            print(f"[ERROR] PrizePicks ingestion failed: {e}")
+            self._log_error(traceback.format_exc(), "PRIZEPICKS_ERROR")
+            return {'success': False, 'error': str(e)}
+
+    def get_prizepicks_filtered_picks(self, date: str, n: int = 5) -> List[Dict]:
+        """
+        Get top picks that are actually available on PrizePicks.
+
+        Filters predictions against actual PrizePicks lines.
+
+        Args:
+            date: Game date
+            n: Number of picks to return
+
+        Returns:
+            List of picks with PrizePicks line confirmation
+        """
+        if not PRIZEPICKS_AVAILABLE:
+            # Fall back to standard picks
+            return self._get_top_picks(date, n)
+
+        try:
+            pp_db = PrizePicksDatabase(str(self.global_config.ROOT / "data" / "prizepicks_lines.db"))
+
+            # Get our predictions
+            conn = sqlite3.connect(str(self.config.db_path))
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT player_name, prop_type, line, prediction, probability, team, opponent
+                FROM predictions
+                WHERE game_date = ?
+                ORDER BY
+                    CASE WHEN prediction = 'UNDER' THEN 0 ELSE 1 END,
+                    probability DESC
+                LIMIT ?
+            ''', (date, n * 20))  # Get extra to filter
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            picks = []
+            seen_players = set()
+
+            for row in rows:
+                player = row[0]
+                prop_type = row[1]
+                our_line = row[2]
+                prediction = row[3]
+                probability = row[4]
+
+                # Skip duplicate players
+                if player in seen_players:
+                    continue
+
+                # Check PrizePicks eligibility first
+                if not self._is_prizepicks_eligible(prop_type, our_line, prediction):
+                    continue
+
+                # Check if line is available on PrizePicks
+                pp_line = pp_db.get_player_line(player, prop_type, date)
+
+                if pp_line:
+                    # Line available - check if it matches our line
+                    line_match = abs(pp_line['line'] - our_line) < 0.5
+
+                    pick = {
+                        'player': player,
+                        'prop': prop_type,
+                        'line': our_line,
+                        'prediction': prediction,
+                        'probability': probability,
+                        'team': row[5] if len(row) > 5 else 'N/A',
+                        'opponent': row[6] if len(row) > 6 else 'N/A',
+                        'pp_available': True,
+                        'pp_line': pp_line['line'],
+                        'line_match': line_match,
+                    }
+
+                    seen_players.add(player)
+                    picks.append(pick)
+
+                    if len(picks) >= n:
+                        break
+
+            return picks
+
+        except Exception as e:
+            print(f"[WARN] PrizePicks filtering failed: {e}")
+            return self._get_top_picks(date, n)
+
+    # ========================================================================
+    # ML TRAINING INTEGRATION
+    # ========================================================================
+
+    def check_ml_training_readiness(self) -> Dict:
+        """
+        Check if we're ready to train ML models.
+
+        Returns dict with readiness status for each prop/line.
+        """
+        readiness = {
+            'sport': self.config.sport,
+            'ready_props': [],
+            'not_ready_props': [],
+            'overall_ready': False
+        }
+
+        conn = sqlite3.connect(str(self.config.db_path))
+        cursor = conn.cursor()
+
+        for prop_type, lines in self.config.prop_lines.items():
+            for line in lines:
+                # Count graded predictions
+                cursor.execute('''
+                    SELECT COUNT(*)
+                    FROM predictions p
+                    JOIN prediction_outcomes po ON p.id = po.prediction_id
+                    WHERE p.prop_type = ? AND p.line = ?
+                ''', (prop_type, line))
+
+                count = cursor.fetchone()[0]
+                target = self.config.ml_training_target_per_prop
+
+                prop_key = f"{prop_type}_{line}"
+
+                if count >= target:
+                    readiness['ready_props'].append({
+                        'prop': prop_key,
+                        'count': count,
+                        'target': target
+                    })
+                else:
+                    readiness['not_ready_props'].append({
+                        'prop': prop_key,
+                        'count': count,
+                        'target': target,
+                        'needed': target - count
+                    })
+
+        conn.close()
+
+        # Overall ready if all props are ready
+        readiness['overall_ready'] = len(readiness['not_ready_props']) == 0
+
+        return readiness
+
+    def trigger_ml_training(self, prop_type: str = None, line: float = None) -> Dict:
+        """
+        Trigger ML model training.
+
+        Args:
+            prop_type: Specific prop type to train (or None for all ready)
+            line: Specific line to train (or None for all ready)
+
+        Returns:
+            Training results
+        """
+        if not ML_AVAILABLE:
+            return {'success': False, 'error': 'ML modules not available'}
+
+        print(f"\n{self.config.emoji} ML TRAINING TRIGGER")
+        print("=" * 60)
+
+        readiness = self.check_ml_training_readiness()
+
+        if prop_type and line:
+            # Train specific model
+            props_to_train = [{'prop': f"{prop_type}_{line}"}]
+        elif readiness['overall_ready']:
+            # Train all ready props
+            props_to_train = readiness['ready_props']
+        else:
+            print("[WARN] Not all props ready for training")
+            print("Ready props:", [p['prop'] for p in readiness['ready_props']])
+            print("Not ready:", [p['prop'] for p in readiness['not_ready_props']])
+
+            # Train only ready props
+            props_to_train = readiness['ready_props']
+
+        if not props_to_train:
+            return {'success': False, 'error': 'No props ready for training'}
+
+        results = []
+
+        for prop_info in props_to_train:
+            prop_parts = prop_info['prop'].split('_')
+            p_type = prop_parts[0]
+            p_line = float(prop_parts[1])
+
+            print(f"\nTraining: {self.config.sport} {p_type} @ {p_line}")
+
+            try:
+                # Run training script
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(self.global_config.ROOT / "ml_training" / "train_models.py"),
+                        '--sport', self.config.sport.lower(),
+                        '--prop', p_type,
+                        '--line', str(p_line)
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=600
+                )
+
+                if result.returncode == 0:
+                    results.append({
+                        'prop': prop_info['prop'],
+                        'success': True,
+                        'output': result.stdout[-500:] if result.stdout else ''
+                    })
+                    print(f"   [OK] Training complete")
+                else:
+                    results.append({
+                        'prop': prop_info['prop'],
+                        'success': False,
+                        'error': result.stderr[-500:] if result.stderr else 'Unknown error'
+                    })
+                    print(f"   [FAIL] Training failed")
+
+            except Exception as e:
+                results.append({
+                    'prop': prop_info['prop'],
+                    'success': False,
+                    'error': str(e)
+                })
+
+        success_count = sum(1 for r in results if r['success'])
+        print(f"\n[SUMMARY] Trained {success_count}/{len(results)} models")
+
+        # Send Discord notification
+        self._send_ml_training_notification(results)
+
+        return {
+            'success': success_count > 0,
+            'results': results,
+            'total': len(results),
+            'successful': success_count
+        }
+
+    def _send_ml_training_notification(self, results: List[Dict]):
+        """Send Discord notification for ML training results"""
+        sport = self.config.sport
+        emoji = self.config.emoji
+
+        success_count = sum(1 for r in results if r['success'])
+
+        message = f"""
+{emoji} **{sport} ML TRAINING COMPLETE**
+
+**Results:** {success_count}/{len(results)} models trained successfully
+"""
+
+        for r in results:
+            status = "[OK]" if r['success'] else "[FAIL]"
+            message += f"\n{status} {r['prop']}"
+
+        self._send_discord_notification(message)
+
+    def get_ml_predictions(self, date: str) -> Dict:
+        """
+        Get ML-enhanced predictions for a date.
+
+        Uses trained ML models where available, falls back to statistical.
+
+        Returns:
+            Dict with ML prediction stats
+        """
+        if not ML_AVAILABLE:
+            return {'ml_available': False, 'error': 'ML modules not available'}
+
+        try:
+            registry_dir = str(self.global_config.ROOT / "ml_training" / "model_registry")
+            predictor = ProductionPredictor(registry_dir)
+
+            # Check which models are available
+            available_models = []
+            for prop_type, lines in self.config.prop_lines.items():
+                for line in lines:
+                    if predictor.is_model_available(self.config.sport, prop_type, line):
+                        stats = predictor.get_model_stats(self.config.sport, prop_type, line)
+                        available_models.append({
+                            'prop': f"{prop_type}_{line}",
+                            'version': stats.get('version'),
+                            'test_accuracy': stats.get('test_accuracy')
+                        })
+
+            return {
+                'ml_available': len(available_models) > 0,
+                'available_models': available_models,
+                'total_props': sum(len(lines) for lines in self.config.prop_lines.values())
+            }
+
+        except Exception as e:
+            return {'ml_available': False, 'error': str(e)}
+
+    # ========================================================================
+    # SCHEDULER INTERFACE
+    # ========================================================================
+
+    def schedule_tasks(self):
+        """
+        Set up scheduled tasks for this sport
+
+        This configures when each operation runs:
+        - Grading: At sport-specific grading time
+        - PrizePicks: 30 min before predictions
+        - Predictions: At sport-specific prediction time
+        - Every hour: Health check
+        """
+        if not SCHEDULE_AVAILABLE:
+            print("ERROR: 'schedule' package not installed. Cannot run continuous mode.")
+            return False
+
+        # Daily grading (first thing)
+        schedule.every().day.at(self.config.grading_time).do(
+            self.run_daily_grading
+        )
+
+        # Daily PrizePicks ingestion (before predictions)
+        if PRIZEPICKS_AVAILABLE:
+            schedule.every().day.at(self.config.prizepicks_time).do(
+                self.run_prizepicks_ingestion
+            )
+
+        # Daily prediction generation
+        schedule.every().day.at(self.config.prediction_time).do(
+            self.run_daily_prediction_pipeline
+        )
+
+        # Hourly health checks
+        schedule.every(self.global_config.HEALTH_CHECK_INTERVAL_MINUTES).minutes.do(
+            self.run_health_check
+        )
+
+        print(f"{self.config.emoji} Scheduled {self.config.sport} tasks:")
+        print(f"   Grading: Daily at {self.config.grading_time}")
+        if PRIZEPICKS_AVAILABLE:
+            print(f"   PrizePicks: Daily at {self.config.prizepicks_time}")
+        print(f"   Predictions: Daily at {self.config.prediction_time}")
+        print(f"   Health checks: Every {self.global_config.HEALTH_CHECK_INTERVAL_MINUTES} minutes")
+        print()
+
+        return True
+
+    def run_forever(self):
+        """
+        Run orchestrator continuously
+
+        This is the main loop that keeps the orchestrator running 24/7.
+        It executes scheduled tasks and monitors for issues.
+        """
+        if not SCHEDULE_AVAILABLE:
+            print("ERROR: 'schedule' package not installed. Run: pip install schedule")
+            return
+
+        print(f"{self.config.emoji} Starting {self.config.sport} orchestrator in continuous mode...")
+        print("   Press Ctrl+C to stop")
+        print()
+
+        if not self.schedule_tasks():
+            return
+
+        try:
+            while True:
+                schedule.run_pending()
+                time.sleep(60)  # Check every minute
+
+        except KeyboardInterrupt:
+            print(f"\n{self.config.emoji} {self.config.sport} orchestrator stopped by user")
+            self._save_state()
+
+    def run_once(self, operation: str = 'all'):
+        """
+        Run specific operation once (for testing/manual execution)
+
+        Args:
+            operation: 'prediction', 'grading', 'health', 'prizepicks', 'ml-check', 'ml-train', or 'all'
+        """
+        if operation in ['prizepicks', 'all']:
+            print("\n" + "="*80)
+            print(f"{self.config.emoji} RUNNING: {self.config.sport} PrizePicks Ingestion")
+            print("="*80)
+            result = self.run_prizepicks_ingestion()
+            print(f"\nResult: {'SUCCESS' if result.get('success') else 'FAILED'}")
+
+        if operation in ['prediction', 'all']:
+            print("\n" + "="*80)
+            print(f"{self.config.emoji} RUNNING: {self.config.sport} Prediction Pipeline")
+            print("="*80)
+            result = self.run_daily_prediction_pipeline()
+            print(f"\nResult: {'SUCCESS' if result.success else 'FAILED'}")
+
+        if operation in ['grading', 'all']:
+            print("\n" + "="*80)
+            print(f"{self.config.emoji} RUNNING: {self.config.sport} Grading Pipeline")
+            print("="*80)
+            result = self.run_daily_grading()
+            print(f"\nResult: {'SUCCESS' if result.success else 'FAILED'}")
+
+        if operation in ['health', 'all']:
+            print("\n" + "="*80)
+            print(f"{self.config.emoji} RUNNING: {self.config.sport} Health Check")
+            print("="*80)
+            health = self.run_health_check()
+            print(f"\nML Readiness: {health.ml_readiness_score:.1f}/100")
+
+        if operation in ['ml-check', 'all']:
+            print("\n" + "="*80)
+            print(f"{self.config.emoji} RUNNING: {self.config.sport} ML Training Readiness Check")
+            print("="*80)
+            readiness = self.check_ml_training_readiness()
+            print(f"\nOverall Ready: {readiness['overall_ready']}")
+            print(f"Ready Props: {len(readiness['ready_props'])}")
+            print(f"Not Ready: {len(readiness['not_ready_props'])}")
+
+            if readiness['not_ready_props']:
+                print("\nProps needing more data:")
+                for p in readiness['not_ready_props']:
+                    print(f"   {p['prop']}: {p['count']}/{p['target']} ({p['needed']} needed)")
+
+        if operation == 'ml-train':
+            print("\n" + "="*80)
+            print(f"{self.config.emoji} RUNNING: {self.config.sport} ML Training")
+            print("="*80)
+            result = self.trigger_ml_training()
+            print(f"\nResult: {result['successful']}/{result['total']} models trained")
+
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
+def print_banner():
+    """Print the orchestrator banner"""
+    print()
+    print("=" * 70)
+    print("  SPORTS PREDICTION ORCHESTRATOR")
+    print("  NHL & NBA Prediction System Manager")
+    print("=" * 70)
+    print()
+
+
+def run_all_sports_continuous(sports: list):
+    """
+    Run multiple sports in continuous mode with a single scheduler.
+
+    This combines all sport schedules into one event loop.
+    """
+    if not SCHEDULE_AVAILABLE:
+        print("ERROR: 'schedule' package not installed. Run: pip install schedule")
+        return
+
+    print("=" * 70)
+    print("  CONTINUOUS MODE - ALL SPORTS")
+    print("=" * 70)
+    print()
+
+    orchestrators = {}
+
+    # Initialize all orchestrators and set up their schedules
+    for sport in sports:
+        try:
+            orchestrator = SportsOrchestrator(sport)
+            orchestrators[sport] = orchestrator
+
+            # Schedule tasks for this sport
+            schedule.every().day.at(orchestrator.config.grading_time).do(
+                orchestrator.run_daily_grading
+            )
+
+            if PRIZEPICKS_AVAILABLE:
+                schedule.every().day.at(orchestrator.config.prizepicks_time).do(
+                    orchestrator.run_prizepicks_ingestion
+                )
+
+            schedule.every().day.at(orchestrator.config.prediction_time).do(
+                orchestrator.run_daily_prediction_pipeline
+            )
+
+            print(f"{orchestrator.config.emoji} {sport.upper()} scheduled:")
+            print(f"   Grading: {orchestrator.config.grading_time}")
+            if PRIZEPICKS_AVAILABLE:
+                print(f"   PrizePicks: {orchestrator.config.prizepicks_time}")
+            print(f"   Predictions: {orchestrator.config.prediction_time}")
+            print()
+
+        except Exception as e:
+            print(f"ERROR initializing {sport}: {e}")
+            continue
+
+    # Set up shared health checks (every 60 minutes)
+    def run_all_health_checks():
+        for sport, orch in orchestrators.items():
+            orch.run_health_check()
+
+    schedule.every(60).minutes.do(run_all_health_checks)
+    print(f"Health checks: Every 60 minutes (all sports)")
+    print()
+
+    print("=" * 70)
+    print("  SCHEDULER RUNNING - Press Ctrl+C to stop")
+    print("=" * 70)
+    print()
+
+    try:
+        while True:
+            schedule.run_pending()
+            time.sleep(60)  # Check every minute
+    except KeyboardInterrupt:
+        print("\nOrchestrator stopped by user")
+        for orch in orchestrators.values():
+            orch._save_state()
+
+
+def main():
+    """Main entry point for orchestrator"""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Sports Prediction Orchestrator (NHL & NBA)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python sports_orchestrator.py --sport nhl --mode test
+  python sports_orchestrator.py --sport nba --mode test
+  python sports_orchestrator.py --sport nhl --mode once --operation prediction
+  python sports_orchestrator.py --sport nba --mode once --operation grading
+  python sports_orchestrator.py --sport nhl --mode once --operation prizepicks
+  python sports_orchestrator.py --sport nhl --mode once --operation ml-check
+  python sports_orchestrator.py --sport nhl --mode once --operation ml-train
+  python sports_orchestrator.py --sport nhl --mode continuous
+  python sports_orchestrator.py --sport all --mode test
+        """
+    )
+    parser.add_argument(
+        '--sport',
+        choices=['nhl', 'nba', 'all'],
+        required=True,
+        help='Sport to manage (nhl, nba, or all)'
+    )
+    parser.add_argument(
+        '--mode',
+        choices=['continuous', 'once', 'test'],
+        default='test',
+        help='Execution mode (default: test)'
+    )
+    parser.add_argument(
+        '--operation',
+        choices=['prediction', 'grading', 'health', 'prizepicks', 'ml-check', 'ml-train', 'all'],
+        default='all',
+        help='Operation to run for once/test modes (default: all)'
+    )
+
+    args = parser.parse_args()
+
+    print_banner()
+
+    # Determine which sports to run
+    sports = ['nhl', 'nba'] if args.sport == 'all' else [args.sport]
+
+    # Special handling for continuous mode with multiple sports
+    if args.mode == 'continuous' and len(sports) > 1:
+        run_all_sports_continuous(sports)
+        return
+
+    for sport in sports:
+        print(f"\n{'='*70}")
+        print(f"  Processing: {sport.upper()}")
+        print(f"{'='*70}")
+
+        try:
+            # Initialize orchestrator
+            orchestrator = SportsOrchestrator(sport)
+
+            if args.mode == 'continuous':
+                # Run forever (production mode)
+                orchestrator.run_forever()
+
+            elif args.mode == 'once':
+                # Run once (manual execution)
+                orchestrator.run_once(args.operation)
+
+            elif args.mode == 'test':
+                # Test mode - just check health and ML readiness
+                print(f"\n{'='*60}")
+                print(f"TEST MODE - {sport.upper()}")
+                print(f"{'='*60}\n")
+
+                health = orchestrator.run_health_check()
+                print()
+                ml_readiness = orchestrator._assess_ml_readiness()
+
+                print(f"\n{orchestrator.config.emoji} ML READINESS REPORT - {sport.upper()}:")
+                print(f"   Total Predictions: {ml_readiness.total_predictions:,}")
+                print(f"   Target per Prop/Line: {ml_readiness.target_per_prop:,}")
+                print(f"   Bottleneck: {ml_readiness.min_prop_name} ({ml_readiness.min_prop_count:,})")
+                print(f"   ML Readiness: {ml_readiness.readiness_percentage:.1f}%")
+
+                # Show per-prop breakdown
+                print(f"\n   Predictions by Prop/Line:")
+                for prop_key, count in sorted(ml_readiness.predictions_per_prop.items()):
+                    pct = (count / ml_readiness.target_per_prop) * 100
+                    status = "OK" if count >= ml_readiness.target_per_prop else f"{ml_readiness.target_per_prop - count:,} needed"
+                    print(f"      {prop_key}: {count:,} ({pct:.0f}%) - {status}")
+
+                print(f"\n   Data Quality:")
+                print(f"      Feature Completeness: {ml_readiness.feature_completeness:.1%}")
+                print(f"      Opponent Features (14d): {ml_readiness.opponent_feature_rate:.1%}")
+                print(f"      Probability Variety: {ml_readiness.unique_probabilities}")
+                print(f"      Quality Score: {ml_readiness.data_quality_score:.1f}/100")
+
+                if ml_readiness.blocking_issues:
+                    print("\n   Blocking Issues:")
+                    for issue in ml_readiness.blocking_issues:
+                        for line in issue.split('\n'):
+                            print(f"   - {line}")
+
+                if ml_readiness.recommendations:
+                    print("\n   Recommendations:")
+                    for rec in ml_readiness.recommendations:
+                        print(f"   - {rec}")
+
+        except Exception as e:
+            print(f"\nERROR initializing {sport.upper()} orchestrator: {str(e)}")
+            traceback.print_exc()
+            continue
+
+    print(f"\n{'='*70}")
+    print("  Orchestrator complete")
+    print(f"{'='*70}\n")
+
+
+if __name__ == '__main__':
+    main()

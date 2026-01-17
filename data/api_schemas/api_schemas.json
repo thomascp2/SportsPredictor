@@ -1,0 +1,120 @@
+{
+  "espn_nba_summary": {
+    "api_name": "ESPN NBA Summary API",
+    "endpoint": "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary",
+    "version": "2025-12-10",
+    "expected_structure": {
+      "boxscore": {
+        "players": [
+          {
+            "team": {
+              "abbreviation": "str"
+            },
+            "statistics": [
+              {
+                "keys": [
+                  "list"
+                ],
+                "athletes": [
+                  {
+                    "athlete": {
+                      "displayName": "str"
+                    },
+                    "stats": [
+                      "list"
+                    ],
+                    "didNotPlay": "bool"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "sample_data": {},
+    "last_validated": "2025-12-10T18:54:07.783889",
+    "validation_count": 0
+  },
+  "espn_nba_scoreboard": {
+    "api_name": "ESPN NBA Scoreboard API",
+    "endpoint": "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
+    "version": "2025-12-10",
+    "expected_structure": {
+      "events": [
+        {
+          "id": "str",
+          "competitions": [
+            {
+              "competitors": [
+                {
+                  "homeAway": "str",
+                  "team": {
+                    "abbreviation": "str"
+                  },
+                  "score": "str"
+                }
+              ],
+              "status": {
+                "type": {
+                  "name": "str"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "sample_data": {},
+    "last_validated": "2025-12-10T18:54:07.783915",
+    "validation_count": 0
+  },
+  "nhl_api_gamecenter": {
+    "api_name": "NHL API Game Center",
+    "endpoint": "https://api-web.nhle.com/v1/gamecenter/{game_id}/boxscore",
+    "version": "2025-12-10",
+    "expected_structure": {
+      "playerByGameStats": {
+        "homeTeam": {
+          "forwards": [
+            {
+              "playerId": "int",
+              "name": {
+                "default": "str"
+              }
+            }
+          ],
+          "defense": [
+            {
+              "playerId": "int",
+              "name": {
+                "default": "str"
+              }
+            }
+          ]
+        },
+        "awayTeam": {
+          "forwards": [
+            {
+              "playerId": "int",
+              "name": {
+                "default": "str"
+              }
+            }
+          ],
+          "defense": [
+            {
+              "playerId": "int",
+              "name": {
+                "default": "str"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "sample_data": {},
+    "last_validated": "2025-12-10T18:54:07.783919",
+    "validation_count": 0
+  }
+}

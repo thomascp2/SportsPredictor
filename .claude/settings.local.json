@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(powershell -Command \"[Environment]::GetEnvironmentVariable(''''ANTHROPIC_API_KEY'''', ''''User'''')\")",
+      "Bash(tasklist:*)",
+      "Bash(powershell -Command \"[Environment]::SetEnvironmentVariable(''ANTHROPIC_API_KEY'', ''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'', ''User'')\")",
+      "Bash(sqlite3:*)",
+      "Bash(ls:*)",
+      "Bash(curl:*)",
+      "Bash(timeout 300 python:*)",
+      "Bash(echo \"Current API key \\(first 20 chars\\): $ANTHROPIC_API_KEY:0:20...\")",
+      "Bash(echo:*)",
+      "Bash(printenv:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}
