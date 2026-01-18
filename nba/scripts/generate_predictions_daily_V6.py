@@ -50,9 +50,10 @@ except ImportError:
 PP_DB_PATH = Path(__file__).parent.parent.parent / "shared" / "prizepicks_lines.db"
 
 # Supported props (what we can predict)
+# Note: Must match internal names from PP_TO_INTERNAL mapping
 SUPPORTED_PROPS = ['points', 'rebounds', 'assists', 'threes', 'pra', 'pts_rebs',
                    'pts_asts', 'rebs_asts', 'steals', 'blocked_shots', 'turnovers',
-                   'blks_stls', 'fantasy']
+                   'stocks', 'fantasy']
 
 # Map PP prop names to our internal names
 PP_TO_INTERNAL = {
@@ -168,6 +169,10 @@ class NBADailyPredictorV6:
 
             # Map PP prop to our internal name
             internal_prop = PP_TO_INTERNAL.get(prop.lower(), prop.lower())
+
+            # Skip props we can't predict (e.g., 'dunks' - no data in DB)
+            if internal_prop not in SUPPORTED_PROPS:
+                continue
 
             if player not in player_lines:
                 player_lines[player] = {}
