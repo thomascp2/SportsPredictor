@@ -1,0 +1,514 @@
+#!/usr/bin/env python3
+"""
+Smart Pick Selector - ONLY shows plays that are ACTUALLY available on PrizePicks
+
+Key Features:
+1. Fetches REAL PrizePicks lines (not just stored data)
+2. Recalculates probability for PP's ACTUAL line (using our Poisson model)
+3. Calculates Expected Value based on parlay payouts
+4. Filters to high-edge plays only
+
+This solves the problem of showing predictions for lines that don't exist.
+"""
+
+import sqlite3
+import json
+import math
+import argparse
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple
+from collections import defaultdict
+
+
+@dataclass
+class SmartPick:
+    """A pick that matches an actual PrizePicks line"""
+    player_name: str
+    team: str
+    opponent: str
+    prop_type: str
+
+    # Our prediction
+    our_line: float
+    our_probability: float
+    our_lambda: float  # Expected value (shots/points)
+
+    # PrizePicks actual line
+    pp_line: float
+    pp_odds_type: str  # 'standard', 'goblin', 'demon'
+
+    # Recalculated for PP line
+    pp_probability: float  # Probability for PP's actual line
+    prediction: str  # 'OVER' or 'UNDER'
+    edge: float  # pp_probability - break_even
+
+    # Expected Value for different parlay sizes
+    ev_2leg: float = 0.0
+    ev_3leg: float = 0.0
+    ev_4leg: float = 0.0
+    ev_5leg: float = 0.0
+    ev_6leg: float = 0.0
+
+    # Confidence tier
+    tier: str = 'T5-FADE'
+
+    def __post_init__(self):
+        self.tier = self._get_tier()
+        self._calculate_ev()
+
+    def _get_tier(self) -> str:
+        prob = self.pp_probability
+        if prob >= 0.75:
+            return 'T1-ELITE'
+        elif prob >= 0.70:
+            return 'T2-STRONG'
+        elif prob >= 0.65:
+            return 'T3-GOOD'
+        elif prob >= 0.55:
+            return 'T4-LEAN'
+        else:
+            return 'T5-FADE'
+
+    def _calculate_ev(self):
+        """Calculate expected value for parlay payouts"""
+        # PrizePicks payouts (as of Jan 2026)
+        PAYOUTS = {
+            2: 3.0,   # 2-leg: 3x
+            3: 5.0,   # 3-leg: 5x
+            4: 10.0,  # 4-leg: 10x
+            5: 20.0,  # 5-leg: 20x
+            6: 25.0,  # 6-leg: 25x
+        }
+
+        p = self.pp_probability
+        # EV = (probability^legs * payout) - 1
+        # For single pick contribution, we use geometric mean approach
+        self.ev_2leg = (p ** 2) * PAYOUTS[2] - 1
+        self.ev_3leg = (p ** 3) * PAYOUTS[3] - 1
+        self.ev_4leg = (p ** 4) * PAYOUTS[4] - 1
+        self.ev_5leg = (p ** 5) * PAYOUTS[5] - 1
+        self.ev_6leg = (p ** 6) * PAYOUTS[6] - 1
+
+
+class SmartPickSelector:
+    """
+    Selects picks based on ACTUAL PrizePicks availability.
+
+    Unlike edge_calculator.py which shows predictions for lines that might not exist,
+    this starts from PP's actual lines and recalculates our predictions for them.
+    """
+
+    # Break-even rates by odds type
+    BREAK_EVEN = {
+        'standard': 0.50,
+        'goblin': 0.545,  # Need ~54.5% to break even on goblin
+        'demon': 0.60,    # Need ~60% to break even on demon
+    }
+
+    def __init__(self, sport: str = 'nhl'):
+        self.sport = sport.upper()
+        self.root = Path(__file__).parent.parent
+
+        # Database paths
+        if sport.lower() == 'nhl':
+            self.pred_db_path = self.root / 'nhl' / 'database' / 'nhl_predictions_v2.db'
+        else:
+            self.pred_db_path = self.root / 'nba' / 'database' / 'nba_predictions.db'
+
+        self.pp_db_path = self.root / 'shared' / 'prizepicks_lines.db'
+
+    def poisson_prob_over(self, lambda_param: float, line: float) -> float:
+        """
+        Calculate P(X > line) using Poisson distribution (for points).
+
+        For line = k.5, we want P(X >= k+1) = 1 - P(X <= k)
+        """
+        k = int(line)  # 0.5 -> 0, 1.5 -> 1, 2.5 -> 2, etc.
+
+        # P(X <= k) = sum of P(X = i) for i = 0 to k
+        cumulative = 0
+        for i in range(k + 1):
+            cumulative += (lambda_param ** i) * math.exp(-lambda_param) / math.factorial(i)
+
+        return 1 - cumulative
+
+    def normal_prob_over(self, mean: float, std_dev: float, line: float) -> float:
+        """
+        Calculate P(X > line) using Normal distribution (for shots).
+
+        Uses error function approximation for CDF.
+        """
+        if std_dev <= 0:
+            return 0.5
+
+        z_score = (line - mean) / std_dev
+        # P(X > line) = 1 - CDF(z_score) = 0.5 * (1 - erf(z/sqrt(2)))
+        return 0.5 * (1 - self._erf(z_score / math.sqrt(2)))
+
+    def _erf(self, x: float) -> float:
+        """Approximation of error function"""
+        # Abramowitz and Stegun approximation
+        a1, a2, a3, a4, a5 = 0.254829592, -0.284496736, 1.421413741, -1.453152027, 1.061405429
+        p = 0.3275911
+
+        sign = 1 if x >= 0 else -1
+        x = abs(x)
+
+        t = 1.0 / (1.0 + p * x)
+        y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * math.exp(-x * x)
+
+        return sign * y
+
+    def fetch_fresh_lines(self) -> int:
+        """Fetch fresh lines from PrizePicks API"""
+        try:
+            from prizepicks_client import PrizePicksIngestion
+            ingestion = PrizePicksIngestion()
+            result = ingestion.run_ingestion([self.sport])
+            return result.get('total_lines', 0)
+        except Exception as e:
+            print(f"Warning: Could not fetch fresh lines: {e}")
+            return 0
+
+    def get_smart_picks(
+        self,
+        game_date: Optional[str] = None,
+        min_edge: float = 5.0,
+        min_prob: float = 0.55,
+        odds_types: List[str] = None,
+        refresh_lines: bool = True,
+        overs_only: bool = False
+    ) -> List[SmartPick]:
+        """
+        Get smart picks that match ACTUAL PrizePicks lines.
+
+        Args:
+            game_date: Date to get picks for (default: today)
+            min_edge: Minimum edge percentage (default: 5%)
+            min_prob: Minimum probability (default: 55%)
+            odds_types: List of odds types to include ['standard', 'goblin', 'demon']
+            refresh_lines: Whether to fetch fresh lines first
+            overs_only: Only show OVER predictions
+
+        Returns:
+            List of SmartPick objects sorted by edge
+        """
+        if game_date is None:
+            game_date = date.today().isoformat()
+
+        if odds_types is None:
+            odds_types = ['standard', 'goblin']  # Skip demon by default (too risky)
+
+        # Optionally refresh lines
+        if refresh_lines:
+            print(f"[{self.sport}] Fetching fresh PrizePicks lines...")
+            count = self.fetch_fresh_lines()
+            print(f"[{self.sport}] Fetched {count} lines")
+
+        # Get PrizePicks lines for today
+        pp_lines = self._get_pp_lines(game_date, odds_types)
+        print(f"[{self.sport}] Found {len(pp_lines)} PP lines")
+
+        # Get our predictions with lambda values
+        predictions = self._get_predictions_with_params(game_date)
+        print(f"[{self.sport}] Found {len(predictions)} predictions with lambda values")
+
+        # Build lookup by player + prop
+        pred_lookup = {}
+        for pred in predictions:
+            key = (pred['player_name'].lower(), pred['prop_type'])
+            if key not in pred_lookup:
+                pred_lookup[key] = []
+            pred_lookup[key].append(pred)
+
+        # Match PP lines to our predictions
+        smart_picks = []
+        matched = 0
+
+        for pp in pp_lines:
+            # Try to find our prediction for this player+prop
+            key = (pp['player_name'].lower(), pp['prop_type'])
+
+            # Also try fuzzy match on last name
+            if key not in pred_lookup:
+                last_name = pp['player_name'].split()[-1].lower()
+                for pred_key in pred_lookup.keys():
+                    if last_name in pred_key[0] and pred_key[1] == pp['prop_type']:
+                        key = pred_key
+                        break
+
+            if key not in pred_lookup:
+                continue
+
+            # Get the prediction with features
+            # Use the first one (they should all have same parameters for same player+prop)
+            pred = pred_lookup[key][0]
+            prop_type = pp['prop_type']
+
+            # Recalculate probability based on sport and prop type
+            if self.sport == 'NHL' and prop_type in ['points', 'goals', 'assists', 'pp_points']:
+                # NHL: Points-based props use Poisson distribution
+                lambda_param = pred.get('lambda_param')
+                if lambda_param is None or lambda_param <= 0:
+                    continue
+                pp_prob_over = self.poisson_prob_over(lambda_param, pp['line'])
+                our_param = lambda_param
+            elif self.sport == 'NHL':
+                # NHL: Shots and other continuous props use Normal distribution
+                mean_shots = pred.get('mean_shots') or pred.get('sog_l10')
+                std_dev = pred.get('std_dev') or pred.get('sog_std_l10') or 1.5
+                if mean_shots is None or mean_shots <= 0:
+                    continue
+                pp_prob_over = self.normal_prob_over(mean_shots, std_dev, pp['line'])
+                our_param = mean_shots
+            else:
+                # NBA: All props use Normal distribution
+                mean = pred.get('mean') or pred.get('f_l10_avg')
+                std_dev = pred.get('std_dev') or pred.get('f_l10_std') or 1.0
+                if mean is None or mean <= 0:
+                    continue
+                pp_prob_over = self.normal_prob_over(mean, std_dev, pp['line'])
+                our_param = mean
+
+            matched += 1
+
+            pp_prob_under = 1 - pp_prob_over
+
+            # Determine prediction based on higher probability
+            if pp_prob_over >= pp_prob_under:
+                prediction = 'OVER'
+                probability = pp_prob_over
+            else:
+                prediction = 'UNDER'
+                probability = pp_prob_under
+
+            # Skip if overs_only and this is an UNDER
+            if overs_only and prediction != 'OVER':
+                continue
+
+            # Calculate edge
+            break_even = self.BREAK_EVEN.get(pp['odds_type'], 0.50)
+            edge = (probability - break_even) * 100
+
+            # Filter by minimum edge and probability
+            if edge < min_edge or probability < min_prob:
+                continue
+
+            # Create SmartPick
+            pick = SmartPick(
+                player_name=pp['player_name'],
+                team=pred.get('team', ''),
+                opponent=pred.get('opponent', ''),
+                prop_type=pp['prop_type'],
+                our_line=pred['line'],
+                our_probability=pred['probability'],
+                our_lambda=our_param,
+                pp_line=pp['line'],
+                pp_odds_type=pp['odds_type'],
+                pp_probability=probability,
+                prediction=prediction,
+                edge=edge
+            )
+
+            smart_picks.append(pick)
+
+        print(f"[{self.sport}] Matched {matched} PP lines to predictions")
+        print(f"[{self.sport}] Found {len(smart_picks)} picks with edge >= {min_edge}%")
+
+        # Sort by edge descending
+        smart_picks.sort(key=lambda x: x.edge, reverse=True)
+
+        return smart_picks
+
+    def _get_pp_lines(self, game_date: str, odds_types: List[str]) -> List[Dict]:
+        """Get PrizePicks lines for a date"""
+        conn = sqlite3.connect(self.pp_db_path)
+        conn.row_factory = sqlite3.Row
+
+        placeholders = ','.join(['?' for _ in odds_types])
+
+        # Sport-specific prop types
+        if self.sport == 'NHL':
+            props = ('shots', 'points', 'goals', 'assists', 'pp_points')
+        else:
+            # NBA has many more props
+            props = ('points', 'rebounds', 'assists', 'threes', 'pra',
+                     'pts_rebs', 'pts_asts', 'rebs_asts', 'steals',
+                     'blocked_shots', 'turnovers', 'blks+stls', 'fantasy')
+
+        prop_placeholders = ','.join(['?' for _ in props])
+
+        query = f'''
+            SELECT DISTINCT player_name, prop_type, line, odds_type, team
+            FROM prizepicks_lines
+            WHERE fetch_date = ?
+            AND league = ?
+            AND odds_type IN ({placeholders})
+            AND prop_type IN ({prop_placeholders})
+        '''
+
+        params = [game_date, self.sport] + odds_types + list(props)
+        rows = conn.execute(query, params).fetchall()
+
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def _get_predictions_with_params(self, game_date: str) -> List[Dict]:
+        """Get our predictions with statistical parameters extracted from features"""
+        conn = sqlite3.connect(self.pred_db_path)
+        conn.row_factory = sqlite3.Row
+
+        # Different query based on sport (NHL vs NBA have different schemas)
+        if self.sport == 'NHL':
+            rows = conn.execute('''
+                SELECT player_name, team, opponent, prop_type, line,
+                       prediction, probability, features_json
+                FROM predictions
+                WHERE game_date = ?
+            ''', (game_date,)).fetchall()
+        else:
+            # NBA has f_l10_avg, f_l10_std as columns
+            rows = conn.execute('''
+                SELECT player_name, team, opponent, prop_type, line,
+                       prediction, probability, features_json,
+                       f_l10_avg, f_l10_std, f_season_avg, f_season_std
+                FROM predictions
+                WHERE game_date = ?
+            ''', (game_date,)).fetchall()
+
+        predictions = []
+        for row in rows:
+            pred = dict(row)
+
+            if self.sport == 'NHL':
+                # NHL: Extract parameters from features_json
+                try:
+                    features = json.loads(row['features_json'])
+                    # For points (Poisson)
+                    pred['lambda_param'] = features.get('lambda_param')
+                    # For shots (Normal)
+                    pred['mean_shots'] = features.get('mean_shots') or features.get('sog_l10')
+                    pred['std_dev'] = features.get('std_dev') or features.get('sog_std_l10')
+                    pred['sog_l10'] = features.get('sog_l10')
+                    pred['sog_std_l10'] = features.get('sog_std_l10')
+                except:
+                    pred['lambda_param'] = None
+                    pred['mean_shots'] = None
+                    pred['std_dev'] = None
+            else:
+                # NBA: Use columns directly (all props use Normal distribution)
+                pred['mean'] = row['f_l10_avg'] or row['f_season_avg']
+                pred['std_dev'] = row['f_l10_std'] or row['f_season_std'] or 1.0
+                pred['lambda_param'] = None  # NBA doesn't use Poisson
+
+                # Also try features_json as backup
+                try:
+                    features = json.loads(row['features_json']) if row['features_json'] else {}
+                    if not pred['mean']:
+                        pred['mean'] = features.get('f_l10_avg') or features.get('f_season_avg')
+                    if not pred['std_dev'] or pred['std_dev'] == 1.0:
+                        pred['std_dev'] = features.get('f_l10_std') or features.get('f_season_std') or 1.0
+                except:
+                    pass
+
+            predictions.append(pred)
+
+        conn.close()
+        return predictions
+
+    def generate_report(
+        self,
+        picks: List[SmartPick],
+        show_ev: bool = True
+    ) -> str:
+        """Generate a formatted report of smart picks"""
+        lines = []
+        lines.append("=" * 90)
+        lines.append(f"  {self.sport} SMART PICKS - {date.today().isoformat()}")
+        lines.append("  Only showing plays ACTUALLY AVAILABLE on PrizePicks")
+        lines.append("=" * 90)
+        lines.append(f"  Total Smart Picks: {len(picks)}")
+        lines.append("")
+
+        # Group by prop type
+        by_prop = defaultdict(list)
+        for pick in picks:
+            by_prop[pick.prop_type].append(pick)
+
+        for prop_type, prop_picks in sorted(by_prop.items()):
+            lines.append(f"  {prop_type.upper()} ({len(prop_picks)} plays)")
+            lines.append("-" * 90)
+
+            if show_ev:
+                header = f"  {'Player':<18} {'Line':^14} {'Prob':>6} {'Edge':>7} {'Tier':<10} {'EV(4leg)':>8}"
+            else:
+                header = f"  {'Player':<18} {'Line':^14} {'Prob':>6} {'Edge':>7} {'Tier':<10}"
+
+            lines.append(header)
+
+            for pick in prop_picks[:10]:  # Top 10 per prop
+                line_str = f"{pick.prediction} {pick.pp_line:.1f}"
+                if pick.pp_odds_type != 'standard':
+                    line_str += f" ({pick.pp_odds_type[:3]})"
+
+                if show_ev:
+                    ev_str = f"{pick.ev_4leg*100:+.1f}%" if pick.ev_4leg > 0 else f"{pick.ev_4leg*100:.1f}%"
+                    row = f"  {pick.player_name:<18} {line_str:^14} {pick.pp_probability*100:5.1f}% {pick.edge:+6.1f}% {pick.tier:<10} {ev_str:>8}"
+                else:
+                    row = f"  {pick.player_name:<18} {line_str:^14} {pick.pp_probability*100:5.1f}% {pick.edge:+6.1f}% {pick.tier:<10}"
+
+                lines.append(row)
+
+            lines.append("")
+
+        # Parlay building tips
+        lines.append("=" * 90)
+        lines.append("  PARLAY EV GUIDE (if all picks had same probability)")
+        lines.append("-" * 90)
+        lines.append("  Legs  Payout  Required Win Rate for +EV")
+        lines.append("  2     3x      58.5% (each leg)")
+        lines.append("  3     5x      58.5% (each leg)")
+        lines.append("  4     10x     56.2% (each leg)")
+        lines.append("  5     20x     54.9% (each leg)")
+        lines.append("  6     25x     55.1% (each leg)")
+        lines.append("")
+        lines.append("  ** 4-leg parlays offer the best risk/reward! **")
+        lines.append("=" * 90)
+
+        return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Smart Pick Selector - Only actual PP lines')
+    parser.add_argument('--sport', choices=['nhl', 'nba'], default='nhl', help='Sport')
+    parser.add_argument('--min-edge', type=float, default=5.0, help='Minimum edge %%')
+    parser.add_argument('--min-prob', type=float, default=0.55, help='Minimum probability')
+    parser.add_argument('--include-demon', action='store_true', help='Include demon odds')
+    parser.add_argument('--no-refresh', action='store_true', help='Skip fetching fresh lines')
+    parser.add_argument('--overs-only', action='store_true', help='Only show OVER predictions')
+    parser.add_argument('--show-ev', action='store_true', help='Show EV calculations')
+
+    args = parser.parse_args()
+
+    selector = SmartPickSelector(args.sport)
+
+    odds_types = ['standard', 'goblin']
+    if args.include_demon:
+        odds_types.append('demon')
+
+    picks = selector.get_smart_picks(
+        min_edge=args.min_edge,
+        min_prob=args.min_prob,
+        odds_types=odds_types,
+        refresh_lines=not args.no_refresh,
+        overs_only=args.overs_only
+    )
+
+    report = selector.generate_report(picks, show_ev=args.show_ev)
+    print(report)
+
+
+if __name__ == '__main__':
+    main()

@@ -121,7 +121,7 @@ class SportConfig:
         self.db_path = self.project_root / "database" / "nhl_predictions_v2.db"
 
         # Scripts
-        self.prediction_script = "scripts/generate_predictions_daily_V5.py"
+        self.prediction_script = "scripts/generate_predictions_daily_V6.py"  # V6: PP line driven
         self.grading_script = "scripts/v2_auto_grade_yesterday_v3_RELIABLE.py"
         self.schedule_script = "scripts/fetch_game_schedule_FINAL.py"
 
@@ -166,7 +166,7 @@ class SportConfig:
         self.db_path = self.project_root / "database" / "nba_predictions.db"
 
         # Scripts
-        self.prediction_script = "scripts/generate_predictions_daily.py"
+        self.prediction_script = "scripts/generate_predictions_daily_V6.py"  # V6: PP line driven
         self.grading_script = "scripts/auto_grade_multi_api_FIXED.py"
         self.schedule_script = None  # NBA uses API directly in prediction script
 
