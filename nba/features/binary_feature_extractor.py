@@ -193,14 +193,36 @@ class BinaryFeatureExtractor:
     def _get_stat_column(stat_type):
         """Map stat type to database column."""
         stat_map = {
+            # Core stats
             'points': 'points',
             'rebounds': 'rebounds',
             'assists': 'assists',
             'threes': 'threes_made',
-            'stocks': '(steals + blocks)',  # Derived stat
-            'pra': '(points + rebounds + assists)',  # Derived stat
+            '3-pt_made': 'threes_made',
+            'steals': 'steals',
+            'blocked_shots': 'blocks',
+            'blocks': 'blocks',
+            'turnovers': 'turnovers',
+            # Derived stats (stored in DB)
+            'stocks': 'stocks',
+            'blks_stls': 'stocks',
+            'blks+stls': 'stocks',
+            'pra': 'pra',
+            # Combo stats (computed)
+            'pts_rebs': '(points + rebounds)',
+            'pts_asts': '(points + assists)',
+            'rebs_asts': '(rebounds + assists)',
+            # Fantasy (DraftKings-style formula)
+            'fantasy': '(points + rebounds * 1.2 + assists * 1.5 + steals * 3 + blocks * 3 - turnovers)',
+            # Minutes
+            'minutes': 'minutes',
         }
-        return stat_map.get(stat_type, 'points')
+        # If stat_type not found, log warning and return None to prevent wrong data
+        result = stat_map.get(stat_type.lower() if stat_type else 'points')
+        if result is None:
+            print(f"[WARN] Unknown stat_type '{stat_type}' - defaulting to points")
+            return 'points'
+        return result
 
     @staticmethod
     def _success_rate(values, line):

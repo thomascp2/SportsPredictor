@@ -25,6 +25,12 @@ import traceback
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Add script directory and parent (for features) to path
+SCRIPT_DIR = Path(__file__).parent
+sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(SCRIPT_DIR.parent))  # For features module
+
 from v2_config import DB_PATH
 from statistical_predictions_v2 import StatisticalPredictionEngine
 from v2_discord_notifications import send_discord_notification
@@ -74,7 +80,7 @@ class HybridPredictionEngine:
     """Wrapper that uses ML when available, falls back to statistical."""
 
     def __init__(self, use_ml: bool = True, ensemble_mode: bool = True, ml_weight: float = 0.6):
-        self.statistical_engine = StatisticalPredictionEngine()
+        self.statistical_engine = StatisticalPredictionEngine(db_path=DB_PATH)
         self.use_ml = use_ml and ML_AVAILABLE
         self.ensemble_mode = ensemble_mode
         self.ml_weight = ml_weight
@@ -387,11 +393,13 @@ def fetch_game_schedule(target_date: str) -> bool:
 
     for attempt in range(max_retries):
         try:
+            schedule_script = SCRIPT_DIR / 'fetch_game_schedule_FINAL.py'
             result = subprocess.run(
-                [sys.executable, 'fetch_game_schedule_FINAL.py', target_date],
+                [sys.executable, str(schedule_script), target_date],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
+                cwd=str(SCRIPT_DIR)
             )
 
             if result.returncode == 0:

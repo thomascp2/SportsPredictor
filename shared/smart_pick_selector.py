@@ -73,7 +73,8 @@ class SmartPick:
 
     def _calculate_ev(self):
         """Calculate expected value for parlay payouts"""
-        # PrizePicks payouts (as of Jan 2026)
+        # PrizePicks payouts by total "leg value" (as of Jan 2026)
+        # Standard picks = 1.0 leg, Goblin = 0.5 leg, Demon = 0.25 leg
         PAYOUTS = {
             2: 3.0,   # 2-leg: 3x
             3: 5.0,   # 3-leg: 5x
@@ -81,6 +82,16 @@ class SmartPick:
             5: 20.0,  # 5-leg: 20x
             6: 25.0,  # 6-leg: 25x
         }
+
+        # Leg value based on odds type
+        # Goblin = easier, less payout | Demon = harder, more payout
+        LEG_VALUES = {
+            'standard': 1.0,
+            'goblin': 0.5,   # Easier line, less payout
+            'demon': 1.5,    # Harder line, more payout
+        }
+
+        self.leg_value = LEG_VALUES.get(self.pp_odds_type, 1.0)
 
         p = self.pp_probability
         # EV = (probability^legs * payout) - 1
@@ -100,11 +111,14 @@ class SmartPickSelector:
     this starts from PP's actual lines and recalculates our predictions for them.
     """
 
-    # Break-even rates by odds type
+    # Break-even rates by odds type (based on leg values and parlay payouts)
+    # Goblin (0.5x leg): 4 picks = 2 legs = 3x payout → need 76% per pick
+    # Standard (1.0x leg): 4 picks = 4 legs = 10x payout → need 56% per pick
+    # Demon (1.5x leg): 4 picks = 6 legs = 25x payout → need 45% per pick
     BREAK_EVEN = {
-        'standard': 0.50,
-        'goblin': 0.545,  # Need ~54.5% to break even on goblin
-        'demon': 0.60,    # Need ~60% to break even on demon
+        'standard': 0.56,
+        'goblin': 0.76,   # Higher break-even (easier line, less payout)
+        'demon': 0.45,    # Lower break-even (harder line, more payout)
     }
 
     def __init__(self, sport: str = 'nhl'):
@@ -441,11 +455,7 @@ class SmartPickSelector:
             lines.append(f"  {prop_type.upper()} ({len(prop_picks)} plays)")
             lines.append("-" * 90)
 
-            if show_ev:
-                header = f"  {'Player':<18} {'Line':^14} {'Prob':>6} {'Edge':>7} {'Tier':<10} {'EV(4leg)':>8}"
-            else:
-                header = f"  {'Player':<18} {'Line':^14} {'Prob':>6} {'Edge':>7} {'Tier':<10}"
-
+            header = f"  {'Player':<18} {'Line':^16} {'Prob':>6} {'Edge':>7} {'Leg':>4} {'Tier':<10}"
             lines.append(header)
 
             for pick in prop_picks[:10]:  # Top 10 per prop
@@ -453,28 +463,31 @@ class SmartPickSelector:
                 if pick.pp_odds_type != 'standard':
                     line_str += f" ({pick.pp_odds_type[:3]})"
 
-                if show_ev:
-                    ev_str = f"{pick.ev_4leg*100:+.1f}%" if pick.ev_4leg > 0 else f"{pick.ev_4leg*100:.1f}%"
-                    row = f"  {pick.player_name:<18} {line_str:^14} {pick.pp_probability*100:5.1f}% {pick.edge:+6.1f}% {pick.tier:<10} {ev_str:>8}"
-                else:
-                    row = f"  {pick.player_name:<18} {line_str:^14} {pick.pp_probability*100:5.1f}% {pick.edge:+6.1f}% {pick.tier:<10}"
-
+                leg_str = f"{pick.leg_value:.1f}x" if hasattr(pick, 'leg_value') else "1.0x"
+                row = f"  {pick.player_name:<18} {line_str:^16} {pick.pp_probability*100:5.1f}% {pick.edge:+6.1f}% {leg_str:>4} {pick.tier:<10}"
                 lines.append(row)
 
             lines.append("")
 
         # Parlay building tips
         lines.append("=" * 90)
-        lines.append("  PARLAY EV GUIDE (if all picks had same probability)")
+        lines.append("  PRIZEPICKS PAYOUT GUIDE")
         lines.append("-" * 90)
-        lines.append("  Legs  Payout  Required Win Rate for +EV")
-        lines.append("  2     3x      58.5% (each leg)")
-        lines.append("  3     5x      58.5% (each leg)")
-        lines.append("  4     10x     56.2% (each leg)")
-        lines.append("  5     20x     54.9% (each leg)")
-        lines.append("  6     25x     55.1% (each leg)")
+        lines.append("  Total Leg Value  Payout  Required Win Rate")
+        lines.append("  2.0 legs         3x      58.5% per pick")
+        lines.append("  3.0 legs         5x      58.5% per pick")
+        lines.append("  4.0 legs         10x     56.2% per pick")
+        lines.append("  5.0 legs         20x     54.9% per pick")
+        lines.append("  6.0 legs         25x     55.1% per pick")
         lines.append("")
-        lines.append("  ** 4-leg parlays offer the best risk/reward! **")
+        lines.append("  LEG VALUES:")
+        lines.append("    Goblin = 0.5x (easier, less payout)")
+        lines.append("    Standard = 1.0x (normal)")
+        lines.append("    Demon = 1.5x (harder, more payout)")
+        lines.append("")
+        lines.append("  Example: 4 goblin picks = 2.0 legs = 3x payout")
+        lines.append("  Example: 4 standard picks = 4.0 legs = 10x payout")
+        lines.append("  Example: 2 standard + 2 demon = 5.0 legs = 20x payout")
         lines.append("=" * 90)
 
         return "\n".join(lines)
