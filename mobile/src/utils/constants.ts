@@ -45,3 +45,53 @@ export const EV_COLORS = {
 // Sports
 export const SPORTS = ['NBA', 'NHL'] as const;
 export type Sport = typeof SPORTS[number];
+
+// Star Players - Well-known players for filtering
+export const STAR_PLAYERS: Record<string, string[]> = {
+  NBA: [
+    // Top Superstars
+    'LeBron James', 'Kevin Durant', 'Stephen Curry', 'Giannis Antetokounmpo',
+    'Nikola Jokic', 'Luka Doncic', 'Joel Embiid', 'Jayson Tatum',
+    'Shai Gilgeous-Alexander', 'Anthony Edwards', 'Devin Booker', 'Donovan Mitchell',
+    // All-Stars
+    'Damian Lillard', 'Kyrie Irving', 'Trae Young', 'Ja Morant',
+    'Anthony Davis', 'Jimmy Butler', 'Paul George', 'Kawhi Leonard',
+    'Bam Adebayo', 'De\'Aaron Fox', 'Tyrese Haliburton', 'Tyrese Maxey',
+    'Jaylen Brown', 'Zion Williamson', 'Karl-Anthony Towns', 'Domantas Sabonis',
+    'LaMelo Ball', 'Cade Cunningham', 'Paolo Banchero', 'Victor Wembanyama',
+    // Quality Starters
+    'Jalen Brunson', 'Fred VanVleet', 'Scottie Barnes', 'Franz Wagner',
+    'Alperen Sengun', 'Evan Mobley', 'Lauri Markkanen', 'Mikal Bridges',
+  ],
+  NHL: [
+    // Top Superstars
+    'Connor McDavid', 'Nathan MacKinnon', 'Cale Makar', 'Auston Matthews',
+    'Leon Draisaitl', 'Nikita Kucherov', 'David Pastrnak', 'Mikko Rantanen',
+    // Elite Forwards
+    'Sidney Crosby', 'Alex Ovechkin', 'Jack Hughes', 'Matthew Tkachuk',
+    'Jason Robertson', 'Kirill Kaprizov', 'Mitch Marner', 'Jack Eichel',
+    'Elias Pettersson', 'Tim Stutzle', 'Brady Tkachuk', 'Trevor Zegras',
+    'Tage Thompson', 'Kyle Connor', 'Sebastian Aho', 'Roope Hintz',
+    // Elite Defensemen
+    'Quinn Hughes', 'Adam Fox', 'Erik Karlsson', 'Roman Josi',
+    'Victor Hedman', 'Rasmus Dahlin', 'Miro Heiskanen', 'Moritz Seider',
+    // Star Goalies
+    'Connor Hellebuyck', 'Igor Shesterkin', 'Andrei Vasilevskiy', 'Juuse Saros',
+  ],
+};
+
+// Check if a player is a star player
+export const isStarPlayer = (playerName: string, sport: string): boolean => {
+  const sportKey = sport.toUpperCase() as keyof typeof STAR_PLAYERS;
+  const stars = STAR_PLAYERS[sportKey] || [];
+  return stars.some(star =>
+    playerName.toLowerCase().includes(star.toLowerCase()) ||
+    star.toLowerCase().includes(playerName.toLowerCase())
+  );
+};
+
+// Common prop types by sport
+export const PROP_TYPES: Record<string, string[]> = {
+  NBA: ['points', 'rebounds', 'assists', 'threes', 'pra', 'stocks', 'minutes', 'blocks', 'steals', 'turnovers'],
+  NHL: ['points', 'shots', 'goals', 'assists', 'saves', 'blocks'],
+};

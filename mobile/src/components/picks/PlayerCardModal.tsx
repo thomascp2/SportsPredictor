@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -7,21 +7,34 @@ import {
   TouchableOpacity,
   ScrollView,
   ActivityIndicator,
+  Dimensions,
 } from 'react-native';
-import { fetchPlayerHistory, PlayerHistory } from '../../services/api';
+import { LineChart } from 'react-native-chart-kit';
+import { fetchPlayerHistory, PlayerHistory, SmartPick } from '../../services/api';
+import { TIER_COLORS } from '../../utils/constants';
+
+const screenWidth = Dimensions.get('window').width;
 
 interface PlayerCardModalProps {
   visible: boolean;
   playerName: string;
   sport: string;
+  propType?: string;
+  todayPicks?: SmartPick[];
   onClose: () => void;
+  onAddToParlay?: (pick: SmartPick) => void;
+  isPickInParlay?: (pick: SmartPick) => boolean;
 }
 
 export function PlayerCardModal({
   visible,
   playerName,
   sport,
+  propType,
+  todayPicks = [],
   onClose,
+  onAddToParlay,
+  isPickInParlay,
 }: PlayerCardModalProps) {
   const [loading, setLoading] = useState(true);
   const [history, setHistory] = useState<PlayerHistory | null>(null);
@@ -47,6 +60,92 @@ export function PlayerCardModal({
     }
   };
 
+  // Filter predictions by prop type if specified
+  const filteredPredictions = useMemo(() => {
+    if (!history?.predictions) return [];
+    if (!propType) return history.predictions;
+    return history.predictions.filter(
+      (p) => p.prop_type?.toLowerCase() === propType.toLowerCase()
+    );
+  }, [history, propType]);
+
+  // Get stats for the specific prop type
+  const propStats = useMemo(() => {
+    if (!history?.by_prop_type || !propType) return null;
+    const key = Object.keys(history.by_prop_type).find(
+      (k) => k.toLowerCase() === propType.toLowerCase()
+    );
+    return key ? history.by_prop_type[key] : null;
+  }, [history, propType]);
+
+  // Filter today's picks for this player (excluding current prop type to avoid duplicate)
+  const otherTodayPicks = useMemo(() => {
+    return todayPicks.filter(
+      (p) => p.prop_type?.toLowerCase() !== propType?.toLowerCase()
+    );
+  }, [todayPicks, propType]);
+
+  // Get the current pick for this prop type (to show PP line on chart)
+  const currentPick = useMemo(() => {
+    return todayPicks.find(
+      (p) => p.prop_type?.toLowerCase() === propType?.toLowerCase()
+    );
+  }, [todayPicks, propType]);
+
+  // Prepare chart data from filtered predictions
+  const chartData = useMemo(() => {
+    // Get predictions with actual values, reverse to show oldest first
+    const withActual = filteredPredictions
+      .filter((p) => p.actual_value !== undefined && p.actual_value !== null)
+      .slice(0, 8)
+      .reverse();
+
+    if (withActual.length < 2) return null;
+
+    const labels = withActual.map((p) => {
+      // Format date as MM/DD
+      const parts = p.date?.split('-');
+      if (parts && parts.length >= 3) {
+        return `${parts[1]}/${parts[2]}`;
+      }
+      return '';
+    });
+
+    const values = withActual.map((p) => p.actual_value || 0);
+    const ppLine = currentPick?.pp_line;
+
+    return {
+      labels,
+      datasets: [
+        {
+          data: values,
+          color: (opacity = 1) => `rgba(76, 175, 80, ${opacity})`,
+          strokeWidth: 2,
+        },
+        // Reference line for PP line (if available)
+        ...(ppLine
+          ? [
+              {
+                data: Array(values.length).fill(ppLine),
+                color: (opacity = 1) => `rgba(255, 193, 7, ${opacity})`,
+                strokeWidth: 1,
+                withDots: false,
+              },
+            ]
+          : []),
+      ],
+      ppLine,
+    };
+  }, [filteredPredictions, currentPick]);
+
+  const formatPropType = (type: string) => {
+    return type.charAt(0).toUpperCase() + type.slice(1).toLowerCase();
+  };
+
+  const getTierColor = (tier: string) => {
+    return TIER_COLORS[tier] || '#888';
+  };
+
   return (
     <Modal
       visible={visible}
@@ -57,7 +156,16 @@ export function PlayerCardModal({
       <View style={styles.overlay}>
         <View style={styles.modal}>
           <View style={styles.header}>
-            <Text style={styles.title}>{playerName}</Text>
+            <View style={styles.headerLeft}>
+              <Text style={styles.title}>{playerName}</Text>
+              {propType && (
+                <View style={styles.propBadge}>
+                  <Text style={styles.propBadgeText}>
+                    {formatPropType(propType)}
+                  </Text>
+                </View>
+              )}
+            </View>
             <TouchableOpacity onPress={onClose} style={styles.closeButton}>
               <Text style={styles.closeText}>X</Text>
             </TouchableOpacity>
@@ -72,63 +180,276 @@ export function PlayerCardModal({
             <View style={styles.errorContainer}>
               <Text style={styles.errorText}>{error}</Text>
             </View>
-          ) : history ? (
+          ) : (
             <ScrollView style={styles.content}>
-              <View style={styles.statsRow}>
-                <View style={styles.statBox}>
-                  <Text style={styles.statValue}>
-                    {history.overall?.accuracy?.toFixed(1) || 0}%
-                  </Text>
-                  <Text style={styles.statLabel}>Accuracy</Text>
-                </View>
-                <View style={styles.statBox}>
-                  <Text style={styles.statValue}>
-                    {history.overall?.total_predictions || 0}
-                  </Text>
-                  <Text style={styles.statLabel}>Predictions</Text>
-                </View>
-                <View style={styles.statBox}>
-                  <Text style={styles.statValue}>
-                    {history.overall?.hits || 0}
-                  </Text>
-                  <Text style={styles.statLabel}>Hits</Text>
-                </View>
-              </View>
-
-              <Text style={styles.sectionTitle}>Recent Predictions</Text>
-              {history.predictions?.length > 0 ? (
-                history.predictions.slice(0, 10).map((pred, index) => (
-                  <View key={index} style={styles.predictionRow}>
-                    <View style={styles.predictionInfo}>
-                      <Text style={styles.predictionDate}>{pred.date}</Text>
-                      <Text style={styles.predictionProp}>
-                        {pred.prop_type} {pred.prediction} {pred.line}
-                      </Text>
-                    </View>
-                    <View
-                      style={[
-                        styles.outcomeBadge,
-                        pred.outcome === 'HIT'
-                          ? styles.hitBadge
-                          : pred.outcome === 'MISS'
-                          ? styles.missBadge
-                          : styles.pendingBadge,
-                      ]}
-                    >
-                      <Text style={styles.outcomeText}>
-                        {pred.outcome || 'PENDING'}
-                      </Text>
-                    </View>
+              {/* Stats for specific prop type */}
+              {propStats ? (
+                <View style={styles.statsRow}>
+                  <View style={styles.statBox}>
+                    <Text style={styles.statValue}>
+                      {propStats.accuracy?.toFixed(1) || 0}%
+                    </Text>
+                    <Text style={styles.statLabel}>
+                      {formatPropType(propType || '')} Accuracy
+                    </Text>
                   </View>
-                ))
+                  <View style={styles.statBox}>
+                    <Text style={styles.statValue}>{propStats.total || 0}</Text>
+                    <Text style={styles.statLabel}>Predictions</Text>
+                  </View>
+                  <View style={styles.statBox}>
+                    <Text style={styles.statValue}>{propStats.hits || 0}</Text>
+                    <Text style={styles.statLabel}>Hits</Text>
+                  </View>
+                </View>
+              ) : history?.overall ? (
+                <View style={styles.statsRow}>
+                  <View style={styles.statBox}>
+                    <Text style={styles.statValue}>
+                      {history.overall.accuracy?.toFixed(1) || 0}%
+                    </Text>
+                    <Text style={styles.statLabel}>Overall Accuracy</Text>
+                  </View>
+                  <View style={styles.statBox}>
+                    <Text style={styles.statValue}>
+                      {history.overall.total_predictions || 0}
+                    </Text>
+                    <Text style={styles.statLabel}>Predictions</Text>
+                  </View>
+                  <View style={styles.statBox}>
+                    <Text style={styles.statValue}>
+                      {history.overall.hits || 0}
+                    </Text>
+                    <Text style={styles.statLabel}>Hits</Text>
+                  </View>
+                </View>
+              ) : null}
+
+              {/* Performance Chart */}
+              {chartData && propType && (
+                <View style={styles.chartContainer}>
+                  <View style={styles.chartHeader}>
+                    <Text style={styles.chartTitle}>
+                      Recent {formatPropType(propType)} Performance
+                    </Text>
+                    {chartData.ppLine && (
+                      <View style={styles.chartLegend}>
+                        <View style={styles.legendItem}>
+                          <View style={[styles.legendDot, { backgroundColor: '#4CAF50' }]} />
+                          <Text style={styles.legendText}>Actual</Text>
+                        </View>
+                        <View style={styles.legendItem}>
+                          <View style={[styles.legendDot, { backgroundColor: '#FFC107' }]} />
+                          <Text style={styles.legendText}>Line ({chartData.ppLine})</Text>
+                        </View>
+                      </View>
+                    )}
+                  </View>
+                  <LineChart
+                    data={{
+                      labels: chartData.labels,
+                      datasets: chartData.datasets,
+                    }}
+                    width={screenWidth - 72}
+                    height={160}
+                    chartConfig={{
+                      backgroundColor: '#252525',
+                      backgroundGradientFrom: '#252525',
+                      backgroundGradientTo: '#252525',
+                      decimalPlaces: 0,
+                      color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
+                      labelColor: (opacity = 1) => `rgba(136, 136, 136, ${opacity})`,
+                      style: {
+                        borderRadius: 8,
+                      },
+                      propsForDots: {
+                        r: '4',
+                        strokeWidth: '2',
+                        stroke: '#4CAF50',
+                      },
+                      propsForBackgroundLines: {
+                        strokeDasharray: '',
+                        stroke: '#333',
+                      },
+                    }}
+                    bezier
+                    style={styles.chart}
+                    withInnerLines={true}
+                    withOuterLines={false}
+                    withVerticalLines={false}
+                    withHorizontalLines={true}
+                    fromZero={false}
+                    segments={4}
+                    formatYLabel={(value) => Math.round(parseFloat(value)).toString()}
+                  />
+                </View>
+              )}
+
+              {/* Section 1: Recent predictions for this prop type */}
+              <Text style={styles.sectionTitle}>
+                {propType
+                  ? `Recent ${formatPropType(propType)} Predictions`
+                  : 'Recent Predictions'}
+              </Text>
+              {filteredPredictions.length > 0 ? (
+                <View style={styles.predictionsTable}>
+                  {/* Header */}
+                  <View style={styles.predictionHeader}>
+                    <Text style={styles.predictionHeaderText}>Date</Text>
+                    <Text style={styles.predictionHeaderText}>Line</Text>
+                    <Text style={styles.predictionHeaderText}>Actual</Text>
+                    <Text style={styles.predictionHeaderText}>Result</Text>
+                  </View>
+                  {/* Rows */}
+                  {filteredPredictions.slice(0, 8).map((pred, index) => (
+                    <View key={index} style={styles.predictionTableRow}>
+                      <Text style={styles.predictionCell}>
+                        {pred.date?.slice(5) || '-'}
+                      </Text>
+                      <Text style={styles.predictionCell}>
+                        {pred.prediction?.charAt(0)}{pred.line}
+                      </Text>
+                      <Text style={styles.predictionCellValue}>
+                        {pred.actual_value ?? '-'}
+                      </Text>
+                      <View
+                        style={[
+                          styles.outcomeChip,
+                          pred.outcome === 'HIT'
+                            ? styles.hitChip
+                            : pred.outcome === 'MISS'
+                            ? styles.missChip
+                            : styles.pendingChip,
+                        ]}
+                      >
+                        <Text style={styles.outcomeChipText}>
+                          {pred.outcome || '-'}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
               ) : (
                 <Text style={styles.noDataText}>
-                  {history.message || 'No recent predictions'}
+                  {propType
+                    ? `No ${formatPropType(propType)} predictions found`
+                    : 'No recent predictions'}
                 </Text>
               )}
+
+              {/* Section 2: Today's other plays for this player */}
+              {otherTodayPicks.length > 0 && (
+                <>
+                  <View style={[styles.sectionHeader, { marginTop: 24 }]}>
+                    <Text style={styles.sectionTitle}>Other Plays Today</Text>
+                    <Text style={styles.tapHint}>Tap to add to parlay</Text>
+                  </View>
+                  {otherTodayPicks.map((pick, index) => (
+                    <TouchableOpacity
+                      key={index}
+                      style={styles.todayPickRow}
+                      onPress={() => onAddToParlay?.(pick)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.todayPickInfo}>
+                        <View style={styles.todayPickHeader}>
+                          <Text style={styles.todayPickProp}>
+                            {formatPropType(pick.prop_type)}
+                          </Text>
+                          <View
+                            style={[
+                              styles.tierBadge,
+                              { backgroundColor: getTierColor(pick.tier) + '30' },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.tierText,
+                                { color: getTierColor(pick.tier) },
+                              ]}
+                            >
+                              {pick.tier}
+                            </Text>
+                          </View>
+                        </View>
+                        <Text style={styles.todayPickLine}>
+                          {pick.prediction} {pick.pp_line}
+                        </Text>
+                      </View>
+                      <View style={styles.todayPickRight}>
+                        <Text style={styles.todayPickEdge}>
+                          {pick.edge >= 0 ? '+' : ''}{pick.edge.toFixed(1)}%
+                        </Text>
+                        <Text style={styles.todayPickProb}>
+                          {Math.round(pick.pp_probability > 1 ? pick.pp_probability : pick.pp_probability * 100)}%
+                        </Text>
+                        {isPickInParlay?.(pick) && (
+                          <View style={styles.inParlayBadge}>
+                            <Text style={styles.inParlayText}>IN PARLAY</Text>
+                          </View>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </>
+              )}
+
+              {/* Show all today's picks if no prop type specified */}
+              {!propType && todayPicks.length > 0 && (
+                <>
+                  <Text style={[styles.sectionTitle, styles.sectionTitleMargin]}>
+                    Today's Plays
+                  </Text>
+                  {todayPicks.map((pick, index) => (
+                    <TouchableOpacity
+                      key={index}
+                      style={styles.todayPickRow}
+                      onPress={() => onAddToParlay?.(pick)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.todayPickInfo}>
+                        <View style={styles.todayPickHeader}>
+                          <Text style={styles.todayPickProp}>
+                            {formatPropType(pick.prop_type)}
+                          </Text>
+                          <View
+                            style={[
+                              styles.tierBadge,
+                              { backgroundColor: getTierColor(pick.tier) + '30' },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.tierText,
+                                { color: getTierColor(pick.tier) },
+                              ]}
+                            >
+                              {pick.tier}
+                            </Text>
+                          </View>
+                        </View>
+                        <Text style={styles.todayPickLine}>
+                          {pick.prediction} {pick.pp_line}
+                        </Text>
+                      </View>
+                      <View style={styles.todayPickRight}>
+                        <Text style={styles.todayPickEdge}>
+                          {pick.edge >= 0 ? '+' : ''}{pick.edge.toFixed(1)}%
+                        </Text>
+                        <Text style={styles.todayPickProb}>
+                          {Math.round(pick.pp_probability > 1 ? pick.pp_probability : pick.pp_probability * 100)}%
+                        </Text>
+                        {isPickInParlay?.(pick) && (
+                          <View style={styles.inParlayBadge}>
+                            <Text style={styles.inParlayText}>IN PARLAY</Text>
+                          </View>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </>
+              )}
             </ScrollView>
-          ) : (
-            <Text style={styles.noDataText}>No data available</Text>
           )}
         </View>
       </View>
@@ -148,7 +469,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1E1E1E',
     borderRadius: 16,
     width: '100%',
-    maxHeight: '80%',
+    maxHeight: '85%',
     overflow: 'hidden',
   },
   header: {
@@ -159,9 +480,26 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#333',
   },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
   title: {
     color: '#fff',
     fontSize: 20,
+    fontWeight: 'bold',
+  },
+  propBadge: {
+    backgroundColor: '#1976D2',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginLeft: 10,
+  },
+  propBadgeText: {
+    color: '#fff',
+    fontSize: 12,
     fontWeight: 'bold',
   },
   closeButton: {
@@ -198,7 +536,47 @@ const styles = StyleSheet.create({
   statsRow: {
     flexDirection: 'row',
     justifyContent: 'space-around',
-    marginBottom: 24,
+    marginBottom: 16,
+    backgroundColor: '#252525',
+    padding: 16,
+    borderRadius: 12,
+  },
+  chartContainer: {
+    marginBottom: 20,
+    backgroundColor: '#252525',
+    borderRadius: 12,
+    padding: 12,
+  },
+  chartHeader: {
+    marginBottom: 8,
+  },
+  chartTitle: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  chartLegend: {
+    flexDirection: 'row',
+    marginTop: 6,
+    gap: 16,
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  legendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 4,
+  },
+  legendText: {
+    color: '#888',
+    fontSize: 10,
+  },
+  chart: {
+    borderRadius: 8,
+    marginLeft: -8,
   },
   statBox: {
     alignItems: 'center',
@@ -210,14 +588,29 @@ const styles = StyleSheet.create({
   },
   statLabel: {
     color: '#888',
-    fontSize: 12,
+    fontSize: 11,
     marginTop: 4,
+    textAlign: 'center',
   },
   sectionTitle: {
     color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
     marginBottom: 12,
+  },
+  sectionTitleMargin: {
+    marginTop: 24,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    marginBottom: 12,
+  },
+  tapHint: {
+    color: '#4CAF50',
+    fontSize: 11,
+    fontStyle: 'italic',
   },
   predictionRow: {
     flexDirection: 'row',
@@ -262,5 +655,128 @@ const styles = StyleSheet.create({
     color: '#888',
     textAlign: 'center',
     padding: 20,
+  },
+  predictionsTable: {
+    backgroundColor: '#252525',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  predictionHeader: {
+    flexDirection: 'row',
+    backgroundColor: '#333',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  predictionHeaderText: {
+    color: '#888',
+    fontSize: 11,
+    fontWeight: 'bold',
+    flex: 1,
+    textAlign: 'center',
+  },
+  predictionTableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#333',
+  },
+  predictionCell: {
+    color: '#aaa',
+    fontSize: 12,
+    flex: 1,
+    textAlign: 'center',
+  },
+  predictionCellValue: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: 'bold',
+    flex: 1,
+    textAlign: 'center',
+  },
+  outcomeChip: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 3,
+    paddingHorizontal: 6,
+    borderRadius: 4,
+    marginLeft: 4,
+  },
+  hitChip: {
+    backgroundColor: '#4CAF5030',
+  },
+  missChip: {
+    backgroundColor: '#F4433630',
+  },
+  pendingChip: {
+    backgroundColor: '#FFA50030',
+  },
+  outcomeChipText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+  todayPickRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    backgroundColor: '#252525',
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  todayPickInfo: {
+    flex: 1,
+  },
+  todayPickHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  todayPickProp: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  tierBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  tierText: {
+    fontSize: 10,
+    fontWeight: 'bold',
+  },
+  todayPickLine: {
+    color: '#aaa',
+    fontSize: 13,
+    marginTop: 4,
+  },
+  todayPickRight: {
+    alignItems: 'flex-end',
+  },
+  todayPickEdge: {
+    color: '#4CAF50',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+  todayPickProb: {
+    color: '#888',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  inParlayBadge: {
+    backgroundColor: '#4CAF5030',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginTop: 4,
+  },
+  inParlayText: {
+    color: '#4CAF50',
+    fontSize: 9,
+    fontWeight: 'bold',
   },
 });
