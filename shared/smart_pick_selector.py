@@ -55,6 +55,9 @@ class SmartPick:
     tier: str = 'T5-FADE'
 
     def __post_init__(self):
+        # Cap probability at 95% - no model can be 100% certain
+        if self.pp_probability > 0.95:
+            self.pp_probability = 0.95
         self.tier = self._get_tier()
         self._calculate_ev()
 

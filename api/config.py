@@ -54,3 +54,11 @@ BREAK_EVEN_RATES = {
 API_VERSION = "v1"
 API_TITLE = "SportsPredictor API"
 API_DESCRIPTION = "Sports prediction data for NBA and NHL"
+
+# Cache settings (in seconds)
+CACHE_TTL = {
+    'picks': 300,      # 5 minutes - picks don't change often
+    'scores': 30,      # 30 seconds - live scores need to be fresh
+    'schedule': 3600,  # 1 hour - game schedule rarely changes
+    'performance': 600, # 10 minutes - stats update slowly
+}

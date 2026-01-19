@@ -8,26 +8,37 @@ import { Card } from '../common/Card';
 interface PickCardProps {
   pick: SmartPick;
   onAddToParlay?: (pick: SmartPick) => void;
+  onPlayerPress?: (pick: SmartPick) => void;
   isInParlay?: boolean;
 }
 
-export function PickCard({ pick, onAddToParlay, isInParlay }: PickCardProps) {
+export function PickCard({ pick, onAddToParlay, onPlayerPress, isInParlay }: PickCardProps) {
   const predictionColor = pick.prediction === 'OVER' ? '#4CAF50' : '#F44336';
 
   return (
     <Card style={isInParlay ? styles.inParlay : undefined}>
       <View style={styles.header}>
-        <View style={styles.playerInfo}>
+        <TouchableOpacity
+          style={styles.playerInfo}
+          onPress={() => onPlayerPress?.(pick)}
+          disabled={!onPlayerPress}
+        >
           <Text style={styles.playerName}>{pick.player_name}</Text>
           <View style={styles.matchupRow}>
             <Text style={styles.matchup}>
-              {pick.team} vs {pick.opponent}
+              {pick.matchup || `${pick.team} vs ${pick.opponent}`}
             </Text>
-            <View style={styles.todayBadge}>
-              <Text style={styles.todayText}>TODAY</Text>
-            </View>
+            {pick.game_time ? (
+              <View style={styles.timeBadge}>
+                <Text style={styles.timeText}>{pick.game_time}</Text>
+              </View>
+            ) : (
+              <View style={styles.todayBadge}>
+                <Text style={styles.todayText}>TODAY</Text>
+              </View>
+            )}
           </View>
-        </View>
+        </TouchableOpacity>
         <TierBadge tier={pick.tier} />
       </View>
 
@@ -125,6 +136,17 @@ const styles = StyleSheet.create({
   },
   todayText: {
     color: '#4CAF50',
+    fontSize: 9,
+    fontWeight: 'bold',
+  },
+  timeBadge: {
+    backgroundColor: '#1976D230',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  timeText: {
+    color: '#1976D2',
     fontSize: 9,
     fontWeight: 'bold',
   },
