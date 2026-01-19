@@ -77,27 +77,27 @@ export function PlayerCardModal({
               <View style={styles.statsRow}>
                 <View style={styles.statBox}>
                   <Text style={styles.statValue}>
-                    {history.accuracy?.toFixed(1) || 0}%
+                    {history.overall?.accuracy?.toFixed(1) || 0}%
                   </Text>
                   <Text style={styles.statLabel}>Accuracy</Text>
                 </View>
                 <View style={styles.statBox}>
                   <Text style={styles.statValue}>
-                    {history.total_predictions || 0}
+                    {history.overall?.total_predictions || 0}
                   </Text>
                   <Text style={styles.statLabel}>Predictions</Text>
                 </View>
                 <View style={styles.statBox}>
                   <Text style={styles.statValue}>
-                    {history.graded_predictions || 0}
+                    {history.overall?.hits || 0}
                   </Text>
-                  <Text style={styles.statLabel}>Graded</Text>
+                  <Text style={styles.statLabel}>Hits</Text>
                 </View>
               </View>
 
               <Text style={styles.sectionTitle}>Recent Predictions</Text>
-              {history.recent_predictions?.length > 0 ? (
-                history.recent_predictions.slice(0, 10).map((pred, index) => (
+              {history.predictions?.length > 0 ? (
+                history.predictions.slice(0, 10).map((pred, index) => (
                   <View key={index} style={styles.predictionRow}>
                     <View style={styles.predictionInfo}>
                       <Text style={styles.predictionDate}>{pred.date}</Text>
@@ -122,7 +122,9 @@ export function PlayerCardModal({
                   </View>
                 ))
               ) : (
-                <Text style={styles.noDataText}>No recent predictions</Text>
+                <Text style={styles.noDataText}>
+                  {history.message || 'No recent predictions'}
+                </Text>
               )}
             </ScrollView>
           ) : (

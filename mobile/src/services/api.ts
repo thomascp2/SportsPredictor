@@ -116,16 +116,22 @@ export interface PlayerSearchResponse {
 export interface PlayerHistory {
   player_name: string;
   sport: string;
-  total_predictions: number;
-  graded_predictions: number;
-  accuracy: number;
-  recent_predictions: Array<{
+  success: boolean;
+  overall: {
+    total_predictions: number;
+    accuracy: number;
+    hits: number;
+  };
+  by_prop_type: Record<string, { accuracy: number; total: number; hits: number }>;
+  predictions: Array<{
     date: string;
     prop_type: string;
     line: number;
     prediction: string;
+    actual_value?: number;
     outcome?: string;
   }>;
+  message?: string;
 }
 
 export interface ParlayCalculationResponse {
