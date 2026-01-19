@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.config import CORS_ORIGINS, API_VERSION, API_TITLE, API_DESCRIPTION
-from api.routers import picks, scores, parlays, performance, players
+from api.routers import picks, scores, parlays, performance, players, admin
 
 # Create FastAPI app
 app = FastAPI(
@@ -34,6 +34,7 @@ app.include_router(scores.router, prefix="/api/scores", tags=["scores"])
 app.include_router(parlays.router, prefix="/api/parlays", tags=["parlays"])
 app.include_router(performance.router, prefix="/api/performance", tags=["performance"])
 app.include_router(players.router, prefix="/api/players", tags=["players"])
+app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 
 
 @app.get("/")
@@ -45,10 +46,14 @@ async def root():
         "version": API_VERSION,
         "endpoints": [
             "/api/picks/smart",
+            "/api/picks/games",
             "/api/scores/live",
             "/api/parlays/calculate",
             "/api/performance/overview",
             "/api/players/search",
+            "/api/admin/run-predictions",
+            "/api/admin/refresh-lines",
+            "/api/admin/status",
         ]
     }
 

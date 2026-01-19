@@ -3,7 +3,7 @@ import { API_BASE_URL } from '../utils/constants';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 10000,
+  timeout: 15000,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -29,6 +29,20 @@ export interface SmartPick {
   ev_4leg: number;
   ev_5leg: number;
   ev_6leg: number;
+  // New fields for game time
+  game_time?: string;
+  game_time_utc?: string;
+  has_started?: boolean;
+  game_state?: string;
+  matchup?: string;
+  venue?: string;
+}
+
+export interface GameGroup {
+  matchup: string;
+  game_time: string;
+  has_started: boolean;
+  picks: SmartPick[];
 }
 
 export interface SmartPicksResponse {
@@ -36,7 +50,9 @@ export interface SmartPicksResponse {
   date: string;
   sport: string;
   total_picks: number;
-  picks: SmartPick[];
+  total_games?: number;
+  picks?: SmartPick[];
+  games?: GameGroup[];
   summary: {
     avg_probability: number;
     avg_edge: number;
@@ -47,10 +63,10 @@ export interface SmartPicksResponse {
 export interface LiveGame {
   game_id: string;
   status: string;
-  home_team: string;
-  away_team: string;
-  home_score: number;
-  away_score: number;
+  home_team: string | { abbreviation: string; name: string; score: number };
+  away_team: string | { abbreviation: string; name: string; score: number };
+  home_score?: number;
+  away_score?: number;
   period: string;
   clock: string;
   start_time: string;
@@ -97,6 +113,21 @@ export interface PlayerSearchResponse {
   players: PlayerSearchResult[];
 }
 
+export interface PlayerHistory {
+  player_name: string;
+  sport: string;
+  total_predictions: number;
+  graded_predictions: number;
+  accuracy: number;
+  recent_predictions: Array<{
+    date: string;
+    prop_type: string;
+    line: number;
+    prediction: string;
+    outcome?: string;
+  }>;
+}
+
 export interface ParlayCalculationResponse {
   success: boolean;
   pick_count: number;
@@ -113,14 +144,50 @@ export interface ParlayCalculationResponse {
   recommendation: string;
 }
 
+export interface AdminResponse {
+  success: boolean;
+  sport: string;
+  message: string;
+  details?: any;
+}
+
+export type SortOption = 'edge' | 'probability' | 'game_time' | 'team' | 'player' | 'tier';
+
 // API Functions
 export async function fetchSmartPicks(
   sport: string,
-  minEdge: number = 0,
-  minProb: number = 0.5
+  options: {
+    minEdge?: number;
+    minProb?: number;
+    tier?: string;
+    oddsType?: string;
+    prediction?: string;
+    team?: string;
+    hideStarted?: boolean;
+    sortBy?: SortOption;
+    groupByGame?: boolean;
+  } = {}
 ): Promise<SmartPicksResponse> {
   const response = await api.get<SmartPicksResponse>('/picks/today', {
-    params: { sport, min_edge: minEdge, min_prob: minProb },
+    params: {
+      sport,
+      min_edge: options.minEdge ?? 0,
+      min_prob: options.minProb ?? 0.5,
+      tier: options.tier,
+      odds_type: options.oddsType,
+      prediction: options.prediction,
+      team: options.team,
+      hide_started: options.hideStarted ?? true,
+      sort_by: options.sortBy ?? 'edge',
+      group_by_game: options.groupByGame ?? false,
+    },
+  });
+  return response.data;
+}
+
+export async function fetchPicksByGame(sport: string): Promise<SmartPicksResponse> {
+  const response = await api.get<SmartPicksResponse>('/picks/games', {
+    params: { sport, hide_started: true },
   });
   return response.data;
 }
@@ -152,6 +219,16 @@ export async function searchPlayers(
   return response.data;
 }
 
+export async function fetchPlayerHistory(
+  playerName: string,
+  sport?: string
+): Promise<PlayerHistory> {
+  const response = await api.get<PlayerHistory>(`/players/${encodeURIComponent(playerName)}/history`, {
+    params: { sport },
+  });
+  return response.data;
+}
+
 export async function calculateParlay(
   picks: Array<{ probability: number; odds_type: string }>
 ): Promise<ParlayCalculationResponse> {
@@ -171,6 +248,33 @@ export async function quickParlay(
       types: types.join(','),
     },
   });
+  return response.data;
+}
+
+// Admin endpoints
+export async function runPredictions(sport: string): Promise<AdminResponse> {
+  const response = await api.post<AdminResponse>('/admin/run-predictions', null, {
+    params: { sport },
+    timeout: 300000, // 5 minute timeout for predictions
+  });
+  return response.data;
+}
+
+export async function refreshLines(sport: string = 'all'): Promise<AdminResponse> {
+  const response = await api.post<AdminResponse>('/admin/refresh-lines', null, {
+    params: { sport },
+    timeout: 60000,
+  });
+  return response.data;
+}
+
+export async function getSystemStatus(): Promise<any> {
+  const response = await api.get('/admin/status');
+  return response.data;
+}
+
+export async function clearCache(): Promise<AdminResponse> {
+  const response = await api.post<AdminResponse>('/admin/clear-cache');
   return response.data;
 }
 

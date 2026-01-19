@@ -4,8 +4,7 @@ Sports Prediction Project Orchestrator (NHL & NBA)
 ===================================================
 
 Master controller for managing both NHL and NBA prediction systems.
-Runs continuously (or via scheduler) and manages all operations
-with Claude API providing intelligent oversight and analysis.
+Runs continuously (or via scheduler) and manages all operations.
 
 MISSION: Build prediction juggernauts for both NHL and NBA through systematic
          data collection and continuous improvement, ultimately training
@@ -15,7 +14,6 @@ Key Responsibilities:
 - Execute daily prediction pipeline (fetch -> generate -> grade -> verify)
 - Monitor data quality and feature health (ML readiness focus)
 - Detect and diagnose issues automatically
-- Call Claude API for analysis, debugging, and recommendations
 - Track progress toward ML training goals (10,000+ predictions per sport)
 - Optimize system performance based on results
 - Send status updates and alerts
@@ -49,13 +47,8 @@ except ImportError:
     SCHEDULE_AVAILABLE = False
     print("NOTE: 'schedule' not installed. Continuous mode unavailable. Run: pip install schedule")
 
-# Optional: Claude API for intelligent analysis
-try:
-    from anthropic import Anthropic
-    CLAUDE_AVAILABLE = True
-except ImportError:
-    CLAUDE_AVAILABLE = False
-    print("NOTE: 'anthropic' not installed. AI analysis unavailable. Run: pip install anthropic")
+# Claude API removed - was expensive and not providing value
+CLAUDE_AVAILABLE = False
 
 # Optional: requests for API health checks and Discord notifications
 try:
@@ -222,10 +215,6 @@ class GlobalConfig:
     RETRY_DELAY_SECONDS = 300
     CALIBRATION_DRIFT_THRESHOLD = 0.05
 
-    # Claude API
-    CLAUDE_MODEL = "claude-sonnet-4-20250514"
-    CLAUDE_MAX_TOKENS = 4000
-
     # Paths
     ROOT = Path(__file__).parent
     LOGS_DIR = ROOT / "logs"
@@ -296,8 +285,8 @@ class SportsOrchestrator:
     Master controller for NHL and NBA prediction systems
 
     This class manages the entire lifecycle of prediction systems,
-    from data collection to ML training preparation. It executes tasks,
-    monitors health, and leverages Claude API for intelligent decision-making.
+    from data collection to ML training preparation. It executes tasks
+    and monitors health.
     """
 
     def __init__(self, sport: str):
@@ -306,16 +295,9 @@ class SportsOrchestrator:
         self.global_config = GlobalConfig()
         self.state = self._load_state()
 
-        # Initialize Claude API
-        api_key = os.getenv('ANTHROPIC_API_KEY')
-        if CLAUDE_AVAILABLE and api_key:
-            # Strip whitespace/newlines from API key (Windows env var issue)
-            api_key = api_key.strip()
-            self.claude = Anthropic(api_key=api_key)
-            self.claude_enabled = True
-        else:
-            self.claude = None
-            self.claude_enabled = False
+        # Claude API removed - was expensive and not providing value
+        self.claude = None
+        self.claude_enabled = False
 
         # Initialize API Health Monitor
         if API_MONITOR_AVAILABLE:
@@ -343,7 +325,6 @@ class SportsOrchestrator:
             }
 
         print(f"\n{self.config.emoji} {self.config.full_name} Orchestrator initialized")
-        print(f"   Claude API: {'Enabled' if self.claude_enabled else 'Disabled'}")
         print(f"   API Monitor: {'Enabled' if self.api_monitor_enabled else 'Disabled'}")
         print(f"   ML Target: {self.config.ml_training_target_per_prop:,} per prop/line ({self.config.total_prop_combos} combos)")
         print(f"   Current predictions: {self._count_predictions():,}")
@@ -363,7 +344,6 @@ class SportsOrchestrator:
         2. Generate predictions for all games
         3. Verify predictions saved correctly
         4. Assess data quality
-        5. Get Claude analysis if needed
 
         Returns:
             PipelineResult with execution details
@@ -442,22 +422,6 @@ class SportsOrchestrator:
             print(f"   ML Readiness: {ml_readiness.readiness_percentage:.1f}%")
             print(f"   Progress: {ml_readiness.min_prop_count:,}/{self.config.ml_training_target_per_prop:,} (bottleneck: {ml_readiness.min_prop_name})")
 
-            # Get Claude analysis if there are issues or if we're approaching ML training
-            if (errors or warnings or ml_readiness.readiness_percentage > 80) and self.claude_enabled:
-                print()
-                print("[Claude Analysis] Getting intelligent insights...")
-                analysis = self._get_claude_analysis({
-                    'operation': 'daily_prediction_pipeline',
-                    'sport': self.config.sport,
-                    'date': target_date,
-                    'errors': errors,
-                    'warnings': warnings,
-                    'details': details,
-                    'ml_readiness': asdict(ml_readiness)
-                })
-                details['claude_analysis'] = analysis
-                print("   Analysis complete")
-
             # Update state
             self.state[sport_key]['last_prediction_gen'] = datetime.now().isoformat()
             self.state[sport_key]['total_runs'] += 1
@@ -505,7 +469,6 @@ class SportsOrchestrator:
         1. Grade all predictions from yesterday
         2. Calculate accuracy metrics
         3. Check for calibration drift
-        4. Get Claude analysis of performance
 
         Returns:
             PipelineResult with grading details
@@ -584,22 +547,6 @@ class SportsOrchestrator:
                 print(f"   Drift: {calibration['drift']:.1%}")
             else:
                 print(f"   Calibration stable")
-
-            # Get Claude analysis of performance
-            if self.claude_enabled and (errors or warnings):
-                print()
-                print("[Claude Analysis] Analyzing performance trends...")
-                analysis = self._get_claude_analysis({
-                    'operation': 'daily_grading',
-                    'sport': self.config.sport,
-                    'date': yesterday,
-                    'errors': errors,
-                    'warnings': warnings,
-                    'metrics': metrics,
-                    'calibration': calibration
-                })
-                details['claude_analysis'] = analysis
-                print("   Analysis complete")
 
             # Update state
             self.state[sport_key]['last_grading'] = datetime.now().isoformat()
@@ -958,108 +905,6 @@ class SportsOrchestrator:
             blocking_issues=blocking_issues,
             recommendations=recommendations
         )
-
-    # ========================================================================
-    # CLAUDE API INTEGRATION
-    # ========================================================================
-
-    def _get_claude_analysis(self, context: Dict) -> str:
-        """
-        Get Claude's analysis of system state and recommendations
-
-        This is where Claude becomes your intelligent assistant, analyzing
-        results, diagnosing issues, and recommending improvements.
-
-        Args:
-            context: Dict with operation details, errors, metrics, etc.
-
-        Returns:
-            Claude's analysis as text
-        """
-        if not self.claude_enabled:
-            return "Claude API not available"
-
-        try:
-            # Build comprehensive context for Claude
-            prompt = self._build_analysis_prompt(context)
-
-            # Call Claude API
-            response = self.claude.messages.create(
-                model=self.global_config.CLAUDE_MODEL,
-                max_tokens=self.global_config.CLAUDE_MAX_TOKENS,
-                messages=[{
-                    "role": "user",
-                    "content": prompt
-                }]
-            )
-
-            analysis = response.content[0].text
-
-            # Log the analysis
-            self._log_claude_analysis(context['operation'], analysis)
-
-            return analysis
-
-        except Exception as e:
-            error_msg = f"Claude API error: {str(e)}"
-            self._log_error(traceback.format_exc(), "CLAUDE_API_ERROR")
-            return error_msg
-
-    def _build_analysis_prompt(self, context: Dict) -> str:
-        """
-        Build comprehensive prompt for Claude analysis
-
-        The prompt guides Claude to focus on:
-        1. ML readiness (the ultimate goal)
-        2. Data quality issues
-        3. Performance patterns
-        4. Actionable recommendations
-        """
-        operation = context.get('operation', 'unknown')
-        sport = context.get('sport', self.config.sport)
-
-        prompt = f"""You are the intelligent oversight system for a {sport} prediction project.
-
-MISSION: Help build a {sport} prediction juggernaut by ensuring high-quality data collection
-for eventual ML training. We need {self.config.ml_training_target_per_prop:,}+ predictions per prop/line with complete
-features and opponent defensive stats before training begins.
-
-CURRENT OPERATION: {operation}
-SPORT: {sport}
-TIMESTAMP: {datetime.now().isoformat()}
-
-CONTEXT:
-{json.dumps(context, indent=2, default=str)}
-
-Your analysis should focus on:
-
-1. ML READINESS (PRIORITY #1):
-   - Are we collecting features correctly?
-   - Is opponent data being captured?
-   - Is probability variety sufficient?
-   - Are there data quality issues that could hurt ML training?
-
-2. IMMEDIATE ISSUES:
-   - Critical errors that need fixing NOW
-   - Data quality problems
-   - System health concerns
-
-3. PERFORMANCE INSIGHTS:
-   - Accuracy trends (UNDER vs OVER)
-   - Calibration drift
-   - Feature correlation patterns
-
-4. ACTIONABLE RECOMMENDATIONS:
-   - Specific fixes for errors
-   - Optimizations to improve data quality
-   - Feature engineering ideas
-   - System improvements
-
-Provide a CONCISE, ACTIONABLE analysis. Be direct and specific.
-Focus on what matters for building a world-class ML model.
-"""
-
-        return prompt
 
     # ========================================================================
     # HELPER METHODS
@@ -1494,18 +1339,6 @@ Focus on what matters for building a world-class ML model.
                 f.write(f"\n{'='*80}\n")
                 f.write(f"[{error_type}] {datetime.now().isoformat()}\n")
                 f.write(error_text)
-                f.write(f"\n{'='*80}\n")
-        except:
-            pass
-
-    def _log_claude_analysis(self, operation: str, analysis: str):
-        """Log Claude's analysis"""
-        log_file = self.global_config.LOGS_DIR / f"claude_analysis_{self.config.sport.lower()}_{datetime.now().strftime('%Y%m%d')}.log"
-        try:
-            with open(log_file, 'a') as f:
-                f.write(f"\n{'='*80}\n")
-                f.write(f"[{operation}] {datetime.now().isoformat()}\n")
-                f.write(analysis)
                 f.write(f"\n{'='*80}\n")
         except:
             pass
