@@ -105,13 +105,27 @@ def get_nba_schedule(date: str) -> Dict[str, dict]:
         scoreboard = api.get_scoreboard(date)
 
         games = {}
+        now = datetime.now(timezone.utc)
 
         for game in scoreboard:
             start_time = game.get('start_date', '')
             status = game.get('status', '').lower()
 
-            # Determine if game has started
-            has_started = status in ['in_progress', 'in progress', 'final', 'halftime']
+            # Determine if game has started by checking BOTH status AND start time
+            # ESPN sometimes returns 'in_progress' for scheduled games
+            has_started = False
+            if status in ['final', 'halftime']:
+                has_started = True
+            elif status in ['in_progress', 'in progress']:
+                # Double-check by comparing start time with current time
+                if start_time:
+                    try:
+                        game_start = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                        has_started = now >= game_start
+                    except:
+                        has_started = True  # If we can't parse, trust the status
+                else:
+                    has_started = True
 
             away_team_raw = game.get('away_team', '')
             home_team_raw = game.get('home_team', '')

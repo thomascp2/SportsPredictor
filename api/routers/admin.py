@@ -25,12 +25,31 @@ def run_prediction_pipeline(sport: str, date: str = None):
 
     if sport == 'nhl':
         script = PROJECT_ROOT / 'nhl' / 'scripts' / 'generate_predictions_daily_V5.py'
+        script_cwd = PROJECT_ROOT / 'nhl' / 'scripts'
+        # Add nhl/ to PYTHONPATH for features module, and scripts/ for other imports
+        extra_paths = [
+            str(PROJECT_ROOT / 'nhl'),
+            str(PROJECT_ROOT / 'nhl' / 'scripts'),
+            str(PROJECT_ROOT / 'shared'),
+        ]
     else:
         script = PROJECT_ROOT / 'nba' / 'scripts' / 'generate_predictions_daily.py'
+        script_cwd = PROJECT_ROOT / 'nba' / 'scripts'
+        extra_paths = [
+            str(PROJECT_ROOT / 'nba'),
+            str(PROJECT_ROOT / 'nba' / 'scripts'),
+            str(PROJECT_ROOT / 'shared'),
+        ]
 
     cmd = [sys.executable, str(script)]
     if date:
         cmd.append(date)
+
+    # Set up environment with proper PYTHONPATH
+    import os
+    env = os.environ.copy()
+    existing_path = env.get('PYTHONPATH', '')
+    env['PYTHONPATH'] = ';'.join(extra_paths) + (';' + existing_path if existing_path else '')
 
     try:
         result = subprocess.run(
@@ -38,7 +57,8 @@ def run_prediction_pipeline(sport: str, date: str = None):
             capture_output=True,
             text=True,
             timeout=300,  # 5 minute timeout
-            cwd=str(PROJECT_ROOT)
+            cwd=str(script_cwd),
+            env=env
         )
 
         return {
@@ -61,16 +81,34 @@ def run_prediction_pipeline(sport: str, date: str = None):
 
 def run_grading_pipeline(sport: str, date: str = None):
     """Run the grading pipeline for a sport."""
+    import os
     sport = sport.lower()
 
     if sport == 'nhl':
         script = PROJECT_ROOT / 'nhl' / 'scripts' / 'v2_auto_grade_yesterday_v3_RELIABLE.py'
+        script_cwd = PROJECT_ROOT / 'nhl' / 'scripts'
+        extra_paths = [
+            str(PROJECT_ROOT / 'nhl'),
+            str(PROJECT_ROOT / 'nhl' / 'scripts'),
+            str(PROJECT_ROOT / 'shared'),
+        ]
     else:
         script = PROJECT_ROOT / 'nba' / 'scripts' / 'auto_grade_multi_api_FIXED.py'
+        script_cwd = PROJECT_ROOT / 'nba' / 'scripts'
+        extra_paths = [
+            str(PROJECT_ROOT / 'nba'),
+            str(PROJECT_ROOT / 'nba' / 'scripts'),
+            str(PROJECT_ROOT / 'shared'),
+        ]
 
     cmd = [sys.executable, str(script)]
     if date:
         cmd.append(date)
+
+    # Set up environment with proper PYTHONPATH
+    env = os.environ.copy()
+    existing_path = env.get('PYTHONPATH', '')
+    env['PYTHONPATH'] = ';'.join(extra_paths) + (';' + existing_path if existing_path else '')
 
     try:
         result = subprocess.run(
@@ -78,7 +116,8 @@ def run_grading_pipeline(sport: str, date: str = None):
             capture_output=True,
             text=True,
             timeout=300,
-            cwd=str(PROJECT_ROOT)
+            cwd=str(script_cwd),
+            env=env
         )
 
         return {

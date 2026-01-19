@@ -88,6 +88,59 @@ async def search_players(
     }
 
 
+def find_player_name(cursor, player_name: str, sport: str) -> Optional[str]:
+    """
+    Find the actual player name in the database.
+    Handles mismatches like 'Cale Makar' vs 'C. Makar'.
+    """
+    # First try exact match
+    cursor.execute("""
+        SELECT DISTINCT player_name FROM prediction_outcomes
+        WHERE LOWER(player_name) = LOWER(?)
+    """, (player_name,))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+
+    # For NHL, try matching by last name (PrizePicks uses full names, NHL API uses abbreviated)
+    if sport == 'nhl':
+        # Extract last name from the full name
+        parts = player_name.split()
+        if len(parts) >= 2:
+            last_name = parts[-1]
+            first_initial = parts[0][0] + '.'
+
+            # Try "F. Lastname" format
+            cursor.execute("""
+                SELECT DISTINCT player_name FROM prediction_outcomes
+                WHERE LOWER(player_name) = LOWER(?)
+            """, (f"{first_initial} {last_name}",))
+            row = cursor.fetchone()
+            if row:
+                return row[0]
+
+            # Try just matching by last name if unique
+            cursor.execute("""
+                SELECT player_name, COUNT(*) as cnt FROM prediction_outcomes
+                WHERE LOWER(player_name) LIKE LOWER(?)
+                GROUP BY player_name
+            """, (f"%. {last_name}",))
+            rows = cursor.fetchall()
+            if len(rows) == 1:
+                return rows[0][0]
+
+    # Also check predictions table (player may not have outcomes yet)
+    cursor.execute("""
+        SELECT DISTINCT player_name FROM predictions
+        WHERE LOWER(player_name) = LOWER(?)
+    """, (player_name,))
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+
+    return None
+
+
 @router.get("/{player_name}/history")
 async def player_history(
     player_name: str,
@@ -108,6 +161,11 @@ async def player_history(
     cursor = conn.cursor()
 
     try:
+        # Find the actual player name in the database (handles name format mismatches)
+        actual_name = find_player_name(cursor, player_name, sport)
+        if not actual_name:
+            raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found")
+
         # Get player's overall stats
         cursor.execute("""
             SELECT
@@ -117,11 +175,24 @@ async def player_history(
             FROM prediction_outcomes
             WHERE LOWER(player_name) = LOWER(?)
             GROUP BY player_name
-        """, (player_name,))
+        """, (actual_name,))
 
         row = cursor.fetchone()
         if not row:
-            raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found")
+            # Player exists in predictions but has no graded outcomes yet
+            return {
+                "success": True,
+                "player_name": player_name,
+                "sport": sport.upper(),
+                "overall": {
+                    'total_predictions': 0,
+                    'accuracy': 0,
+                    'hits': 0,
+                },
+                "by_prop_type": {},
+                "predictions": [],
+                "message": "No graded predictions yet for this player"
+            }
 
         total = row['total']
         hits = row['hits']
@@ -136,7 +207,7 @@ async def player_history(
             WHERE LOWER(player_name) = LOWER(?)
             GROUP BY prop_type
             ORDER BY total DESC
-        """, (player_name,))
+        """, (actual_name,))
 
         by_prop_type = {}
         for r in cursor.fetchall():
@@ -149,19 +220,34 @@ async def player_history(
                 'hits': prop_hits,
             }
 
-        # Get recent predictions
-        query = """
-            SELECT
-                game_date,
-                prop_type,
-                line,
-                prediction,
-                actual_value,
-                outcome
-            FROM prediction_outcomes
-            WHERE LOWER(player_name) = LOWER(?)
-        """
-        params = [player_name]
+        # Get recent predictions (column names differ between NHL and NBA)
+        if sport == 'nhl':
+            # NHL uses: predicted_outcome, actual_stat_value
+            query = """
+                SELECT
+                    game_date,
+                    prop_type,
+                    line,
+                    predicted_outcome as prediction,
+                    actual_stat_value as actual_value,
+                    outcome
+                FROM prediction_outcomes
+                WHERE LOWER(player_name) = LOWER(?)
+            """
+        else:
+            # NBA uses: prediction, actual_value
+            query = """
+                SELECT
+                    game_date,
+                    prop_type,
+                    line,
+                    prediction,
+                    actual_value,
+                    outcome
+                FROM prediction_outcomes
+                WHERE LOWER(player_name) = LOWER(?)
+            """
+        params = [actual_name]
 
         if prop_type:
             query += " AND LOWER(prop_type) = LOWER(?)"
