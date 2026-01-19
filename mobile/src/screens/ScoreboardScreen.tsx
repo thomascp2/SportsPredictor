@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,16 +8,39 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { useLiveScores } from '../hooks/useLiveScores';
 import { GameCard } from '../components/scores/GameCard';
 import { SportToggle } from '../components/common/SportToggle';
+import { LiveGame } from '../services/api';
+
+// Helper to extract team name from string or object
+const getTeamName = (team: any): string => {
+  if (typeof team === 'string') return team;
+  if (team?.name) return team.name;
+  if (team?.abbreviation) return team.abbreviation;
+  return 'Unknown';
+};
 
 export function ScoreboardScreen() {
+  const navigation = useNavigation<any>();
   const [sport, setSport] = useState<'NBA' | 'NHL'>('NBA');
   const { games, lastUpdated, loading, error, refetch } = useLiveScores(
     sport.toLowerCase(),
     30000 // Refresh every 30 seconds
   );
+
+  const handleGamePress = useCallback((game: LiveGame) => {
+    const homeTeam = getTeamName(game.home_team);
+    const awayTeam = getTeamName(game.away_team);
+    navigation.navigate('Picks', {
+      gameFilter: {
+        homeTeam,
+        awayTeam,
+        sport: sport,
+      },
+    });
+  }, [navigation, sport]);
 
   const formatLastUpdated = () => {
     if (!lastUpdated) return '';
@@ -57,7 +80,7 @@ export function ScoreboardScreen() {
         <FlatList
           data={games}
           keyExtractor={(item) => item.game_id}
-          renderItem={({ item }) => <GameCard game={item} />}
+          renderItem={({ item }) => <GameCard game={item} onPress={handleGamePress} />}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           refreshControl={

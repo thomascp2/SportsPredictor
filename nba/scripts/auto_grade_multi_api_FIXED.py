@@ -128,7 +128,9 @@ class MultiAPIGrader:
         if ungraded:
             print(f"\n[WARN]  Ungraded: {len(ungraded)} predictions")
             for player, reason in ungraded[:5]:
-                print(f"   - {player}: {reason}")
+                # Handle Unicode characters that can't be encoded in Windows console
+                safe_player = player.encode('ascii', 'replace').decode('ascii')
+                print(f"   - {safe_player}: {reason}")
         
         conn.close()
         

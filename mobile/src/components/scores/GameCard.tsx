@@ -1,11 +1,12 @@
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { LiveGame } from '../../services/api';
 import { LiveIndicator } from './LiveIndicator';
 import { Card } from '../common/Card';
 
 interface GameCardProps {
   game: LiveGame;
+  onPress?: (game: LiveGame) => void;
 }
 
 // Helper to extract team name from string or object
@@ -36,7 +37,7 @@ const getScore = (game: any, teamKey: 'home' | 'away'): number => {
   return 0;
 };
 
-export function GameCard({ game }: GameCardProps) {
+export function GameCard({ game, onPress }: GameCardProps) {
   const isLive = game.status === 'in_progress' || game.status === 'live';
   const isFinal = game.status === 'final' || game.status === 'completed' || game.status === 'off';
   const isScheduled = game.status === 'scheduled' || game.status === 'not_started' || game.status === 'fut';
@@ -60,14 +61,23 @@ export function GameCard({ game }: GameCardProps) {
     }
   };
 
-  return (
-    <Card>
+  const content = (
+    <>
       <View style={styles.header}>
-        {isLive && <LiveIndicator isLive={true} />}
-        {isFinal && <Text style={styles.finalBadge}>FINAL</Text>}
-        {isScheduled && (
-          <Text style={styles.scheduledTime}>{getDisplayTime()}</Text>
-        )}
+        <View style={styles.statusContainer}>
+          {isLive && (
+            <>
+              <LiveIndicator isLive={true} />
+              {game.period && (
+                <Text style={styles.periodBadge}>{game.period}</Text>
+              )}
+            </>
+          )}
+          {isFinal && <Text style={styles.finalBadge}>FINAL</Text>}
+          {isScheduled && (
+            <Text style={styles.scheduledTime}>{getDisplayTime()}</Text>
+          )}
+        </View>
         {game.broadcast && (
           <Text style={styles.broadcast}>{game.broadcast}</Text>
         )}
@@ -97,8 +107,18 @@ export function GameCard({ game }: GameCardProps) {
           {game.clock && <Text style={styles.clock}>{game.clock}</Text>}
         </View>
       )}
-    </Card>
+    </>
   );
+
+  if (onPress) {
+    return (
+      <TouchableOpacity onPress={() => onPress(game)} activeOpacity={0.7}>
+        <Card>{content}</Card>
+      </TouchableOpacity>
+    );
+  }
+
+  return <Card>{content}</Card>;
 }
 
 const styles = StyleSheet.create({
@@ -107,6 +127,20 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
+  },
+  statusContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  periodBadge: {
+    color: '#FFD700',
+    fontSize: 12,
+    fontWeight: 'bold',
+    backgroundColor: '#FFD70020',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
   finalBadge: {
     color: '#888',

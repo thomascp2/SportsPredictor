@@ -43,12 +43,22 @@ export function calculateCombinedProbability(picks: ParlayPick[]): number {
 /**
  * Interpolate payout for fractional leg values
  * e.g., 3.5 legs = halfway between 3-leg (5x) and 4-leg (10x) = 7.5x
+ *
+ * PrizePicks requires minimum 2 legs for a payout.
+ * For < 2 legs, we interpolate down from 2-leg payout to 1x (no gain).
  */
 export function interpolatePayout(totalLegValue: number): number {
   const legs = Array.from(Object.keys(PAYOUTS)).map(Number).sort((a, b) => a - b);
+  const minLegs = legs[0]; // 2
 
-  // Clamp to valid range
-  if (totalLegValue <= legs[0]) return PAYOUTS[legs[0]];
+  // For < 2 legs, interpolate between 1x (at 0 legs) and 3x (at 2 legs)
+  // This reflects that you don't get full payout for incomplete parlays
+  if (totalLegValue < minLegs) {
+    // Linear interpolation: 0 legs = 1x, 2 legs = 3x
+    const fraction = totalLegValue / minLegs;
+    return 1 + fraction * (PAYOUTS[minLegs] - 1);
+  }
+
   if (totalLegValue >= legs[legs.length - 1]) return PAYOUTS[legs[legs.length - 1]];
 
   // Find surrounding legs

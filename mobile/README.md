@@ -112,6 +112,65 @@ expectedValue = (combinedProbability * payout) - 1
 
 **Example:** 3 standard picks at 70% each = 3 legs, 5x payout, 34.3% combined prob, EV = +71.5%
 
+## Remote Demo / Tunneling
+
+To demo the app on a device outside your local network (e.g., iPad at a different location), use **ngrok** to tunnel your backend API.
+
+### Setup ngrok
+
+1. **Install ngrok** (one-time):
+   ```bash
+   # macOS
+   brew install ngrok
+
+   # Windows (download from https://ngrok.com/download)
+   # Or with npm:
+   npm install -g ngrok
+   ```
+
+2. **Sign up for free account** at https://ngrok.com and get your authtoken
+
+3. **Configure ngrok** (one-time):
+   ```bash
+   ngrok config add-authtoken YOUR_AUTH_TOKEN
+   ```
+
+### Running for Remote Demo
+
+1. **Start the backend API** (as usual):
+   ```bash
+   cd api
+   uvicorn main:app --reload --host 0.0.0.0 --port 8000
+   ```
+
+2. **Start ngrok tunnel** (in a new terminal):
+   ```bash
+   ngrok http 8000
+   ```
+
+   ngrok will display a public URL like: `https://abc123.ngrok-free.app`
+
+3. **Update the app's API URL** in `src/utils/constants.ts`:
+   ```typescript
+   export const API_BASE_URL = 'https://abc123.ngrok-free.app/api';
+   ```
+
+4. **Build for Expo Go** or create a development build:
+   ```bash
+   npx expo start
+   ```
+
+5. **Scan QR code** with Expo Go on any device (works on any network now!)
+
+### Tips
+
+- ngrok free tier URLs change each time you restart. Consider upgrading for a static subdomain.
+- For production demos, you can also use Expo's published builds:
+  ```bash
+  npx expo publish
+  ```
+- Alternative tunneling options: Cloudflare Tunnel, localtunnel, or Tailscale
+
 ## Tech Stack
 
 - **Expo SDK 52**
