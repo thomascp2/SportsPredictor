@@ -28,6 +28,7 @@ const SORT_OPTIONS: { label: string; value: SortOption }[] = [
 
 const TIER_OPTIONS = ['ALL', 'T1-ELITE', 'T2-STRONG', 'T3-GOOD', 'T4-LEAN'];
 const PREDICTION_OPTIONS = ['ALL', 'OVER', 'UNDER'];
+const GAME_STATUS_OPTIONS = ['UPCOMING', 'ALL GAMES'];
 
 export function SmartPicksScreen() {
   const navigation = useNavigation<any>();
@@ -36,11 +37,12 @@ export function SmartPicksScreen() {
   const [tierFilter, setTierFilter] = useState('ALL');
   const [predictionFilter, setPredictionFilter] = useState('ALL');
   const [showFilters, setShowFilters] = useState(false);
+  const [hideStarted, setHideStarted] = useState(true);
   const [selectedPlayer, setSelectedPlayer] = useState<SmartPick | null>(null);
 
   const { picks, summary, loading, error, refetch } = useSmartPicks(
     sport.toLowerCase(),
-    { sortBy }
+    { sortBy, hideStarted }
   );
 
   const parlayPicks = useParlayStore((state) => state.picks);
@@ -164,6 +166,30 @@ export function SmartPicksScreen() {
       {/* Filter Bar */}
       {showFilters && (
         <View style={styles.filterBar}>
+          <View style={styles.filterRow}>
+            <Text style={styles.filterLabel}>Games:</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {GAME_STATUS_OPTIONS.map((option) => (
+                <TouchableOpacity
+                  key={option}
+                  style={[
+                    styles.filterChip,
+                    (option === 'UPCOMING' ? hideStarted : !hideStarted) && styles.filterChipActive,
+                  ]}
+                  onPress={() => setHideStarted(option === 'UPCOMING')}
+                >
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      (option === 'UPCOMING' ? hideStarted : !hideStarted) && styles.filterChipTextActive,
+                    ]}
+                  >
+                    {option}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
           <View style={styles.filterRow}>
             <Text style={styles.filterLabel}>Tier:</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
