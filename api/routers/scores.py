@@ -6,7 +6,7 @@ Endpoints for real-time NBA and NHL scores.
 
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Query, HTTPException
 
@@ -19,6 +19,47 @@ sys.path.insert(0, str(PROJECT_ROOT / 'nhl' / 'scripts'))
 router = APIRouter()
 
 
+def _format_time_local(time_str: str) -> str:
+    """Format UTC time string to local time for display."""
+    if not time_str:
+        return ''
+    try:
+        dt = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+        local_dt = dt.astimezone()
+        return local_dt.strftime('%I:%M %p')
+    except:
+        return time_str
+
+
+def _determine_game_status(espn_status: str, start_time: str) -> str:
+    """
+    Determine actual game status by checking ESPN status AND start time.
+    ESPN sometimes returns 'in_progress' for games that haven't started.
+    """
+    status = espn_status.lower().replace(' ', '_')
+
+    # Final games are definitely final
+    if status == 'final':
+        return 'final'
+
+    # For 'in_progress' status, verify by checking start time
+    if status in ['in_progress', 'halftime']:
+        if start_time:
+            try:
+                now = datetime.now(timezone.utc)
+                game_start = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                if now >= game_start:
+                    return 'in_progress' if status == 'in_progress' else 'halftime'
+                else:
+                    return 'scheduled'  # Game hasn't actually started
+            except:
+                return status  # Can't parse time, trust ESPN
+        return status
+
+    # Otherwise it's scheduled
+    return 'scheduled'
+
+
 def get_nba_scores(date: str):
     """Fetch NBA scores from ESPN API."""
     try:
@@ -29,10 +70,16 @@ def get_nba_scores(date: str):
 
         result = []
         for game in games:
+            start_time = game.get('start_date', '')
+            espn_status = game.get('status', 'Scheduled')
+
+            # Determine actual status (ESPN sometimes lies about in_progress)
+            actual_status = _determine_game_status(espn_status, start_time)
+
             result.append({
                 'game_id': game.get('espn_game_id', game.get('game_id')),
                 'sport': 'NBA',
-                'status': game.get('status', 'Scheduled').lower().replace(' ', '_'),
+                'status': actual_status,
                 'period': game.get('period', ''),
                 'clock': game.get('clock', ''),
                 'home_team': {
@@ -45,7 +92,8 @@ def get_nba_scores(date: str):
                     'name': game.get('away_team_name', game.get('away_team', '')),
                     'score': game.get('away_score'),
                 },
-                'start_time': game.get('start_date', ''),
+                'start_time': start_time,
+                'start_time_local': _format_time_local(start_time),
                 'broadcast': game.get('broadcasts', [''])[0] if game.get('broadcasts') else '',
                 'venue': game.get('venue_name', ''),
             })
@@ -96,6 +144,8 @@ def get_nhl_scores(date: str):
                 away_team = game.get('awayTeam', {})
                 home_team = game.get('homeTeam', {})
 
+                start_time = game.get('startTimeUTC', '')
+
                 result.append({
                     'game_id': str(game.get('id', '')),
                     'sport': 'NHL',
@@ -112,7 +162,8 @@ def get_nhl_scores(date: str):
                         'name': away_team.get('placeName', {}).get('default', ''),
                         'score': away_team.get('score'),
                     },
-                    'start_time': game.get('startTimeUTC', ''),
+                    'start_time': start_time,
+                    'start_time_local': _format_time_local(start_time),
                     'broadcast': '',
                     'venue': game.get('venue', {}).get('default', ''),
                 })

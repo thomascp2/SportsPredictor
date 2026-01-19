@@ -46,12 +46,17 @@ export function GameCard({ game }: GameCardProps) {
   const awayScore = getScore(game, 'away');
   const homeScore = getScore(game, 'home');
 
-  const formatTime = (timeString: string) => {
+  const getDisplayTime = () => {
+    // Prefer pre-formatted local time from API
+    if ((game as any).start_time_local) {
+      return (game as any).start_time_local;
+    }
+    // Fallback to parsing start_time
     try {
-      const date = new Date(timeString);
+      const date = new Date(game.start_time);
       return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     } catch {
-      return timeString || '';
+      return game.start_time || '';
     }
   };
 
@@ -61,7 +66,7 @@ export function GameCard({ game }: GameCardProps) {
         {isLive && <LiveIndicator isLive={true} />}
         {isFinal && <Text style={styles.finalBadge}>FINAL</Text>}
         {isScheduled && (
-          <Text style={styles.scheduledTime}>{formatTime(game.start_time)}</Text>
+          <Text style={styles.scheduledTime}>{getDisplayTime()}</Text>
         )}
         {game.broadcast && (
           <Text style={styles.broadcast}>{game.broadcast}</Text>
