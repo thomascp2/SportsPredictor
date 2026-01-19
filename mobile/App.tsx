@@ -10,6 +10,7 @@ import { SmartPicksScreen } from './src/screens/SmartPicksScreen';
 import { ParlayBuilderScreen } from './src/screens/ParlayBuilderScreen';
 import { PerformanceScreen } from './src/screens/PerformanceScreen';
 import { PlayerSearchScreen } from './src/screens/PlayerSearchScreen';
+import { AdminScreen } from './src/screens/AdminScreen';
 
 const Tab = createBottomTabNavigator();
 
@@ -34,7 +35,7 @@ function TabIcon({ name, focused }: { name: string; focused: boolean }) {
     Picks: 'P',
     Parlay: '$',
     Stats: '%',
-    Search: '?',
+    Admin: 'A',
   };
 
   return (
@@ -107,9 +108,9 @@ export default function App() {
             options={{ tabBarLabel: 'Stats' }}
           />
           <Tab.Screen
-            name="Search"
-            component={PlayerSearchScreen}
-            options={{ tabBarLabel: 'Search' }}
+            name="Admin"
+            component={AdminScreen}
+            options={{ tabBarLabel: 'Admin' }}
           />
         </Tab.Navigator>
         <StatusBar style="light" />

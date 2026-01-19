@@ -9,6 +9,20 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from .cache import cache
 
+# NBA team abbreviation mapping (ESPN -> Standard)
+NBA_TEAM_MAP = {
+    'WSH': 'WAS',
+    'NY': 'NYK',
+    'SA': 'SAS',
+    'UTAH': 'UTA',
+    'GS': 'GSW',
+    'NO': 'NOP',
+    'PHX': 'PHO',
+}
+
+# Reverse mapping (Standard -> ESPN)
+NBA_TEAM_MAP_REVERSE = {v: k for k, v in NBA_TEAM_MAP.items()}
+
 
 def get_nhl_schedule(date: str) -> Dict[str, dict]:
     """
@@ -99,8 +113,12 @@ def get_nba_schedule(date: str) -> Dict[str, dict]:
             # Determine if game has started
             has_started = status in ['in_progress', 'in progress', 'final', 'halftime']
 
-            away_team = game.get('away_team', '')
-            home_team = game.get('home_team', '')
+            away_team_raw = game.get('away_team', '')
+            home_team_raw = game.get('home_team', '')
+
+            # Normalize team abbreviations
+            away_team = NBA_TEAM_MAP.get(away_team_raw, away_team_raw)
+            home_team = NBA_TEAM_MAP.get(home_team_raw, home_team_raw)
 
             game_info = {
                 'game_id': game.get('espn_game_id'),
@@ -113,11 +131,17 @@ def get_nba_schedule(date: str) -> Dict[str, dict]:
                 'venue': game.get('venue_name', ''),
             }
 
-            # Map both teams to this game
+            # Map both teams to this game (using normalized abbreviations)
             if away_team:
                 games[away_team] = game_info
+                # Also map raw abbreviation if different
+                if away_team_raw != away_team:
+                    games[away_team_raw] = game_info
             if home_team:
                 games[home_team] = game_info
+                # Also map raw abbreviation if different
+                if home_team_raw != home_team:
+                    games[home_team_raw] = game_info
 
         cache.set(cache_key, games, 300)  # Cache for 5 minutes
         return games
