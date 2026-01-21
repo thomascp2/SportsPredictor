@@ -1,4 +1,4 @@
-# AUTO-FIXED: 2024-12-19 - Enhanced ESPN NBA API structure support with improved status parsing and competitor handling for new API response format
+# AUTO-FIXED: 2024-12-19 - Updated for ESPN NBA API structural changes: enhanced competitor parsing, improved status detection with new state/completed fields, and better handling of expanded competition metadata
 
 """
 ESPN NBA API Client
@@ -54,11 +54,11 @@ class ESPNNBAApi:
             
             games = []
             
-            # Handle new root-level fields (leagues, provider) - these are enhancements, not breaking changes
+            # Handle new root-level fields (leagues, provider) - informational only
             leagues_info = data.get('leagues', [])
             provider_info = data.get('provider', {})
             
-            # Extract events - core structure maintained but enhanced with additional fields
+            # Extract events - core structure maintained
             events = data.get('events', [])
             if not isinstance(events, list):
                 print("Warning: events field is not a list or missing")
@@ -68,7 +68,7 @@ class ESPNNBAApi:
                 if not isinstance(event, dict):
                     continue
                 
-                # Extract competitions - structure enhanced but core fields maintained
+                # Extract competitions
                 competitions = event.get('competitions', [])
                 if not isinstance(competitions, list) or len(competitions) == 0:
                     continue
@@ -77,12 +77,12 @@ class ESPNNBAApi:
                 if not isinstance(competition, dict):
                     continue
                 
-                # FIXED: Enhanced competitors parsing to handle new detailed structure
+                # FIXED: Improved competitor parsing for new API structure
                 competitors = competition.get('competitors', [])
                 if not isinstance(competitors, list) or len(competitors) < 2:
                     continue
                 
-                # Parse competitors - handle enhanced structure with additional validation
+                # Parse competitors with enhanced structure handling
                 home_team = None
                 away_team = None
                 
@@ -90,26 +90,35 @@ class ESPNNBAApi:
                     if not isinstance(competitor, dict):
                         continue
                     
-                    # The homeAway field should still be present in the enhanced structure
+                    # Check for team data validity first
+                    team_data = competitor.get('team', {})
+                    if not isinstance(team_data, dict) or not team_data.get('abbreviation'):
+                        continue
+                    
                     home_away = competitor.get('homeAway', '').lower()
                     if home_away == 'home':
                         home_team = competitor
                     elif home_away == 'away':
                         away_team = competitor
                 
-                # Enhanced fallback assignment with additional validation
+                # Enhanced fallback with validation
                 if not home_team or not away_team:
-                    if len(competitors) >= 2:
-                        # Additional validation to ensure we have valid competitor objects
-                        valid_competitors = [c for c in competitors if isinstance(c, dict) and c.get('team')]
-                        if len(valid_competitors) >= 2:
-                            away_team = valid_competitors[0]
-                            home_team = valid_competitors[1]
+                    valid_competitors = []
+                    for comp in competitors:
+                        if (isinstance(comp, dict) and 
+                            isinstance(comp.get('team'), dict) and 
+                            comp['team'].get('abbreviation')):
+                            valid_competitors.append(comp)
+                    
+                    if len(valid_competitors) >= 2:
+                        # First valid competitor is typically away team
+                        away_team = valid_competitors[0]
+                        home_team = valid_competitors[1]
                 
                 if not home_team or not away_team:
                     continue
                 
-                # FIXED: Enhanced team information extraction with better error handling
+                # Enhanced team information extraction
                 def extract_team_info(team_competitor):
                     if not isinstance(team_competitor, dict):
                         return '', ''
@@ -118,20 +127,28 @@ class ESPNNBAApi:
                     if not isinstance(team_data, dict):
                         return '', ''
                     
-                    # Core field: abbreviation - handle enhanced structure
+                    # Primary abbreviation extraction
                     abbr = team_data.get('abbreviation', '').strip()
                     if not abbr:
-                        # Enhanced fallbacks for missing abbreviation
+                        # Enhanced fallback chain
                         abbr = (team_data.get('shortDisplayName', '') or 
                                team_data.get('displayName', '')[:3] or
                                team_data.get('name', '')[:3] or
                                team_data.get('slug', '').upper()[:3]).strip().upper()
                     
-                    # Get full team name with enhanced structure support
+                    # Full team name with multiple fallbacks
                     name = (team_data.get('displayName', '') or 
                            team_data.get('name', '') or 
-                           team_data.get('longName', '') or
-                           team_data.get('location', '') + ' ' + team_data.get('nickname', '')).strip()
+                           team_data.get('longName', '')).strip()
+                    
+                    # Construct name from location + nickname if needed
+                    if not name:
+                        location = team_data.get('location', '').strip()
+                        nickname = team_data.get('nickname', '').strip()
+                        if location and nickname:
+                            name = f"{location} {nickname}"
+                        elif location or nickname:
+                            name = location or nickname
                     
                     return abbr, name
                 
@@ -141,7 +158,7 @@ class ESPNNBAApi:
                 if not home_team_abbr or not away_team_abbr:
                     continue
                 
-                # Enhanced score extraction with better type handling
+                # Enhanced score extraction
                 def extract_score(team_competitor):
                     if not isinstance(team_competitor, dict):
                         return None
@@ -152,7 +169,7 @@ class ESPNNBAApi:
                     
                     try:
                         score_str = str(score_value).strip()
-                        if score_str and score_str not in ['--', '', 'null', 'None', 'N/A']:
+                        if score_str and score_str not in ['--', '', 'null', 'None', 'N/A', 'TBD']:
                             return int(float(score_str))
                     except (ValueError, TypeError):
                         pass
@@ -162,11 +179,11 @@ class ESPNNBAApi:
                 home_score = extract_score(home_team)
                 away_score = extract_score(away_team)
                 
-                # FIXED: Completely rewritten status parsing for enhanced API structure
+                # FIXED: Enhanced status parsing for new API structure
                 game_status = 'Scheduled'
                 
-                # The new API provides much more detailed status information
-                # Priority order: event status (most reliable) -> competition status (backup)
+                # New API provides status at both event and competition levels
+                # Event status is typically more reliable and comprehensive
                 status_sources = [
                     event.get('status', {}),
                     competition.get('status', {})
@@ -180,18 +197,17 @@ class ESPNNBAApi:
                     if not status_type:
                         continue
                     
-                    # FIXED: Handle the new enhanced status.type object structure
+                    # FIXED: Handle new enhanced status.type structure
                     if isinstance(status_type, dict):
-                        # New API provides multiple reliable status indicators
+                        # New API provides definitive state indicators
                         state = status_type.get('state', '').lower()
-                        completed = status_type.get('completed', False)
-                        name = status_type.get('name', '').upper()
-                        detail = status_type.get('detail', '').upper()
-                        short_detail = status_type.get('shortDetail', '').upper()
-                        description = status_type.get('description', '').upper()
+                        completed = status_type.get('completed')
                         
-                        # Primary detection using the most reliable new fields
-                        if completed is True or state == 'post':
+                        # Primary status detection using new reliable fields
+                        if completed is True:
+                            game_status = 'Final'
+                            break
+                        elif state == 'post':
                             game_status = 'Final'
                             break
                         elif state == 'in':
@@ -199,95 +215,100 @@ class ESPNNBAApi:
                             break
                         elif state == 'pre':
                             game_status = 'Scheduled'
-                            # Continue to check other sources for better specificity
                         
-                        # Secondary detection using enhanced text content
-                        all_status_text = f"{name} {detail} {short_detail} {description}".upper()
+                        # Secondary detection using text fields for edge cases
+                        name = status_type.get('name', '').upper()
+                        detail = status_type.get('detail', '').upper()
+                        short_detail = status_type.get('shortDetail', '').upper()
+                        description = status_type.get('description', '').upper()
                         
-                        # Enhanced keyword detection with more game states
-                        if any(keyword in all_status_text for keyword in ['FINAL', 'GAME OVER', 'ENDED', 'COMPLETE']):
+                        all_text = f"{name} {detail} {short_detail} {description}".upper()
+                        
+                        # Enhanced keyword detection for special states
+                        if any(word in all_text for word in ['FINAL', 'GAME OVER', 'ENDED']):
                             game_status = 'Final'
                             break
-                        elif any(keyword in all_status_text for keyword in ['IN PROGRESS', 'LIVE', 'HALFTIME', 'HALF TIME', '1ST QUARTER', '2ND QUARTER', '3RD QUARTER', '4TH QUARTER', 'OVERTIME', 'OT']):
+                        elif any(word in all_text for word in ['HALFTIME', 'HALF', '1ST', '2ND', '3RD', '4TH', 'OVERTIME', 'OT', 'LIVE']):
                             game_status = 'In Progress'
                             break
-                        elif any(keyword in all_status_text for keyword in ['POSTPONED', 'DELAYED', 'CANCELLED', 'SUSPENDED']):
+                        elif any(word in all_text for word in ['POSTPONED', 'DELAYED', 'CANCELLED', 'SUSPENDED']):
                             game_status = 'Postponed'
                             break
                     
+                    # Backup: Handle legacy string format
                     elif isinstance(status_type, str):
-                        # Handle legacy string status type (backward compatibility)
                         status_name = status_type.upper()
                         if 'FINAL' in status_name:
                             game_status = 'Final'
                             break
-                        elif any(keyword in status_name for keyword in ['PROGRESS', 'LIVE', 'IN']):
+                        elif any(keyword in status_name for keyword in ['PROGRESS', 'LIVE', 'QUARTER']):
                             game_status = 'In Progress'
                             break
                     
-                    # Enhanced validation using clock/period information
-                    if game_status == 'Scheduled':
-                        clock = status_obj.get('displayClock') or status_obj.get('clock')
-                        period = status_obj.get('period', 0)
-                        
-                        # More sophisticated game state detection
+                    # Additional validation using clock/period data
+                    clock = status_obj.get('displayClock') or status_obj.get('clock')
+                    period = status_obj.get('period')
+                    
+                    if clock or period:
                         try:
-                            if clock and str(clock).strip() not in ['0:00', '', '00:00', 'N/A']:
-                                game_status = 'In Progress'
-                                break
+                            # If there's active clock or period info, game is likely in progress
+                            if clock and str(clock).strip() not in ['0:00', '', '00:00', 'N/A', '0.0']:
+                                if game_status == 'Scheduled':
+                                    game_status = 'In Progress'
                             if period and int(period) > 0:
-                                game_status = 'In Progress'
-                                break
+                                if game_status == 'Scheduled':
+                                    game_status = 'In Progress'
                         except (ValueError, TypeError):
                             pass
                 
-                # Extract game ID with enhanced fallback options
+                # Extract game ID with enhanced methods
                 game_id = event.get('id', '')
                 
-                # Enhanced ID extraction with multiple sources
                 if not game_id:
                     game_id = competition.get('id', '')
                 
-                # Extract from UID using enhanced parsing
-                if not game_id and event.get('uid'):
+                # Enhanced UID parsing for various formats
+                if not game_id:
                     uid = event.get('uid', '')
-                    # Enhanced UID parsing for different formats
-                    if '~e:' in uid:
-                        parts = uid.split('~')
-                        for part in parts:
-                            if part.startswith('e:'):
-                                game_id = part[2:]
-                                break
-                    elif uid.split(':')[-1].isdigit():
-                        game_id = uid.split(':')[-1]
+                    if uid:
+                        # Handle different UID formats: s:40~l:46~e:401584893
+                        if '~e:' in uid:
+                            parts = uid.split('~')
+                            for part in parts:
+                                if part.startswith('e:'):
+                                    game_id = part[2:]
+                                    break
+                        elif ':' in uid:
+                            # Simple colon-separated format
+                            game_id = uid.split(':')[-1]
                 
                 if not game_id:
                     continue
                 
-                # Extract enhanced metadata from new API structure
+                # Extract enhanced metadata from new API fields
                 venue_info = competition.get('venue', {})
                 venue_name = ''
                 if isinstance(venue_info, dict):
                     venue_name = (venue_info.get('fullName', '') or 
                                  venue_info.get('name', '')).strip()
                 
-                # Enhanced broadcast information extraction
+                # Enhanced broadcast extraction
                 broadcasts = competition.get('broadcasts', [])
                 broadcast_names = []
                 if isinstance(broadcasts, list):
                     for broadcast in broadcasts:
-                        if isinstance(broadcast, str):
-                            # Sometimes broadcast is just a string
-                            broadcast_names.append(broadcast)
-                        elif isinstance(broadcast, dict):
-                            # Try to get name from dict structure
-                            name = broadcast.get('name', '')
-                            if not name:
-                                market = broadcast.get('market')
+                        if isinstance(broadcast, dict):
+                            # Try multiple broadcast name fields
+                            name = (broadcast.get('name', '') or
+                                   broadcast.get('names', [''])[0] if broadcast.get('names') else '')
+                            if not name and broadcast.get('market'):
+                                market = broadcast['market']
                                 if isinstance(market, dict):
                                     name = market.get('name', '')
                             if name:
-                                broadcast_names.append(name)
+                                broadcast_names.append(str(name))
+                        elif isinstance(broadcast, str):
+                            broadcast_names.append(broadcast)
                 
                 # Enhanced attendance parsing
                 attendance = 0
@@ -295,12 +316,12 @@ class ESPNNBAApi:
                     attendance_val = competition.get('attendance')
                     if attendance_val:
                         attendance = int(float(str(attendance_val).replace(',', '')))
-                except (ValueError, TypeError, AttributeError):
+                except (ValueError, TypeError):
                     attendance = 0
                 
-                # Build enhanced game dictionary with backward compatibility
+                # Build comprehensive game dictionary
                 game_info = {
-                    # Core fields (maintain existing interface)
+                    # Core required fields (backward compatibility)
                     'game_id': str(game_id),
                     'game_date': game_date,
                     'home_team': home_team_abbr,
@@ -325,7 +346,10 @@ class ESPNNBAApi:
                     'competition_date': competition.get('date', ''),
                     'play_by_play_available': bool(competition.get('playByPlayAvailable', False)),
                     'conference_competition': bool(competition.get('conferenceCompetition', False)),
-                    'time_valid': bool(competition.get('timeValid', True))
+                    'time_valid': bool(competition.get('timeValid', True)),
+                    'competition_uid': competition.get('uid', ''),
+                    'competition_format': competition.get('format', {}),
+                    'recent': bool(competition.get('recent', False))
                 }
                 
                 games.append(game_info)
@@ -361,12 +385,11 @@ class ESPNNBAApi:
             
             players = []
             
-            # Handle enhanced boxscore structure
+            # Handle boxscore structure
             boxscore = data.get('boxscore', {})
             if not isinstance(boxscore, dict):
                 return []
             
-            # The API includes enhanced sections - focus on player stats
             players_data = boxscore.get('players', [])
             if not isinstance(players_data, list):
                 return []
@@ -375,12 +398,11 @@ class ESPNNBAApi:
                 if not isinstance(team_data, dict):
                     continue
                 
-                # Enhanced team information extraction
+                # Extract team information
                 team_info = team_data.get('team', {})
                 if not isinstance(team_info, dict):
                     continue
                 
-                # Handle expanded team fields with better fallbacks
                 team_abbr = (team_info.get('abbreviation') or 
                            team_info.get('shortDisplayName') or
                            team_info.get('displayName', '')[:3] or
@@ -389,7 +411,7 @@ class ESPNNBAApi:
                 if not team_abbr:
                     continue
                 
-                # Handle enhanced statistics structure
+                # Handle statistics structure
                 statistics = team_data.get('statistics', [])
                 if not isinstance(statistics, list) or len(statistics) == 0:
                     continue
@@ -398,22 +420,20 @@ class ESPNNBAApi:
                 if not isinstance(stat_info, dict):
                     continue
                 
-                # Enhanced stat column header extraction
+                # Extract stat column headers
                 stat_keys = []
-                
-                # Try multiple header field options from enhanced API
                 header_fields = ['names', 'labels', 'keys', 'headers']
                 for field in header_fields:
                     if field in stat_info and isinstance(stat_info[field], list):
                         stat_keys = [str(k).strip() for k in stat_info[field] if k is not None]
                         break
                 
-                # Enhanced fallback to comprehensive NBA stats if headers missing
+                # Fallback to standard NBA stats
                 if not stat_keys or len(stat_keys) < 10:
                     stat_keys = ['MIN', 'FGM-FGA', 'FG%', '3PM-3PA', '3P%', 'FTM-FTA', 'FT%', 
                                 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TO', 'PF', 'PTS', '+/-']
                 
-                # Enhanced athletes data processing
+                # Process athletes data
                 athletes_data = stat_info.get('athletes', [])
                 if not isinstance(athletes_data, list):
                     continue
@@ -423,28 +443,26 @@ class ESPNNBAApi:
                         continue
                     
                     try:
-                        # Enhanced athlete information extraction
+                        # Extract athlete information
                         athlete_info = athlete_data.get('athlete', {})
                         if not isinstance(athlete_info, dict):
                             continue
                         
-                        # Enhanced playing status check
-                        if (athlete_data.get('didNotPlay', False) or 
-                            athlete_data.get('inactive', False) or
-                            athlete_data.get('reason', '')):
+                        # Check if player actually played
+                        if (athlete_data.get('didNotPlay', False) or
+                            athlete_data.get('inactive', False)):
                             continue
                         
-                        # Enhanced player stats extraction
+                        # Extract player stats
                         player_stats_raw = athlete_data.get('stats', [])
                         if not isinstance(player_stats_raw, list) or not player_stats_raw:
                             continue
                         
-                        # Build stats dictionary with enhanced error handling
+                        # Build stats dictionary
                         stat_dict = {}
                         for i, key in enumerate(stat_keys):
                             if i < len(player_stats_raw) and player_stats_raw[i] is not None:
                                 value = player_stats_raw[i]
-                                # Enhanced null value handling
                                 str_val = str(value).strip()
                                 if str_val not in ['--', '', 'N/A', 'null', 'None', 'DNP', 'DND']:
                                     stat_dict[key] = value
@@ -452,7 +470,7 @@ class ESPNNBAApi:
                         if not stat_dict:
                             continue
                         
-                        # Enhanced minutes parsing with multiple formats
+                        # Parse minutes
                         minutes = 0.0
                         min_keys = ['MIN', 'minutes', 'min', 'MP']
                         for min_key in min_keys:
@@ -461,11 +479,10 @@ class ESPNNBAApi:
                                 if minutes > 0:
                                     break
                         
-                        # Skip players with no playing time
                         if minutes == 0:
                             continue
                         
-                        # Enhanced helper functions for stat extraction
+                        # Helper functions for stat extraction
                         def parse_made_attempted(keys):
                             for key in keys:
                                 if key in stat_dict:
@@ -477,7 +494,6 @@ class ESPNNBAApi:
                                         except (ValueError, AttributeError):
                                             continue
                                     elif '/' in val_str and val_str.count('/') == 1:
-                                        # Handle alternative format (made/attempted)
                                         try:
                                             made, attempted = val_str.split('/')
                                             return int(float(made.strip())), int(float(attempted.strip()))
@@ -490,26 +506,23 @@ class ESPNNBAApi:
                                 if key in stat_dict and stat_dict[key] is not None:
                                     try:
                                         val_str = str(stat_dict[key]).strip()
-                                        # Enhanced +/- handling
                                         if val_str.startswith('+'):
                                             val_str = val_str[1:]
-                                        # Enhanced negative value handling
                                         if val_str.startswith('-') and len(val_str) > 1:
                                             if val_str[1:].replace('.', '').isdigit():
                                                 return -int(float(val_str[1:]))
-                                        # Standard positive value
                                         if val_str.replace('.', '').replace('-', '').isdigit():
                                             return int(float(val_str))
                                     except (ValueError, TypeError, AttributeError):
                                         continue
                             return default
                         
-                        # Extract shooting stats with enhanced parsing
+                        # Extract shooting stats
                         fgm, fga = parse_made_attempted(['FGM-FGA', 'FG', 'Field Goals'])
                         fg3m, fg3a = parse_made_attempted(['3PM-3PA', '3P', 'Three Pointers', '3FG'])
                         ftm, fta = parse_made_attempted(['FTM-FTA', 'FT', 'Free Throws'])
                         
-                        # Extract counting stats with enhanced key variants
+                        # Extract counting stats
                         points = get_stat_value(['PTS', 'points', 'Points', 'P'])
                         rebounds = get_stat_value(['REB', 'rebounds', 'Rebounds', 'R'])
                         assists = get_stat_value(['AST', 'assists', 'Assists', 'A'])
@@ -518,7 +531,7 @@ class ESPNNBAApi:
                         turnovers = get_stat_value(['TO', 'turnovers', 'Turnovers', 'TOV'])
                         plus_minus = get_stat_value(['+/-', 'plusMinus', 'Plus/Minus', 'PM'], 0)
                         
-                        # Enhanced player name extraction
+                        # Extract player name
                         player_name = (athlete_info.get('displayName') or 
                                      athlete_info.get('name') or 
                                      athlete_info.get('fullName') or
@@ -527,7 +540,7 @@ class ESPNNBAApi:
                         if not player_name:
                             continue
                         
-                        # Build enhanced player stats object with consistent interface
+                        # Build player stats object
                         player_stats = {
                             'game_id': str(game_id),
                             'player_name': player_name,
@@ -546,11 +559,13 @@ class ESPNNBAApi:
                             'ftm': ftm,
                             'plus_minus': plus_minus,
                             
-                            # Additional enhanced stats if available
+                            # Additional enhanced stats
                             'three_point_attempts': fg3a,
                             'player_id': athlete_info.get('id', ''),
                             'jersey_number': athlete_info.get('jersey', ''),
-                            'position': athlete_info.get('position', {}).get('abbreviation', '') if isinstance(athlete_info.get('position'), dict) else str(athlete_info.get('position', ''))
+                            'position': (athlete_info.get('position', {}).get('abbreviation', '') 
+                                       if isinstance(athlete_info.get('position'), dict) 
+                                       else str(athlete_info.get('position', '')))
                         }
                         
                         players.append(player_stats)
@@ -573,7 +588,7 @@ class ESPNNBAApi:
     
     @staticmethod
     def _parse_minutes(min_str):
-        """Enhanced minutes parsing from various formats: MM:SS, decimal, or integer."""
+        """Parse minutes from various formats: MM:SS, decimal, or integer."""
         if not min_str or str(min_str).strip() in ['--', '', 'N/A', 'None', 'null', 'DNP', 'DND']:
             return 0.0
         
@@ -589,8 +604,8 @@ class ESPNNBAApi:
             else:
                 # Decimal or integer format
                 value = float(min_str)
-                # Handle edge case of seconds being passed as total (convert to minutes)
-                if value > 100:  # Likely seconds, not minutes
+                # Handle edge case of seconds being passed as total
+                if value > 100:  # Likely seconds, convert to minutes
                     return value / 60.0
                 return value
         except (ValueError, TypeError, AttributeError):
@@ -599,13 +614,13 @@ class ESPNNBAApi:
         return 0.0
 
 
-# Enhanced test functionality
+# Test functionality
 if __name__ == "__main__":
     api = ESPNNBAApi()
     
-    print("🏀 Testing Enhanced ESPN NBA API Structure Support\n")
+    print("🏀 Testing ESPN NBA API with Updated Structure Support\n")
     
-    # Test scoreboard with today's date
+    # Test scoreboard
     test_date = "2024-12-19"
     print(f"Fetching games for {test_date}...")
     games = api.get_scoreboard(test_date)
@@ -621,27 +636,25 @@ if __name__ == "__main__":
             print(f"   Score: {away_score} - {home_score}")
             print(f"   Game ID: {game['espn_game_id']}")
             
-            # Show enhanced information from new API structure
+            # Show enhanced information
             if game.get('venue_name'):
                 print(f"   Venue: {game['venue_name']}")
             if game.get('broadcasts'):
                 print(f"   TV: {', '.join(game['broadcasts'])}")
             if game.get('attendance', 0) > 0:
                 print(f"   Attendance: {game['attendance']:,}")
-            if game.get('short_name'):
-                print(f"   Short Name: {game['short_name']}")
             print()
         
         # Test boxscore on first completed game
         completed_games = [g for g in games if g['status'] == 'Final']
         if completed_games:
-            print(f"Testing enhanced boxscore for completed game...")
+            print(f"Testing boxscore for completed game...")
             boxscore = api.get_boxscore(completed_games[0]['espn_game_id'])
             print(f"✅ Retrieved {len(boxscore)} player stats\n")
             
             if boxscore:
-                print("Sample enhanced player stats:")
-                for player in boxscore[:5]:  # Show first 5 players
+                print("Sample player stats:")
+                for player in boxscore[:5]:
                     pos = f"({player.get('position', 'N/A')})" if player.get('position') else ""
                     jersey = f"#{player.get('jersey_number', '')}" if player.get('jersey_number') else ""
                     print(f"  {player['player_name']:20} {jersey:4} {pos:4} {player['team']:4} "
@@ -650,11 +663,11 @@ if __name__ == "__main__":
         else:
             print("No completed games found for boxscore test")
     else:
-        print("No games found - testing with different date or checking API availability...")
+        print("No games found - testing with recent date...")
         
-        # Test with a known date that should have games
+        # Test with recent date
         import datetime
-        yesterday = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-        print(f"Trying {yesterday}...")
-        games = api.get_scoreboard(yesterday)
-        print(f"Found {len(games)} games for {yesterday}")
+        recent_date = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+        print(f"Trying {recent_date}...")
+        games = api.get_scoreboard(recent_date)
+        print(f"Found {len(games)} games for {recent_date}")
