@@ -27,6 +27,7 @@ This version generates:
 """
 
 import sys
+import os
 import sqlite3
 import subprocess
 import shutil
@@ -329,9 +330,11 @@ def fetch_game_schedule(target_date: str) -> bool:
     
     for attempt in range(max_retries):
         try:
-            # Run fetch_game_schedule_FINAL.py
+            # Run fetch_game_schedule_FINAL.py (in same directory as this script)
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            fetch_script = os.path.join(script_dir, 'fetch_game_schedule_FINAL.py')
             result = subprocess.run(
-                [sys.executable, 'fetch_game_schedule_FINAL.py', target_date],
+                [sys.executable, fetch_script, target_date],
                 capture_output=True,
                 text=True,
                 timeout=30

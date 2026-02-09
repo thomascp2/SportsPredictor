@@ -15,11 +15,18 @@ import sqlite3
 import json
 import math
 import argparse
+import requests
+import os
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
+from fuzzywuzzy import fuzz
+
+# Discord webhook URL
+DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL',
+    "https://discord.com/api/webhooks/1435509138687004672/YSOXw9z6gtGj9wSRAABiGLa-7P2eBhFgPRoAQp1vdV5f2_5YCmy1fYkj2EQpb-XIPnBQ")
 
 
 @dataclass
@@ -33,7 +40,7 @@ class SmartPick:
     # Our prediction
     our_line: float
     our_probability: float
-    our_lambda: float  # Expected value (shots/points)
+    our_lambda: float  # Expected value (shots/points) - recent form
 
     # PrizePicks actual line
     pp_line: float
@@ -43,6 +50,12 @@ class SmartPick:
     pp_probability: float  # Probability for PP's actual line
     prediction: str  # 'OVER' or 'UNDER'
     edge: float  # pp_probability - break_even
+
+    # ML vs Baseline comparison
+    season_avg: float = 0.0  # Naive baseline (season average)
+    recent_avg: float = 0.0  # What ML uses (L10 or L5)
+    baseline_prob: float = 0.0  # What a naive model would predict
+    ml_adjustment: float = 0.0  # pp_probability - baseline_prob (positive = ML likes it more)
 
     # Expected Value for different parlay sizes
     ev_2leg: float = 0.0
@@ -248,13 +261,28 @@ class SmartPickSelector:
             # Try to find our prediction for this player+prop
             key = (pp['player_name'].lower(), pp['prop_type'])
 
-            # Also try fuzzy match on last name
+            # If no exact match, try proper fuzzy matching with high threshold
             if key not in pred_lookup:
-                last_name = pp['player_name'].split()[-1].lower()
+                best_match_key = None
+                best_match_score = 0
+                pp_name_lower = pp['player_name'].lower()
+
                 for pred_key in pred_lookup.keys():
-                    if last_name in pred_key[0] and pred_key[1] == pp['prop_type']:
-                        key = pred_key
-                        break
+                    # Only consider same prop type
+                    if pred_key[1] != pp['prop_type']:
+                        continue
+
+                    pred_name = pred_key[0]
+                    # Use fuzz.ratio for full name comparison
+                    score = fuzz.ratio(pp_name_lower, pred_name)
+
+                    # Require high confidence (>= 85) for fuzzy match
+                    if score > best_match_score and score >= 85:
+                        best_match_score = score
+                        best_match_key = pred_key
+
+                if best_match_key:
+                    key = best_match_key
 
             if key not in pred_lookup:
                 continue
@@ -264,6 +292,19 @@ class SmartPickSelector:
             pred = pred_lookup[key][0]
             prop_type = pp['prop_type']
 
+            # Team verification - skip if player changed teams (trade, etc.)
+            pp_team = pp.get('team', '').upper()
+            pred_team = pred.get('team', '').upper()
+            if pp_team and pred_team and pp_team != pred_team:
+                # Player was traded - our predictions are for wrong game
+                continue
+
+            # Get season average for baseline comparison
+            season_avg = pred.get('f_season_avg') or pred.get('season_avg') or 0
+            season_std = pred.get('f_season_std') or pred.get('season_std') or 1.0
+            recent_avg = 0
+            recent_std = 1.0
+
             # Recalculate probability based on sport and prop type
             if self.sport == 'NHL' and prop_type in ['points', 'goals', 'assists', 'pp_points']:
                 # NHL: Points-based props use Poisson distribution
@@ -272,6 +313,9 @@ class SmartPickSelector:
                     continue
                 pp_prob_over = self.poisson_prob_over(lambda_param, pp['line'])
                 our_param = lambda_param
+                recent_avg = lambda_param
+                # Baseline: use season average lambda if available
+                baseline_prob_over = self.poisson_prob_over(season_avg, pp['line']) if season_avg > 0 else pp_prob_over
             elif self.sport == 'NHL':
                 # NHL: Shots and other continuous props use Normal distribution
                 mean_shots = pred.get('mean_shots') or pred.get('sog_l10')
@@ -280,26 +324,42 @@ class SmartPickSelector:
                     continue
                 pp_prob_over = self.normal_prob_over(mean_shots, std_dev, pp['line'])
                 our_param = mean_shots
+                recent_avg = mean_shots
+                # Baseline: use season average
+                baseline_prob_over = self.normal_prob_over(season_avg, season_std, pp['line']) if season_avg > 0 else pp_prob_over
             else:
                 # NBA: All props use Normal distribution
                 mean = pred.get('mean') or pred.get('f_l10_avg')
                 std_dev = pred.get('std_dev') or pred.get('f_l10_std') or 1.0
+                recent_avg = mean or 0
+                recent_std = std_dev
                 if mean is None or mean <= 0:
                     continue
                 pp_prob_over = self.normal_prob_over(mean, std_dev, pp['line'])
                 our_param = mean
+                # Baseline: use season average with season std
+                if season_avg > 0:
+                    baseline_prob_over = self.normal_prob_over(season_avg, season_std, pp['line'])
+                else:
+                    baseline_prob_over = pp_prob_over
 
             matched += 1
 
             pp_prob_under = 1 - pp_prob_over
+            baseline_prob_under = 1 - baseline_prob_over
 
             # Determine prediction based on higher probability
             if pp_prob_over >= pp_prob_under:
                 prediction = 'OVER'
                 probability = pp_prob_over
+                baseline_prob = baseline_prob_over
             else:
                 prediction = 'UNDER'
                 probability = pp_prob_under
+                baseline_prob = baseline_prob_under
+
+            # Calculate ML adjustment (how much better/worse than naive baseline)
+            ml_adjustment = (probability - baseline_prob) * 100
 
             # Skip if overs_only and this is an UNDER
             if overs_only and prediction != 'OVER':
@@ -326,7 +386,11 @@ class SmartPickSelector:
                 pp_odds_type=pp['odds_type'],
                 pp_probability=probability,
                 prediction=prediction,
-                edge=edge
+                edge=edge,
+                season_avg=season_avg,
+                recent_avg=recent_avg,
+                baseline_prob=baseline_prob,
+                ml_adjustment=ml_adjustment
             )
 
             smart_picks.append(pick)
@@ -357,10 +421,12 @@ class SmartPickSelector:
 
         prop_placeholders = ','.join(['?' for _ in props])
 
+        # Match by game date (from start_time) rather than fetch_date
+        # This handles cases where lines are fetched day before the game
         query = f'''
             SELECT DISTINCT player_name, prop_type, line, odds_type, team
             FROM prizepicks_lines
-            WHERE fetch_date = ?
+            WHERE substr(start_time, 1, 10) = ?
             AND league = ?
             AND odds_type IN ({placeholders})
             AND prop_type IN ({prop_placeholders})
@@ -410,14 +476,21 @@ class SmartPickSelector:
                     pred['std_dev'] = features.get('std_dev') or features.get('sog_std_l10')
                     pred['sog_l10'] = features.get('sog_l10')
                     pred['sog_std_l10'] = features.get('sog_std_l10')
+                    # Season averages for baseline comparison
+                    pred['f_season_avg'] = features.get('season_avg') or features.get('pts_l20') or features.get('sog_season')
+                    pred['f_season_std'] = features.get('season_std') or features.get('sog_std_season') or 1.0
                 except:
                     pred['lambda_param'] = None
                     pred['mean_shots'] = None
                     pred['std_dev'] = None
+                    pred['f_season_avg'] = None
+                    pred['f_season_std'] = 1.0
             else:
                 # NBA: Use columns directly (all props use Normal distribution)
                 pred['mean'] = row['f_l10_avg'] or row['f_season_avg']
                 pred['std_dev'] = row['f_l10_std'] or row['f_season_std'] or 1.0
+                pred['f_season_avg'] = row['f_season_avg']
+                pred['f_season_std'] = row['f_season_std'] or 1.0
                 pred['lambda_param'] = None  # NBA doesn't use Poisson
 
                 # Also try features_json as backup
@@ -427,6 +500,10 @@ class SmartPickSelector:
                         pred['mean'] = features.get('f_l10_avg') or features.get('f_season_avg')
                     if not pred['std_dev'] or pred['std_dev'] == 1.0:
                         pred['std_dev'] = features.get('f_l10_std') or features.get('f_season_std') or 1.0
+                    if not pred['f_season_avg']:
+                        pred['f_season_avg'] = features.get('f_season_avg')
+                    if not pred['f_season_std'] or pred['f_season_std'] == 1.0:
+                        pred['f_season_std'] = features.get('f_season_std') or 1.0
                 except:
                     pass
 
@@ -442,11 +519,13 @@ class SmartPickSelector:
     ) -> str:
         """Generate a formatted report of smart picks"""
         lines = []
-        lines.append("=" * 90)
+        lines.append("=" * 130)
         lines.append(f"  {self.sport} SMART PICKS - {date.today().isoformat()}")
         lines.append("  Only showing plays ACTUALLY AVAILABLE on PrizePicks")
-        lines.append("=" * 90)
+        lines.append("=" * 130)
         lines.append(f"  Total Smart Picks: {len(picks)}")
+        lines.append("")
+        lines.append("  COLUMNS: Prob=Model probability | Edge=vs breakeven | ML Adj=vs season avg (^=hot, v=cold) | Avg=Season->Recent")
         lines.append("")
 
         # Group by prop type
@@ -456,9 +535,9 @@ class SmartPickSelector:
 
         for prop_type, prop_picks in sorted(by_prop.items()):
             lines.append(f"  {prop_type.upper()} ({len(prop_picks)} plays)")
-            lines.append("-" * 90)
+            lines.append("-" * 130)
 
-            header = f"  {'Player':<18} {'Line':^16} {'Prob':>6} {'Edge':>7} {'Leg':>4} {'Tier':<10}"
+            header = f"  {'Player':<18} {'Matchup':<12} {'Line':^16} {'Prob':>6} {'Edge':>7} {'ML Adj':>8} {'Avg':>12} {'Tier':<10}"
             lines.append(header)
 
             for pick in prop_picks[:10]:  # Top 10 per prop
@@ -466,16 +545,43 @@ class SmartPickSelector:
                 if pick.pp_odds_type != 'standard':
                     line_str += f" ({pick.pp_odds_type[:3]})"
 
-                leg_str = f"{pick.leg_value:.1f}x" if hasattr(pick, 'leg_value') else "1.0x"
-                row = f"  {pick.player_name:<18} {line_str:^16} {pick.pp_probability*100:5.1f}% {pick.edge:+6.1f}% {leg_str:>4} {pick.tier:<10}"
+                # Format matchup as "TEAM vs OPP"
+                matchup = f"{pick.team} vs {pick.opponent}" if pick.team and pick.opponent else ""
+                matchup = matchup[:12]  # Truncate if too long
+
+                # ML adjustment with direction indicator
+                if pick.ml_adjustment > 0.5:
+                    ml_adj_str = f"+{pick.ml_adjustment:4.1f}% ^"  # Hot - recent form better than season
+                elif pick.ml_adjustment < -0.5:
+                    ml_adj_str = f"{pick.ml_adjustment:5.1f}% v"  # Cold - recent form worse than season
+                else:
+                    ml_adj_str = f"{pick.ml_adjustment:5.1f}%  "  # Neutral
+
+                # Show season vs recent average
+                avg_str = f"{pick.season_avg:4.1f}->{pick.recent_avg:4.1f}" if pick.season_avg > 0 else ""
+
+                row = f"  {pick.player_name:<18} {matchup:<12} {line_str:^16} {pick.pp_probability*100:5.1f}% {pick.edge:+6.1f}% {ml_adj_str:>8} {avg_str:>12} {pick.tier:<10}"
                 lines.append(row)
 
             lines.append("")
 
+        # ML adjustment explanation
+        lines.append("=" * 130)
+        lines.append("  ML ADJUSTMENT EXPLAINED")
+        lines.append("-" * 130)
+        lines.append("  ML Adj shows how much BETTER (^) or WORSE (v) our model is vs a naive season-average approach:")
+        lines.append("    +10% ^ = Player's recent form is HOT - L10 avg much higher than season avg, model sees 10% more edge")
+        lines.append("    -5% v  = Player's recent form is COLD - L10 avg lower than season avg, model is more conservative")
+        lines.append("    0%     = Recent form matches season average - no adjustment needed")
+        lines.append("")
+        lines.append("  WHY THIS MATTERS: A casual bettor using season averages would miss these edges.")
+        lines.append("  Our model captures recent form, trends, and momentum that season averages ignore.")
+        lines.append("")
+
         # Parlay building tips
-        lines.append("=" * 90)
+        lines.append("=" * 130)
         lines.append("  PRIZEPICKS PAYOUT GUIDE")
-        lines.append("-" * 90)
+        lines.append("-" * 130)
         lines.append("  Total Leg Value  Payout  Required Win Rate")
         lines.append("  2.0 legs         3x      58.5% per pick")
         lines.append("  3.0 legs         5x      58.5% per pick")
@@ -483,15 +589,65 @@ class SmartPickSelector:
         lines.append("  5.0 legs         20x     54.9% per pick")
         lines.append("  6.0 legs         25x     55.1% per pick")
         lines.append("")
-        lines.append("  LEG VALUES:")
-        lines.append("    Goblin = 0.5x (easier, less payout)")
-        lines.append("    Standard = 1.0x (normal)")
-        lines.append("    Demon = 1.5x (harder, more payout)")
+        lines.append("  LEG VALUES: Goblin=0.5x (easier) | Standard=1.0x | Demon=1.5x (harder)")
+        lines.append("=" * 130)
+
+        return "\n".join(lines)
+
+    def generate_discord_message(self, picks: List[SmartPick], game_date: str) -> str:
+        """Generate a Discord-formatted message with picks"""
+        lines = []
+
+        # Header (Windows-safe, no emojis in code - Discord will render them)
+        sport_label = "[NBA]" if self.sport == "NBA" else "[NHL]"
+        lines.append(f"```")
+        lines.append(f"{sport_label} SMART PICKS - {game_date}")
+        lines.append(f"{'='*50}")
+
+        if not picks:
+            lines.append("No high-edge picks found for this date.")
+            lines.append("```")
+            return "\n".join(lines)
+
+        lines.append(f"Found {len(picks)} verified picks (edge >= 5%)")
         lines.append("")
-        lines.append("  Example: 4 goblin picks = 2.0 legs = 3x payout")
-        lines.append("  Example: 4 standard picks = 4.0 legs = 10x payout")
-        lines.append("  Example: 2 standard + 2 demon = 5.0 legs = 20x payout")
-        lines.append("=" * 90)
+
+        # Group by tier for easier reading
+        elite_picks = [p for p in picks if p.tier == 'T1-ELITE']
+        strong_picks = [p for p in picks if p.tier == 'T2-STRONG']
+        good_picks = [p for p in picks if p.tier == 'T3-GOOD']
+
+        if elite_picks:
+            lines.append("[FIRE] ELITE TIER (75%+ probability)")
+            lines.append("-" * 50)
+            for p in elite_picks[:8]:
+                trend = "[HOT]" if p.ml_adjustment > 5 else ("[COLD]" if p.ml_adjustment < -5 else "[--]")
+                lines.append(f"{trend} {p.player_name}")
+                lines.append(f"   {p.prediction} {p.pp_line} {p.prop_type}")
+                lines.append(f"   {p.team} vs {p.opponent} | {p.pp_probability*100:.0f}% | +{p.edge:.0f}% edge")
+                lines.append("")
+
+        if strong_picks:
+            lines.append("[STRONG] STRONG TIER (70-74% probability)")
+            lines.append("-" * 50)
+            for p in strong_picks[:6]:
+                trend = "[HOT]" if p.ml_adjustment > 5 else ("[COLD]" if p.ml_adjustment < -5 else "[--]")
+                lines.append(f"{trend} {p.player_name}")
+                lines.append(f"   {p.prediction} {p.pp_line} {p.prop_type}")
+                lines.append(f"   {p.team} vs {p.opponent} | {p.pp_probability*100:.0f}% | +{p.edge:.0f}% edge")
+                lines.append("")
+
+        if good_picks:
+            lines.append("[GOOD] GOOD TIER (65-69% probability)")
+            lines.append("-" * 50)
+            for p in good_picks[:4]:
+                lines.append(f"* {p.player_name}: {p.prediction} {p.pp_line} {p.prop_type} ({p.pp_probability*100:.0f}%)")
+
+        lines.append("")
+        lines.append("=" * 50)
+        lines.append("[HOT] = Recent form > season avg")
+        lines.append("[COLD] = Recent form < season avg")
+        lines.append("```")
 
         return "\n".join(lines)
 
@@ -499,14 +655,19 @@ class SmartPickSelector:
 def main():
     parser = argparse.ArgumentParser(description='Smart Pick Selector - Only actual PP lines')
     parser.add_argument('--sport', choices=['nhl', 'nba'], default='nhl', help='Sport')
+    parser.add_argument('--date', help='Game date (YYYY-MM-DD), defaults to today')
     parser.add_argument('--min-edge', type=float, default=5.0, help='Minimum edge %%')
     parser.add_argument('--min-prob', type=float, default=0.55, help='Minimum probability')
     parser.add_argument('--include-demon', action='store_true', help='Include demon odds')
     parser.add_argument('--no-refresh', action='store_true', help='Skip fetching fresh lines')
     parser.add_argument('--overs-only', action='store_true', help='Only show OVER predictions')
     parser.add_argument('--show-ev', action='store_true', help='Show EV calculations')
+    parser.add_argument('--discord', action='store_true', help='Output Discord-formatted message')
+    parser.add_argument('--post-discord', action='store_true', help='Post picks to Discord webhook')
 
     args = parser.parse_args()
+
+    game_date = args.date or date.today().isoformat()
 
     selector = SmartPickSelector(args.sport)
 
@@ -515,6 +676,7 @@ def main():
         odds_types.append('demon')
 
     picks = selector.get_smart_picks(
+        game_date=game_date,
         min_edge=args.min_edge,
         min_prob=args.min_prob,
         odds_types=odds_types,
@@ -522,8 +684,30 @@ def main():
         overs_only=args.overs_only
     )
 
-    report = selector.generate_report(picks, show_ev=args.show_ev)
-    print(report)
+    if args.post_discord:
+        # Post to Discord webhook
+        message = selector.generate_discord_message(picks, game_date)
+        if DISCORD_WEBHOOK_URL:
+            try:
+                response = requests.post(
+                    DISCORD_WEBHOOK_URL,
+                    json={"content": message},
+                    timeout=10
+                )
+                if response.status_code == 204:
+                    print(f"[OK] Posted {len(picks)} picks to Discord!")
+                else:
+                    print(f"[WARN] Discord returned status {response.status_code}")
+            except Exception as e:
+                print(f"[ERROR] Failed to post to Discord: {e}")
+        else:
+            print("[WARN] No Discord webhook configured")
+    elif args.discord:
+        # Discord-formatted output (print only)
+        print(selector.generate_discord_message(picks, game_date))
+    else:
+        report = selector.generate_report(picks, show_ev=args.show_ev)
+        print(report)
 
 
 if __name__ == '__main__':
