@@ -153,6 +153,10 @@ class SportConfig:
         self.emoji = "[NHL]"
         self.full_name = "NHL Hockey"
 
+        # Discord webhook for NHL channel
+        self.discord_picks_webhook = os.getenv('NHL_DISCORD_WEBHOOK',
+            "https://discord.com/api/webhooks/YOUR_NHL_CHANNEL_WEBHOOK_HERE")
+
     def _init_nba(self):
         """Initialize NBA-specific configuration"""
         self.project_root = self.root / "nba"
@@ -202,6 +206,11 @@ class SportConfig:
         # Display (using text for Windows compatibility)
         self.emoji = "[NBA]"
         self.full_name = "NBA Basketball"
+
+        # Discord webhook for NBA channel (create webhook in Discord: Server Settings > Integrations > Webhooks)
+        # Replace with your 'nba' channel webhook URL
+        self.discord_picks_webhook = os.getenv('NBA_DISCORD_WEBHOOK',
+            "https://discord.com/api/webhooks/YOUR_NBA_CHANNEL_WEBHOOK_HERE")
 
 
 class GlobalConfig:
@@ -435,6 +444,10 @@ class SportsOrchestrator:
 
             # Send Discord notification
             self.send_prediction_notification(target_date, details)
+
+            # Post smart picks to Discord channel (if configured)
+            if success:
+                self._post_smart_picks_to_discord(target_date)
 
             return PipelineResult(
                 success=success,
@@ -1544,6 +1557,51 @@ class SportsOrchestrator:
 """
 
         self._send_discord_notification(message)
+
+    def _post_smart_picks_to_discord(self, game_date: str):
+        """Post smart picks to sport-specific Discord channel after predictions"""
+        try:
+            # Check if webhook is configured (not the placeholder)
+            webhook_url = getattr(self.config, 'discord_picks_webhook', '')
+            if not webhook_url or 'YOUR_' in webhook_url:
+                print(f"   [SKIP] Smart picks Discord not configured for {self.config.sport}")
+                return
+
+            # Import and run smart pick selector
+            from smart_pick_selector import SmartPickSelector
+
+            selector = SmartPickSelector(self.config.sport.lower())
+            picks = selector.get_smart_picks(
+                game_date=game_date,
+                min_edge=5.0,
+                min_prob=0.55,
+                odds_types=['standard', 'goblin'],
+                refresh_lines=True  # Fetch fresh PP lines
+            )
+
+            if not picks:
+                print(f"   [INFO] No high-edge picks found for {game_date}")
+                return
+
+            # Generate Discord message
+            message = selector.generate_discord_message(picks, game_date)
+
+            # Post to sport-specific channel
+            response = requests.post(
+                webhook_url,
+                json={"content": message},
+                timeout=10
+            )
+
+            if response.status_code == 204:
+                print(f"   [OK] Posted {len(picks)} smart picks to Discord!")
+            else:
+                print(f"   [WARN] Discord returned status {response.status_code}")
+
+        except ImportError:
+            print(f"   [SKIP] smart_pick_selector not available")
+        except Exception as e:
+            print(f"   [WARN] Failed to post smart picks: {e}")
 
     def _load_state(self) -> Dict:
         """Load orchestrator state from file"""
