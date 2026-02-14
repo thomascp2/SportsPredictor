@@ -1,7 +1,66 @@
 import { create } from 'zustand';
+import * as WebBrowser from 'expo-web-browser';
+import { makeRedirectUri } from 'expo-auth-session';
+import * as QueryParams from 'expo-auth-session/build/QueryParams';
 import { supabase } from '../services/supabase';
 import type { Profile } from '../types/supabase';
 import type { Session, AuthChangeEvent } from '@supabase/supabase-js';
+
+// Required for web browser auth session to work properly on Android
+WebBrowser.maybeCompleteAuthSession();
+
+// Generate the redirect URI for OAuth callbacks
+// Expo Go: exp://192.168.x.x:8081  |  Standalone: freepicks://
+const redirectTo = makeRedirectUri();
+
+/** Extract tokens from the callback URL and create a Supabase session */
+async function createSessionFromUrl(url: string): Promise<Session | null> {
+  const { params, errorCode } = QueryParams.getQueryParams(url);
+
+  if (errorCode) {
+    console.error('OAuth callback error:', errorCode);
+    throw new Error(errorCode);
+  }
+
+  const { access_token, refresh_token } = params;
+  if (!access_token) return null;
+
+  const { data, error } = await supabase.auth.setSession({
+    access_token,
+    refresh_token,
+  });
+
+  if (error) throw error;
+  return data.session;
+}
+
+/** Open Supabase OAuth in a web browser and handle the redirect */
+async function performOAuth(provider: 'google' | 'apple' | 'discord'): Promise<Session | null> {
+  // Get the OAuth URL from Supabase (don't auto-redirect the browser)
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider,
+    options: {
+      redirectTo,
+      skipBrowserRedirect: true,
+    },
+  });
+
+  if (error) throw error;
+  if (!data?.url) throw new Error('No OAuth URL returned');
+
+  // Open the auth URL in a web browser overlay
+  const result = await WebBrowser.openAuthSessionAsync(
+    data.url,
+    redirectTo,
+  );
+
+  if (result.type === 'success') {
+    return createSessionFromUrl(result.url);
+  }
+
+  // User cancelled or dismissed the browser
+  return null;
+}
 
 interface AuthState {
   session: Session | null;
@@ -15,7 +74,7 @@ interface AuthState {
   signInWithDiscord: () => Promise<void>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
-  updateProfile: (updates: Partial<Profile>) => Promise<void>;
+  updateProfile: (updates: Partial<Profile> & Record<string, unknown>) => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>((set, get) => ({
@@ -51,10 +110,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   signInWithGoogle: async () => {
     set({ loading: true });
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-      });
-      if (error) throw error;
+      await performOAuth('google');
     } catch (error) {
       console.error('Google sign-in error:', error);
       throw error;
@@ -66,10 +122,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   signInWithApple: async () => {
     set({ loading: true });
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'apple',
-      });
-      if (error) throw error;
+      await performOAuth('apple');
     } catch (error) {
       console.error('Apple sign-in error:', error);
       throw error;
@@ -81,10 +134,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   signInWithDiscord: async () => {
     set({ loading: true });
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'discord',
-      });
-      if (error) throw error;
+      await performOAuth('discord');
     } catch (error) {
       console.error('Discord sign-in error:', error);
       throw error;
