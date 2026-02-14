@@ -97,6 +97,14 @@ except ImportError:
     API_MONITOR_AVAILABLE = False
     print("NOTE: API health monitor not found. Self-healing unavailable.")
 
+# Optional: Supabase Sync (FreePicks cloud sync)
+try:
+    from sync.supabase_sync import SupabaseSync
+    SUPABASE_SYNC_AVAILABLE = True
+except ImportError:
+    SUPABASE_SYNC_AVAILABLE = False
+    print("NOTE: Supabase sync not available. Cloud sync disabled.")
+
 
 # ============================================================================
 # SPORT-SPECIFIC CONFIGURATION
@@ -474,6 +482,22 @@ class SportsOrchestrator:
             if success:
                 self._post_smart_picks_to_discord(target_date)
 
+            # Sync predictions to Supabase (FreePicks cloud)
+            if success and SUPABASE_SYNC_AVAILABLE:
+                try:
+                    print(f"\n[SYNC] Syncing predictions to Supabase...")
+                    syncer = SupabaseSync()
+                    sync_result = syncer.sync_predictions(self.config.sport.lower(), target_date)
+                    smart_sync = syncer.sync_smart_picks(self.config.sport.lower(), target_date)
+                    details['supabase_sync'] = {
+                        'predictions': sync_result,
+                        'smart_picks': smart_sync,
+                    }
+                    print(f"[SYNC] Complete: {sync_result.get('synced', 0)} predictions, {smart_sync.get('synced', 0)} smart picks")
+                except Exception as e:
+                    warnings.append(f"Supabase sync failed: {str(e)}")
+                    print(f"[SYNC ERROR] {e}")
+
             return PipelineResult(
                 success=success,
                 timestamp=datetime.now().isoformat(),
@@ -594,6 +618,22 @@ class SportsOrchestrator:
 
             # Send Discord notification
             self.send_grading_notification(yesterday, details)
+
+            # Sync grading results to Supabase + trigger user pick grading
+            if success and SUPABASE_SYNC_AVAILABLE:
+                try:
+                    print(f"\n[SYNC] Syncing grading results to Supabase...")
+                    syncer = SupabaseSync()
+                    grading_sync = syncer.sync_grading(self.config.sport.lower(), yesterday)
+                    user_grading = syncer.trigger_user_grading(yesterday, self.config.sport)
+                    details['supabase_sync'] = {
+                        'grading': grading_sync,
+                        'user_grading': user_grading,
+                    }
+                    print(f"[SYNC] Grading sync complete: {grading_sync.get('synced', 0)} results")
+                except Exception as e:
+                    warnings.append(f"Supabase grading sync failed: {str(e)}")
+                    print(f"[SYNC ERROR] {e}")
 
             return PipelineResult(
                 success=success,

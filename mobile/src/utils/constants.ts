@@ -3,6 +3,39 @@
 // For physical device: use your PC's IP address
 export const API_BASE_URL = 'http://192.168.1.70:8000/api';
 
+// Supabase Configuration
+// Replace with your Supabase project credentials
+export const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://your-project.supabase.co';
+export const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'your-anon-key';
+
+// Points System
+export const POINTS = {
+  CORRECT_PICK: 10,
+  STREAK_3_BONUS: 5,
+  STREAK_5_BONUS: 15,
+  STREAK_10_BONUS: 50,
+  DAILY_LOGIN: 5,
+  FIRST_PICK: 5,
+  // Costs
+  UNLOCK_SINGLE_AI: 25,
+  UNLOCK_GAME_AI: 100,
+  UNLOCK_DAY_AI: 200,
+} as const;
+
+// Tier thresholds and display
+export const TIER_INFO: Record<string, { label: string; color: string; minPicks: number; minAccuracy: number }> = {
+  rookie: { label: 'Rookie', color: '#888', minPicks: 0, minAccuracy: 0 },
+  pro: { label: 'Pro', color: '#4CAF50', minPicks: 50, minAccuracy: 0.5 },
+  elite: { label: 'Elite', color: '#FFD700', minPicks: 200, minAccuracy: 0.55 },
+  legend: { label: 'Legend', color: '#FF6B35', minPicks: 500, minAccuracy: 0.6 },
+};
+
+// Sportsbooks for bet tracking
+export const SPORTSBOOKS = [
+  'PrizePicks', 'Underdog', 'DraftKings', 'FanDuel', 'BetMGM',
+  'Caesars', 'PointsBet', 'Bet365', 'Other',
+] as const;
+
 // Parlay Payout Multipliers by total leg value
 export const PAYOUTS: Record<number, number> = {
   2: 3.0,

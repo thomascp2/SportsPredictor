@@ -1,7 +1,14 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ViewStyle } from 'react-native';
 import { ParlayPick } from '../../utils/calculations';
 import { LEG_VALUES } from '../../utils/constants';
+
+// Typed map for odds type background colors (avoids dynamic keyof styles union issue)
+const oddsTypeStyles: Record<string, ViewStyle> = {
+  goblin: { backgroundColor: '#2E7D32' },
+  standard: { backgroundColor: '#1976D2' },
+  demon: { backgroundColor: '#D32F2F' },
+};
 
 interface ParlaySlipProps {
   picks: ParlayPick[];
@@ -54,7 +61,7 @@ export function ParlaySlip({ picks, onRemovePick, onClearAll, onChangeOddsType }
                       style={[
                         styles.oddsTypeButton,
                         pick.oddsType === type && styles.oddsTypeSelected,
-                        pick.oddsType === type && styles[type as keyof typeof styles],
+                        pick.oddsType === type && oddsTypeStyles[type],
                       ]}
                       onPress={() => onChangeOddsType(pick.id, type)}
                     >
