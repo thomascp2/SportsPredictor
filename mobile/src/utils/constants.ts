@@ -5,8 +5,8 @@ export const API_BASE_URL = 'http://192.168.1.70:8000/api';
 
 // Supabase Configuration
 // Replace with your Supabase project credentials
-export const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://your-project.supabase.co';
-export const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'your-anon-key';
+export const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://***REMOVED***';
+export const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '***REMOVED***';
 
 // Points System
 export const POINTS = {

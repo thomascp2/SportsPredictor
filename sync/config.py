@@ -9,6 +9,16 @@ Set environment variables:
 """
 
 import os
+from pathlib import Path
+
+# Auto-load .env from project root if present
+_env_path = Path(__file__).parent.parent / '.env'
+if _env_path.exists():
+    for line in _env_path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith('#') and '=' in line:
+            key, _, value = line.partition('=')
+            os.environ.setdefault(key.strip(), value.strip())
 
 # Supabase connection
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
