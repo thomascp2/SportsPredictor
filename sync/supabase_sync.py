@@ -179,11 +179,14 @@ class SupabaseSync:
         # Query outcomes - different column names per sport
         if sport.lower() == 'nhl':
             prediction_col = 'predicted_outcome'
+            actual_val_col = 'actual_stat_value'
         else:
             prediction_col = 'prediction'
+            actual_val_col = 'actual_value'
 
         rows = conn.execute(f'''
-            SELECT o.player_name, o.prop_type, o.line, o.actual_value,
+            SELECT o.player_name, o.prop_type, o.line,
+                   o.{actual_val_col} as actual_value,
                    o.outcome, o.{prediction_col} as ai_prediction
             FROM prediction_outcomes o
             WHERE o.game_date = ?
