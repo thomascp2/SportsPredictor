@@ -5,8 +5,8 @@ export const API_BASE_URL = 'http://192.168.1.70:8000/api';
 
 // Supabase Configuration
 // Replace with your Supabase project credentials
-export const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://your-project.supabase.co';
-export const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'your-anon-key';
+export const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://txleohtoesmanorqcurt.supabase.co';
+export const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR4bGVvaHRvZXNtYW5vcnFjdXJ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzEwODQxMDMsImV4cCI6MjA4NjY2MDEwM30.33GFL5ZFM8X9W5_wVW7xNzzHZ32x42qlQMPfqFA9nUQ';
 
 // Points System
 export const POINTS = {
