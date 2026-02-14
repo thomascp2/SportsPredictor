@@ -1,23 +1,26 @@
 {
   "expo": {
-    "name": "SportsPredictor",
-    "slug": "sportspredictor",
-    "version": "1.0.0",
+    "name": "FreePicks",
+    "slug": "freepicks",
+    "version": "2.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
+    "scheme": "freepicks",
     "splash": {
-      "backgroundColor": "#1a1a2e"
+      "backgroundColor": "#121212"
     },
     "assetBundlePatterns": [
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.freepicks.app"
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#1a1a2e"
-      }
+        "backgroundColor": "#121212"
+      },
+      "package": "com.freepicks.app"
     }
   }
 }
