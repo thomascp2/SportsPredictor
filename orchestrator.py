@@ -70,6 +70,14 @@ except ImportError:
     PRIZEPICKS_AVAILABLE = False
     print("NOTE: prizepicks_client not found. PrizePicks integration unavailable.")
 
+# Optional: NBA schedule check (game-day awareness)
+try:
+    sys.path.insert(0, str(Path(__file__).parent / "nba" / "scripts"))
+    from nba_config import nba_has_games
+    NBA_SCHEDULE_AVAILABLE = True
+except ImportError:
+    NBA_SCHEDULE_AVAILABLE = False
+
 # Optional: ML Training integration
 try:
     sys.path.insert(0, str(Path(__file__).parent / "ml_training"))
@@ -369,6 +377,23 @@ class SportsOrchestrator:
         sport_key = self.config.sport.lower()
 
         try:
+            # NBA: skip entire pipeline when no games scheduled
+            if self.config.sport == "NBA" and NBA_SCHEDULE_AVAILABLE:
+                has_games, game_count = nba_has_games(target_date)
+                if not has_games:
+                    print(f"[SKIP] No NBA games on {target_date} - skipping prediction pipeline")
+                    print("       (All-Star break or off day)")
+                    print()
+                    return PipelineResult(
+                        success=True,
+                        timestamp=datetime.now().isoformat(),
+                        sport=self.config.sport,
+                        operation="prediction",
+                        details={'skipped_schedule': True, 'game_count': 0},
+                        errors=[],
+                        warnings=["No games scheduled - intentional skip"]
+                    )
+
             step = 1
 
             # Step 1: Fetch schedule (NHL only)
@@ -1637,6 +1662,14 @@ class SportsOrchestrator:
         if not PRIZEPICKS_AVAILABLE:
             print(f"{self.config.emoji} PrizePicks integration not available")
             return {'success': False, 'error': 'Module not installed'}
+
+        # NBA: skip ingestion when no games scheduled
+        if self.config.sport == "NBA" and NBA_SCHEDULE_AVAILABLE:
+            target_date = datetime.now().strftime('%Y-%m-%d')
+            has_games, game_count = nba_has_games(target_date)
+            if not has_games:
+                print(f"\n{self.config.emoji} [SKIP] No NBA games on {target_date} - skipping PrizePicks ingestion")
+                return {'success': True, 'skipped_schedule': True, 'game_count': 0}
 
         print(f"\n{self.config.emoji} PRIZEPICKS LINE INGESTION")
         print("=" * 60)

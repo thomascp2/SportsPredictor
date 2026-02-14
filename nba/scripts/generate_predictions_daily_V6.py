@@ -28,7 +28,8 @@ from pathlib import Path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from nba_config import (
     DB_PATH, DISCORD_WEBHOOK_URL,
-    STARTERS_COUNT, SIGNIFICANT_BENCH_COUNT
+    STARTERS_COUNT, SIGNIFICANT_BENCH_COUNT,
+    nba_has_games,
 )
 from data_fetchers.nba_stats_api import NBAStatsAPI
 from statistical_predictions import NBAStatisticalPredictor
@@ -247,6 +248,21 @@ class NBADailyPredictorV6:
 
         print("MODE: PrizePicks Line Driven")
         print("Only generating predictions for ACTUAL PrizePicks lines")
+        print()
+
+        # STEP 0: Check NBA schedule
+        print("STEP 0: Checking NBA schedule...")
+        has_games, game_count = nba_has_games(target_date)
+        if not has_games:
+            print(f"[SKIP] No regular season NBA games scheduled for {target_date}")
+            if game_count == 0:
+                print("       (All-Star break or off day)")
+            print("       Skipping prediction generation.")
+            print()
+            return {'total_predictions': 0, 'no_games': True, 'skipped_schedule': True}
+        else:
+            count_str = str(game_count) if game_count > 0 else "unknown number of"
+            print(f"[OK] {count_str} regular season games on {target_date}")
         print()
 
         # Check for existing predictions
