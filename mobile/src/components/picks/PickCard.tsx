@@ -1,9 +1,16 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ViewStyle } from 'react-native';
 import { SmartPick } from '../../services/api';
 import { TierBadge } from './TierBadge';
 import { EdgeIndicator } from './EdgeIndicator';
 import { Card } from '../common/Card';
+
+// Typed map for odds type badge styles (avoids dynamic keyof styles union issue)
+const oddsTypeBadgeStyles: Record<string, ViewStyle> = {
+  goblin: { backgroundColor: '#2E7D3220', borderColor: '#2E7D32', borderWidth: 1 },
+  standard: { backgroundColor: '#1976D220', borderColor: '#1976D2', borderWidth: 1 },
+  demon: { backgroundColor: '#D32F2F20', borderColor: '#D32F2F', borderWidth: 1 },
+};
 
 interface PickCardProps {
   pick: SmartPick;
@@ -84,7 +91,7 @@ export function PickCard({ pick, onAddToParlay, onPlayerPress, isInParlay }: Pic
 
       {/* Odds type badge */}
       <View style={styles.footer}>
-        <View style={[styles.oddsTypeBadge, styles[pick.pp_odds_type as keyof typeof styles] || styles.standard]}>
+        <View style={[styles.oddsTypeBadge, oddsTypeBadgeStyles[pick.pp_odds_type] || oddsTypeBadgeStyles.standard]}>
           <Text style={styles.oddsTypeText}>{pick.pp_odds_type?.toUpperCase() || 'STANDARD'}</Text>
         </View>
 
