@@ -54,6 +54,39 @@ preventing a first device test.
 
 ---
 
+## 2026-02-18 — Orchestrator Debugging
+
+**Sessions:** 1
+**Status going in:** No Discord notifications since Feb 16, orchestrator status unknown
+**Status coming out:** Root cause identified and fixed, orchestrator restarted
+
+### What happened
+Investigated missing Discord notifications. Orchestrator process had died on Feb 16
+(terminal closed / machine restarted) with no auto-restart mechanism. NHL process
+had been dead since Jan 18. Both sports were actually healthy — the `consecutive_failures: 1`
+was a false positive from the ESPN API health monitor, not a real grading failure.
+
+### Key decisions / pivots
+- **Schema validator patched** — empty `events: []` during off-days no longer triggers
+  false alarms. `leagues` and `provider` added to expected ESPN scoreboard structure.
+- **`start_orchestrator.bat` upgraded** — added auto-restart loop so process recovers
+  within 30 seconds if it ever exits. Run with `.\start_orchestrator.bat` (not `python`).
+
+### What's blocked
+- OAuth providers still not configured (same as Feb 14)
+- NBA games resume ~Feb 20 — first live pipeline run coming up
+
+### Notes
+- Orchestrator process is NOT a service — if the terminal closes, it dies. Long-term
+  fix would be Windows Task Scheduler or running on a cloud VM.
+- The prediction skip logic during All-Star break does NOT send a Discord notification
+  (returns early before the notify call) — silence during breaks is expected behavior.
+- `start_orchestrator.bat` must be run directly, not with `python`.
+
+**Detailed minutes:** *(short session, no separate file)*
+
+---
+
 <!-- Template for future entries:
 
 ## YYYY-MM-DD — [Session Title]
