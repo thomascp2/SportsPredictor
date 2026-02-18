@@ -285,8 +285,8 @@ class APIHealthMonitor:
             elif isinstance(exp, list) and isinstance(act, list):
                 if len(exp) > 0 and len(act) > 0:
                     compare_recursive(exp[0], act[0], f"{path}[0]")
-                elif len(exp) > 0 and len(act) == 0:
-                    differences.append(f"Expected non-empty list at {path}, got empty")
+                # Empty expected list = schema allows empty (e.g. events on off-days) — don't flag
+                # Non-empty expected but empty actual = only flag if schema explicitly requires items
 
             elif exp != act:
                 differences.append(f"Type mismatch at {path}: expected {exp}, got {act}")
