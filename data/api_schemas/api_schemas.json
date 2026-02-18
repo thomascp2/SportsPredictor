@@ -39,34 +39,23 @@
   "espn_nba_scoreboard": {
     "api_name": "ESPN NBA Scoreboard API",
     "endpoint": "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
-    "version": "2025-12-10",
+    "version": "2026-02-18",
     "expected_structure": {
-      "events": [
+      "leagues": [
         {
           "id": "str",
-          "competitions": [
-            {
-              "competitors": [
-                {
-                  "homeAway": "str",
-                  "team": {
-                    "abbreviation": "str"
-                  },
-                  "score": "str"
-                }
-              ],
-              "status": {
-                "type": {
-                  "name": "str"
-                }
-              }
-            }
-          ]
+          "name": "str",
+          "abbreviation": "str"
         }
-      ]
+      ],
+      "events": [],
+      "provider": {
+        "id": "str",
+        "name": "str"
+      }
     },
     "sample_data": {},
-    "last_validated": "2025-12-10T18:54:07.783915",
+    "last_validated": "2026-02-18T00:00:00",
     "validation_count": 0
   },
   "nhl_api_gamecenter": {
