@@ -87,47 +87,51 @@ was a false positive from the ESPN API health monitor, not a real grading failur
 
 ---
 
-## 2026-02-23 — Post-Break Bug Hunt & Data Recovery
+## 2026-02-23 — Post-Break Bug Hunt, ML Training & Learning Mode Exit
 
-**Sessions:** 1
+**Sessions:** 2
 **Status going in:** NBA prediction pipeline crashing; grading rate ~30%; NHL pipeline falsely reporting FAILED on off days; system was offline Jan 28–Feb 22 (vacation + Olympic/All-Star breaks)
-**Status coming out:** 5 bugs fixed across 5 files; grading rate restored to ~71-73%; Feb 20-22 data recovered; system ready for NHL return Feb 25
+**Status coming out:** 5 bugs fixed; grading restored to 71-73%; Feb 20-22 data recovered; 19 ML models trained across both sports; learning mode lifted; daily Discord top-20 picks running
 
-### What happened
+### Session 1 — Post-Break Bug Hunt & Data Recovery
 NBA returned from All-Star break Feb 20 but the prediction pipeline was crashing
-intermittently with an unhandled urllib3 exception. Grading was only capturing
-~30% of predictions — traced to two compounding bugs: the self-healing system's
-Dec 2024 auto-fix had introduced a bad ESPN boxscore filter that excluded all bench
-players (only 5 starters per team returned instead of ~20 per team), and 7 V6 prop
-types (pts_rebs, pts_asts, rebs_asts, steals, blocked_shots, turnovers, fantasy)
-were missing from the grader's stat_map, causing them to grade against 0 instead of
-actual stats. Both were fixed. Feb 20-22 data was retroactively recovered. NHL grading
-was also silently crashing during the Olympic break due to a wrong Discord notification
-signature and "no predictions to grade" being treated as a failure.
+with an unhandled urllib3 exception. Grading was only capturing ~30% of predictions —
+traced to two compounding bugs: the self-healing system's Dec 2024 auto-fix had
+introduced a bad ESPN boxscore filter that excluded all bench players (only 5 starters
+per team returned instead of ~20 per team), and 7 V6 prop types were missing from
+the grader's stat_map, causing them to grade against 0. Both were fixed. Feb 20-22
+data was retroactively recovered. NHL grading was also silently crashing during the
+Olympic break.
+
+### Session 2 — ML Training & Learning Mode Exit
+Database confirmed all 14 NBA core combos had 4,500–4,815 graded samples with
+strong accuracy signal (67–91%). Trained 19 ML models total (14 NBA + 5 NHL),
+all beating their statistical baseline. Lifted `LEARNING_MODE = False` in both
+sport configs (probability cap removed). Wired `ProductionPredictor` into NBA V6
+prediction script (NHL V6 was already wired). Added daily Discord notification
+posting top 20 picks per sport at 10:15 CST. Fixed notification display bugs:
+L5% is always a multiple of 20% (hits/5 games), shown as directional rate
+matching the pick direction.
 
 ### Key decisions / pivots
-- **ESPN `active` field is NOT a DNP indicator** — ESPN sets `active: False` for all
-  players once a game completes. Only `didNotPlay: True` is the correct DNP signal.
-  Self-healing system had added this as an "enhanced check" but it was wrong.
-- **V6 generates 13 prop types; grader only knew 6** — added pts_rebs, pts_asts,
-  rebs_asts, steals, blocked_shots, turnovers, fantasy (PrizePicks formula) to stat_map.
-  Unknown prop types now return `None` and are skipped cleanly rather than graded as 0.
-- **Off days ≠ errors** — both NHL schedule fetch (exit 1 → exit 0) and NHL grading
-  ("no predictions to grade" → success) now handle breaks gracefully.
-- **Data gap accepted** — Jan 28–Feb 5 NHL games (before Olympic break) were never
-  predicted because system was offline. Not retroactively recovered; noted in MEMORY.md.
+- **ESPN `active` field is NOT a DNP indicator** — only `didNotPlay: True` is correct.
+- **V6 generates 13 prop types; grader only knew 6** — 7 missing types added.
+- **Off days ≠ errors** — NHL schedule and grading now return 0 (not 1) on off days.
+- **ML readiness: 4,500 beats 7,500** — orchestrator target was conservative; training
+  script requires 3,000. All 14 NBA combos at 4,500+ was sufficient to train.
+- **Data timing known issue** — combo stats (PRA, fantasy) can show L5: 0% in the
+  Discord notification if grading hasn't updated player_game_logs before predictions
+  run. Rare on steady-state; expect after breaks/restarts.
 
 ### What's blocked
 - OAuth providers still not configured
 - NHL returns Wednesday Feb 25 — orchestrator will auto-resume
 
 ### Notes
-- Grading rate went from 31%/23%/0% → 73%/71%/70% for Feb 20/21/22 after fix.
-  Remaining ~30% ungraded = genuinely injured/DNP players (correct behavior).
-- Feb 22 NBA: 1,910 predictions generated + 1,348 graded at 79.5% accuracy (retroactive).
-- The auto-healing system (Dec 2024) introduced `starter is None` check that broke
-  grading for 2+ months. Consider adding integration tests for boxscore player counts.
-- All fixes are backward-compatible — no DB schema changes.
+- Grading rate: 31%/23%/0% → 73%/71%/70% for Feb 20/21/22.
+- First real ML-driven predictions run Feb 24 — expect actual probability spread.
+- `lightgbm` installed; now all 5 model types compete (LR, RF, GB, XGBoost, LightGBM).
+- `train_models.py` fixed: single-class test set crash (threes_2.5 = 91.5% UNDER rate).
 
 **Detailed minutes:** `docs/sessions/2026-02-23.md`
 
