@@ -1,6 +1,6 @@
 # FreePicks — Project Roadmap
 
-*Last updated: 2026-02-14*
+*Last updated: 2026-02-23*
 
 ---
 
@@ -19,8 +19,11 @@
   PHASE 3 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░ ~Apr 2026
   Monetization: FreePicks Plus + Ads + Sportsbook Links
 
-  PHASE 4 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░ ~May 2026
-  ML Upgrade: Retrained models → higher accuracy → bigger edge
+  PHASE 4 ████████████████████████████ COMPLETE (Feb 23, 2026)
+  ML Upgrade: 19 models trained, learning mode lifted, real probabilities live
+
+  PHASE 5 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░ ~Jun 2026
+  Correlated Parlay Optimizer: team stacking, zero-sum awareness, cross-sport EV
   ──────────────────────────────────────────────────────────────────────────────
 ```
 
@@ -136,41 +139,108 @@
 
 ---
 
-## Phase 4 — ML Upgrade (~May 2026)
+## Phase 4 — ML Upgrade (Complete ✅ Feb 23, 2026)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  PHASE 4 — ML UPGRADE                              UPCOMING    │
+│  PHASE 4 — ML UPGRADE                              COMPLETE ✅  │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  ML TRAINING READINESS (as of Feb 14, 2026)                    │
+│  TRAINED & LIVE (Feb 23, 2026)                                 │
 │                                                                 │
-│  NBA  ████████████████████████████░  97.8%  (~117k predictions)│
-│        → All 14 prop/line combos above 7,500 target            │
-│        → Can trigger training NOW                              │
+│  NBA  14/14 core combos  ·  4,506–4,815 samples each          │
+│        Best Brier delta: threes_2.5 (+0.12), minutes (+0.12)  │
+│        Models: LR / RF / GB / XGBoost / LightGBM competed     │
+│        Registry: ml_training/model_registry/nba/               │
 │                                                                 │
-│  NHL  ████████████████████████████   94.9%  (~45k predictions) │
-│        → Bottleneck: points_1.5 (7,114 / 7,500 — 386 needed)  │
-│        → ~2-3 weeks of games after break to clear bottleneck   │
+│  NHL  5/5 core combos   ·  all above 6,700 samples            │
+│        Best Brier delta: shots_3.5 (+0.39), points_1.5 (+0.34)│
+│        Registry: ml_training/model_registry/nhl/               │
 │                                                                 │
-│  TRAINING PIPELINE                                              │
-│  ⬜ Trigger NBA training (may be ready now)                    │
-│       python orchestrator.py --sport nba --operation ml-train  │
-│  ⬜ NHL training after points_1.5 threshold cleared            │
-│  ⬜ A/B test new models vs. current rule-based system          │
-│  ⬜ Deploy winning model, monitor accuracy delta               │
+│  DEPLOYMENT                                                     │
+│  ✅ LEARNING_MODE = False in both sport configs                │
+│  ✅ PROBABILITY_CAP removed (0.0–1.0, real spread)            │
+│  ✅ NBA V6 wired to ProductionPredictor (ensemble 60/40)       │
+│  ✅ NHL V6 was already wired                                   │
+│  ✅ Daily Discord top-20 picks at 10:15 CST (both sports)     │
 │                                                                 │
-│  ACCURACY TARGETS (current → goal)                             │
-│  NBA UNDER:  84.2% → 88%+                                      │
-│  NBA OVER:   61.2% → 68%+                                      │
-│  NHL UNDER:  74.4% → 78%+                                      │
-│  NHL OVER:   54.6% → 60%+                                      │
-│                                                                 │
-│  FEATURE IMPROVEMENTS                                           │
-│  ⬜ Opponent defensive features (currently 0% in last 14d NHL) │
+│  REMAINING / FUTURE MODEL IMPROVEMENTS                          │
+│  ⬜ Opponent defensive features for NHL                        │
 │  ⬜ Rest/travel fatigue features                               │
 │  ⬜ Referee/officiating tendency features (NBA fouls/FTA)      │
 │  ⬜ Real-time injury/lineup adjustment                         │
+│  ⬜ Retrain periodically as graded data grows                  │
+│  ⬜ Fix data timing: combo stat L5 stale after restarts        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Phase 5 — Correlated Parlay Optimizer (~Jun 2026)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  PHASE 5 — CORRELATED PARLAY OPTIMIZER             UPCOMING    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  GOAL: Move beyond single-pick confidence to optimal            │
+│  COMBINATIONS of picks that maximize EV while managing          │
+│  correlation risk. Two modes:                                   │
+│    (A) Ceiling parlays — stack correlated OVERs for big payout │
+│    (B) Hedging parlays — mix negative correlations for floor   │
+│                                                                 │
+│  LAYER 1 — CORRELATION MATRIX                                   │
+│  ⬜ Build player-pair correlation dataset from graded outcomes  │
+│       For each pair (PlayerA_PropX, PlayerB_PropY):            │
+│       Pearson r of actual outcomes on shared game dates        │
+│  ⬜ Team-level correlation (teammates vs. opponents)            │
+│  ⬜ Cross-sport correlation baseline (NHL+NBA independence)     │
+│                                                                 │
+│  LAYER 2 — ZERO-SUM / GAME-TOTAL AWARENESS                     │
+│  ⬜ Model expected team total (pts, rebounds, assists budget)   │
+│       NBA: ~115 pts/game distributed across ~8 players         │
+│       If SGA projected 35+ pts, adjust teammates downward      │
+│  ⬜ Win/loss influence on stat lines                            │
+│       Star player underperforms → team loses → support players │
+│       must carry → their UNDERs become less likely             │
+│       e.g. OKC: SGA cold → Lu Dort/Holmgren must do more      │
+│  ⬜ Pace/tempo influence (high-pace games inflate counting stats│
+│                                                                 │
+│  LAYER 3 — PARLAY CONSTRUCTION ENGINE                           │
+│  ⬜ Input: today's ML predictions + correlation matrix          │
+│  ⬜ Stacking rules (PrizePicks / sportsbook compliance):        │
+│       Min 2 different teams in a parlay                        │
+│       Handle "power play" vs. "flex play" modes                │
+│  ⬜ Optimizer: maximize combined EV subject to correlation cap  │
+│       e.g. don't stack 3 players with r > 0.7 (too correlated)│
+│  ⬜ Output: ranked list of 2-leg, 3-leg, 4-leg parlay combos   │
+│                                                                 │
+│  LAYER 4 — CROSS-SPORT PARLAYS                                  │
+│  ⬜ Baseline: NBA and NHL are largely uncorrelated              │
+│       Combining reduces single-sport variance                  │
+│  ⬜ Future sports (NFL, MLB, NCAAB, Soccer) add more legs       │
+│  ⬜ Analyze: does cross-sport mixing improve EV or just dilute? │
+│       Answer via backtest on graded outcome pairs              │
+│                                                                 │
+│  LAYER 5 — DISCORD / APP INTEGRATION                            │
+│  ⬜ Daily "PARLAY OF THE DAY" Discord post (10:20 CST)         │
+│       Best 3-leg combo + best 5-leg combo, with correlation    │
+│       scores and EV estimate                                   │
+│  ⬜ Expose in FreePicks app as "Smart Parlays" tab             │
+│  ⬜ User can tap any parlay leg to see individual pick details  │
+│                                                                 │
+│  DATA REQUIREMENTS                                              │
+│  · Need ~1 full season of graded pair outcomes to build        │
+│    reliable correlation matrix (~500+ shared game dates)       │
+│  · NBA has this now (124k predictions, 79 game days)           │
+│  · NHL will have it by end of 2025-26 season                   │
+│  · Cross-sport needs concurrent game dates with both sports    │
+│                                                                 │
+│  TECH STACK (proposed)                                          │
+│  · scipy.stats.pearsonr for pairwise correlations              │
+│  · scipy.optimize or PuLP for parlay LP optimization           │
+│  · New table: player_correlations (player_a, player_b,         │
+│               prop_a, prop_b, r, n_samples, last_updated)      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -231,7 +301,7 @@
 ## Immediate Next Steps (Ordered)
 
 ```
-  1. ⬜  Configure Discord OAuth (~5 min)
+  1. ⬜  Configure Discord OAuth (~5 min)                         [BLOCKER]
           → discord.com/developers → New App → OAuth2 → copy ID+Secret
           → Add redirect: https://txleohtoesmanorqcurt.supabase.co/auth/v1/callback
           → Enable via Supabase Management API (curl command in FREEPICKS_PLAN.md)
@@ -241,13 +311,20 @@
           → Scan QR code
           → Verify: sign-in → profile created → picks appear → make a pick
 
-  3. ⬜  Wait for All-Star break to end (~Feb 20)
-          → Orchestrator resumes auto-generating predictions
-          → First full live pipeline run
+  3. ⬜  Monitor first ML-driven predictions (Feb 24+)
+          → Verify real probability spread (not all 80%)
+          → Check for data timing issues on combo stat L5 values
+          → Watch NHL predictions Feb 25 (first post-Olympic-break run)
 
-  4. ⬜  Check NBA ML training readiness
-          → python orchestrator.py --sport nba --mode once --operation ml-check
-          → May be ready to trigger training now
+  4. ⬜  Fix data timing: combo stat L5 stale after restarts
+          → Grading must populate player_game_logs before predictions run
+          → Investigate: does grading update player_game_logs or only prediction_outcomes?
+          → Consider: prediction script should refresh recent game logs on startup
 
-  5. ⬜  Begin Phase 2 planning (leaderboard, friends, push notifications)
+  5. ⬜  Begin Phase 5 groundwork: player correlation matrix
+          → Query graded outcome pairs for all players on shared game dates
+          → Compute Pearson r for each (playerA_prop, playerB_prop) pair
+          → Store in new player_correlations table
+
+  6. ⬜  Begin Phase 2 planning (leaderboard, friends, push notifications)
 ```
