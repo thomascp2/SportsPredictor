@@ -43,6 +43,14 @@ except ImportError:
     PP_AVAILABLE = False
     print("WARNING: PrizePicks client not available")
 
+# ML Model Integration
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "ml_training"))
+try:
+    from production_predictor import ProductionPredictor
+    ML_AVAILABLE = True
+except ImportError:
+    ML_AVAILABLE = False
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -95,6 +103,22 @@ class NBADailyPredictorV6:
         self.db_path = db_path
         self.api = NBAStatsAPI()
         self.predictor = NBAStatisticalPredictor()
+
+        # ML predictor — wraps statistical with trained models where available
+        self.ml_predictor = None
+        if ML_AVAILABLE:
+            try:
+                registry_dir = Path(__file__).parent.parent.parent / "ml_training" / "model_registry"
+                self.ml_predictor = ProductionPredictor(str(registry_dir))
+                nba_models = self.ml_predictor.list_available_models('nba')
+                if nba_models:
+                    print(f"[ML] {len(nba_models)} NBA ML models loaded")
+                else:
+                    print("[ML] No NBA models in registry — using statistical predictor")
+                    self.ml_predictor = None
+            except Exception as e:
+                print(f"[ML] Could not load ML predictor: {e}")
+                self.ml_predictor = None
 
     def ensure_pp_lines_fetched(self) -> tuple[bool, str]:
         """
@@ -348,10 +372,22 @@ class NBADailyPredictorV6:
                     for prop_type, lines in player_pp_lines.items():
                         for line in lines:
                             try:
-                                result = self.predictor.predict_prop(
+                                # Statistical predictor always runs (provides features + fallback)
+                                stat_result = self.predictor.predict_prop(
                                     player_name, prop_type, line, target_date,
                                     home_away, opponent
                                 )
+
+                                # Use ML ensemble if a trained model exists for this combo
+                                if (stat_result and self.ml_predictor and
+                                        self.ml_predictor.is_model_available('nba', prop_type, line)):
+                                    result = self.ml_predictor.predict_ensemble(
+                                        'nba', prop_type, line,
+                                        stat_result.get('features', {}),
+                                        stat_result
+                                    )
+                                else:
+                                    result = stat_result
 
                                 if result:
                                     # Save prediction

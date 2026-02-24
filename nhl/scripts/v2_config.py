@@ -16,8 +16,8 @@ V2_ROOT = Path(__file__).parent.parent  # Go up to nhl/ directory
 DB_PATH = str(V2_ROOT / "database" / "nhl_predictions_v2.db")
 
 # Learning mode settings (Weeks 2-9)
-LEARNING_MODE = True
-PROBABILITY_CAP = (0.30, 0.70)  # Conservative during data collection
+LEARNING_MODE = False
+PROBABILITY_CAP = (0.0, 1.0)  # No cap — ML models provide calibrated probabilities
 MODEL_TYPE = "statistical_only"  # No ML until Week 10
 
 # Date/time settings (CST)
