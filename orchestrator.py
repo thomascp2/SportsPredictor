@@ -1687,15 +1687,24 @@ class SportsOrchestrator:
             conn = sqlite3.connect(str(self.config.db_path))
             cursor = conn.cursor()
 
-            # Best pick per player: highest edge (|prob - 0.5|), one row per player
+            # Best pick per player: among capped predictions, rank by recent form.
+            # probability is capped at 0.80 in learning mode so many players tie —
+            # break ties with L5 success rate then consistency score.
             cursor.execute("""
                 SELECT player_name, team, opponent, prop_type, line, prediction,
-                       probability, home_away
+                       probability, home_away,
+                       f_l5_success_rate, f_consistency_score, f_current_streak
                 FROM predictions
                 WHERE game_date = ?
+                  AND f_insufficient_data = 0
+                  AND f_games_played >= 5
                 GROUP BY player_name
                 HAVING probability = MAX(probability)
-                ORDER BY ABS(probability - 0.5) DESC
+                ORDER BY
+                    probability DESC,
+                    f_l5_success_rate DESC,
+                    f_consistency_score DESC,
+                    f_current_streak DESC
                 LIMIT 20
             """, (today,))
             rows = cursor.fetchall()
@@ -1707,15 +1716,17 @@ class SportsOrchestrator:
 
             sport = self.config.sport
             lines = []
-            for i, (player, team, opp, prop, line, direction, prob, ha) in enumerate(rows, 1):
-                edge = abs(prob - 0.5) * 100
+            for i, (player, team, opp, prop, line, direction, prob, ha,
+                    l5_rate, consistency, streak) in enumerate(rows, 1):
                 conf = int(prob * 100)
                 arrow = "OVER" if direction == "OVER" else "UNDER"
                 ha_str = "vs" if ha == "H" else "@"
+                l5_pct = int((l5_rate or 0) * 100)
+                streak_str = f" {int(streak)}x streak" if streak and streak >= 2 else ""
                 lines.append(
                     f"`{i:2d}.` **{player}** ({team} {ha_str} {opp})  "
                     f"{arrow} {line} {prop.upper().replace('_',' ')}  "
-                    f"— {conf}% conf (+{edge:.1f}% edge)"
+                    f"— {conf}% model | L5: {l5_pct}%{streak_str}"
                 )
 
             header = (
