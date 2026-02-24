@@ -1,20 +1,20 @@
 {
   "nhl": {
     "started_at": "2025-11-25T12:44:45.291366",
-    "last_prediction_gen": "2026-01-19T00:33:56.998776",
-    "last_grading": "2026-01-18T08:23:10.096075",
-    "last_health_check": "2026-01-18T08:23:11.179436",
+    "last_prediction_gen": "2026-02-23T18:45:06.154325",
+    "last_grading": "2026-02-23T18:45:42.870824",
+    "last_health_check": "2026-02-23T18:44:49.408304",
     "consecutive_failures": 0,
-    "total_runs": 11,
+    "total_runs": 14,
     "ml_training_started": false
   },
   "nba": {
     "started_at": "2025-11-25T12:44:46.005978",
-    "last_prediction_gen": "2026-01-19T10:00:43.550342",
-    "last_grading": "2026-01-19T09:04:35.372693",
-    "last_health_check": "2026-01-19T14:53:53.810275",
+    "last_prediction_gen": "2026-02-23T18:45:09.536288",
+    "last_grading": "2026-02-23T18:49:30.163945",
+    "last_health_check": "2026-02-23T18:44:50.568673",
     "consecutive_failures": 0,
-    "total_runs": 55,
+    "total_runs": 74,
     "ml_training_started": false
   }
 }

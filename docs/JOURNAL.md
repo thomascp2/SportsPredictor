@@ -87,6 +87,52 @@ was a false positive from the ESPN API health monitor, not a real grading failur
 
 ---
 
+## 2026-02-23 — Post-Break Bug Hunt & Data Recovery
+
+**Sessions:** 1
+**Status going in:** NBA prediction pipeline crashing; grading rate ~30%; NHL pipeline falsely reporting FAILED on off days; system was offline Jan 28–Feb 22 (vacation + Olympic/All-Star breaks)
+**Status coming out:** 5 bugs fixed across 5 files; grading rate restored to ~71-73%; Feb 20-22 data recovered; system ready for NHL return Feb 25
+
+### What happened
+NBA returned from All-Star break Feb 20 but the prediction pipeline was crashing
+intermittently with an unhandled urllib3 exception. Grading was only capturing
+~30% of predictions — traced to two compounding bugs: the self-healing system's
+Dec 2024 auto-fix had introduced a bad ESPN boxscore filter that excluded all bench
+players (only 5 starters per team returned instead of ~20 per team), and 7 V6 prop
+types (pts_rebs, pts_asts, rebs_asts, steals, blocked_shots, turnovers, fantasy)
+were missing from the grader's stat_map, causing them to grade against 0 instead of
+actual stats. Both were fixed. Feb 20-22 data was retroactively recovered. NHL grading
+was also silently crashing during the Olympic break due to a wrong Discord notification
+signature and "no predictions to grade" being treated as a failure.
+
+### Key decisions / pivots
+- **ESPN `active` field is NOT a DNP indicator** — ESPN sets `active: False` for all
+  players once a game completes. Only `didNotPlay: True` is the correct DNP signal.
+  Self-healing system had added this as an "enhanced check" but it was wrong.
+- **V6 generates 13 prop types; grader only knew 6** — added pts_rebs, pts_asts,
+  rebs_asts, steals, blocked_shots, turnovers, fantasy (PrizePicks formula) to stat_map.
+  Unknown prop types now return `None` and are skipped cleanly rather than graded as 0.
+- **Off days ≠ errors** — both NHL schedule fetch (exit 1 → exit 0) and NHL grading
+  ("no predictions to grade" → success) now handle breaks gracefully.
+- **Data gap accepted** — Jan 28–Feb 5 NHL games (before Olympic break) were never
+  predicted because system was offline. Not retroactively recovered; noted in MEMORY.md.
+
+### What's blocked
+- OAuth providers still not configured
+- NHL returns Wednesday Feb 25 — orchestrator will auto-resume
+
+### Notes
+- Grading rate went from 31%/23%/0% → 73%/71%/70% for Feb 20/21/22 after fix.
+  Remaining ~30% ungraded = genuinely injured/DNP players (correct behavior).
+- Feb 22 NBA: 1,910 predictions generated + 1,348 graded at 79.5% accuracy (retroactive).
+- The auto-healing system (Dec 2024) introduced `starter is None` check that broke
+  grading for 2+ months. Consider adding integration tests for boxscore player counts.
+- All fixes are backward-compatible — no DB schema changes.
+
+**Detailed minutes:** `docs/sessions/2026-02-23.md`
+
+---
+
 <!-- Template for future entries:
 
 ## YYYY-MM-DD — [Session Title]
