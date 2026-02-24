@@ -19,8 +19,8 @@ PROJECT_ROOT = NBA_ROOT.parent  # Go up to SportsPredictor/ directory
 DB_PATH = str(NBA_ROOT / "database" / "nba_predictions.db")
 
 # Learning mode settings (Weeks 2-9)
-LEARNING_MODE = True
-PROBABILITY_CAP = (0.20, 0.80)  # Widened range for better differentiation
+LEARNING_MODE = False
+PROBABILITY_CAP = (0.0, 1.0)  # No cap — ML models provide calibrated probabilities
 MODEL_TYPE = "statistical_only"  # No ML until Week 8+
 
 # Date/time settings (EST/CST)

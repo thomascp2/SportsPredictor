@@ -443,6 +443,21 @@ class ModelTrainer:
     ) -> Dict:
         """Calculate comprehensive metrics"""
         
+        # Guard against single-class test sets (happens with highly skewed props)
+        unique_labels = np.unique(y_true)
+        if len(unique_labels) < 2:
+            # Can't compute AUC or log_loss with one class — use accuracy-based fallback
+            acc = accuracy_score(y_true, y_pred)
+            return {
+                'accuracy': acc,
+                'precision': precision_score(y_true, y_pred, zero_division=0),
+                'recall': recall_score(y_true, y_pred, zero_division=0),
+                'f1': f1_score(y_true, y_pred, zero_division=0),
+                'roc_auc': 0.5,         # undefined — use neutral
+                'brier': 1 - acc,       # approximate
+                'log_loss': 1 - acc     # approximate
+            }
+
         return {
             'accuracy': accuracy_score(y_true, y_pred),
             'precision': precision_score(y_true, y_pred, zero_division=0),
@@ -450,7 +465,7 @@ class ModelTrainer:
             'f1': f1_score(y_true, y_pred, zero_division=0),
             'roc_auc': roc_auc_score(y_true, y_prob),
             'brier': brier_score_loss(y_true, y_prob),
-            'log_loss': log_loss(y_true, y_prob)
+            'log_loss': log_loss(y_true, y_prob, labels=[0, 1])
         }
     
     def select_best_model(self, metric: str = 'brier') -> str:
