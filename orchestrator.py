@@ -1687,9 +1687,9 @@ class SportsOrchestrator:
             conn = sqlite3.connect(str(self.config.db_path))
             cursor = conn.cursor()
 
-            # Best pick per player: among capped predictions, rank by recent form.
-            # probability is capped at 0.80 in learning mode so many players tie —
-            # break ties with L5 success rate then consistency score.
+            # Best pick per player: filter to genuine-edge band (0.56-0.95).
+            # Excludes goblin lines (statistical model returns 1.0 for trivially
+            # easy PrizePicks lines like pts_asts 11.5) and noise picks near 50%.
             cursor.execute("""
                 SELECT player_name, team, opponent, prop_type, line, prediction,
                        probability, home_away,
@@ -1698,13 +1698,14 @@ class SportsOrchestrator:
                 WHERE game_date = ?
                   AND f_insufficient_data = 0
                   AND f_games_played >= 5
+                  AND probability BETWEEN 0.56 AND 0.95
                 GROUP BY player_name
                 HAVING probability = MAX(probability)
                 ORDER BY
                     probability DESC,
                     f_l5_success_rate DESC,
                     f_consistency_score DESC,
-                    f_current_streak DESC
+                    ABS(f_current_streak) DESC
                 LIMIT 20
             """, (today,))
             rows = cursor.fetchall()
@@ -1721,8 +1722,12 @@ class SportsOrchestrator:
                 conf = int(prob * 100)
                 arrow = "OVER" if direction == "OVER" else "UNDER"
                 ha_str = "vs" if ha == "H" else "@"
-                l5_pct = int((l5_rate or 0) * 100)
-                streak_str = f" {int(streak)}x streak" if streak and streak >= 2 else ""
+                # L5% is directional: OVER pick → show OVER rate, UNDER pick → show UNDER rate
+                raw_l5 = l5_rate or 0
+                l5_pct = int((raw_l5 if direction == "OVER" else 1.0 - raw_l5) * 100)
+                # Streak: positive = OVER streak, negative = UNDER streak; display absolute value
+                streak_abs = abs(streak) if streak else 0
+                streak_str = f" {int(streak_abs)}x streak" if streak_abs >= 2 else ""
                 lines.append(
                     f"`{i:2d}.` **{player}** ({team} {ha_str} {opp})  "
                     f"{arrow} {line} {prop.upper().replace('_',' ')}  "
