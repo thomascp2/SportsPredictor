@@ -98,12 +98,10 @@ def fetch_game_schedule(target_date: str, force_refresh: bool = False):
     print()
     
     if not games:
-        print(f"[WARN]  No games found for {target_date}")
-        print("   This could mean:")
-        print("   - No NHL games scheduled that day")
-        print("   - API format changed")
+        print(f"[OK] No NHL games scheduled for {target_date} (off day or break)")
+        print("   Prediction pipeline will skip today.")
         conn.close()
-        return False
+        return True  # Not an error - just an off day
     
     print(f"[OK] Games on {target_date}:")
     for game in games:

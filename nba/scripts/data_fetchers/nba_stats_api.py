@@ -79,7 +79,10 @@ class NBAStatsAPI:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            print(f"❌ API Error: {e}")
+            print(f"API Error: {e}")
+            return None
+        except Exception as e:
+            print(f"Unexpected API error ({type(e).__name__}): {e}")
             return None
 
     def get_scoreboard(self, game_date):

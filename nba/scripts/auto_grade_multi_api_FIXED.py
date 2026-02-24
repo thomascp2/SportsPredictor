@@ -93,7 +93,11 @@ class MultiAPIGrader:
             
             player_stats, match_tier, match_score = match_result
             actual_value = self._get_stat_value(player_stats, prop_type)
-            
+
+            if actual_value is None:
+                ungraded.append((player_name, f"Unknown prop type: {prop_type}"))
+                continue
+
             if prediction == 'OVER':
                 outcome = 'HIT' if actual_value > line else 'MISS'
             else:
@@ -228,20 +232,33 @@ class MultiAPIGrader:
     
     @staticmethod
     def _get_stat_value(stats, prop_type):
-        """Extract stat value."""
+        """Extract stat value for a given prop type."""
         stat_map = {
             'points': 'points',
             'rebounds': 'rebounds',
             'assists': 'assists',
             'threes': 'threes_made',
+            'steals': 'steals',
+            'blocked_shots': 'blocks',
+            'turnovers': 'turnovers',
             'stocks': lambda s: s.get('steals', 0) + s.get('blocks', 0),
             'pra': lambda s: s.get('points', 0) + s.get('rebounds', 0) + s.get('assists', 0),
+            'pts_rebs': lambda s: s.get('points', 0) + s.get('rebounds', 0),
+            'pts_asts': lambda s: s.get('points', 0) + s.get('assists', 0),
+            'rebs_asts': lambda s: s.get('rebounds', 0) + s.get('assists', 0),
+            'blks_stls': lambda s: s.get('blocks', 0) + s.get('steals', 0),
+            # PrizePicks fantasy: PTS + 1.2*REB + 1.5*AST + 2*STL + 2*BLK - TOV
+            'fantasy': lambda s: (s.get('points', 0) + 1.2 * s.get('rebounds', 0) +
+                                  1.5 * s.get('assists', 0) + 2.0 * s.get('steals', 0) +
+                                  2.0 * s.get('blocks', 0) - s.get('turnovers', 0)),
             'minutes': 'minutes',
         }
-        
+
         mapper = stat_map.get(prop_type)
-        
-        if callable(mapper):
+
+        if mapper is None:
+            return None  # Unknown prop type - do not grade
+        elif callable(mapper):
             return mapper(stats)
         else:
             return stats.get(mapper, 0)

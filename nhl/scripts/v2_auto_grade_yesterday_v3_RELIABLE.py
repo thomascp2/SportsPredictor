@@ -805,8 +805,8 @@ By Prop Type:
                     prop_acc = stats['hits'] / stats['total'] if stats['total'] > 0 else 0
                     message += f"• {prop}: {stats['hits']}/{stats['total']} ({prop_acc:.1%})\n"
                 
-                send_discord_notification(message)
-                
+                send_discord_notification("NHL Grading Complete", message, color="green")
+
             except Exception as e:
                 print(f'[WARN] Could not send Discord notification: {e}')
             
@@ -815,10 +815,9 @@ By Prop Type:
             return 0
             
         else:
-            error_msg = f'[ERROR] Grading failed or no predictions to grade for {target_date}'
-            print(error_msg)
-            send_discord_notification(f"❌ GRADING FAILED\n{error_msg}")
-            return 1
+            # No predictions for this date - could be an off day or break
+            print(f'[OK] No predictions to grade for {target_date} (off day, break, or no games)')
+            return 0
     
     except requests.exceptions.RequestException as e:
         # API errors
@@ -827,31 +826,31 @@ By Prop Type:
         print('[ERROR] ' + error_msg)
         log_error(traceback.format_exc(), "API_ERROR")
         try:
-            send_discord_notification(error_msg)
+            send_discord_notification("NHL API Error", error_msg, color="red")
         except:
             pass
         return 1
-        
+
     except sqlite3.Error as e:
         # Database errors
-        error_msg = f"❌ DATABASE ERROR - {target_date}\n{str(e)}\n\nBackup at: {backup_path}"
+        error_msg = f"DATABASE ERROR - {target_date}\n{str(e)}\n\nBackup at: {backup_path}"
         print()
         print('[ERROR] ' + error_msg)
         log_error(traceback.format_exc(), "DATABASE_ERROR")
         try:
-            send_discord_notification(error_msg)
+            send_discord_notification("NHL Database Error", error_msg, color="red")
         except:
             pass
         return 1
-        
+
     except Exception as e:
         # Unknown errors
-        error_msg = f"❌ UNEXPECTED ERROR - {target_date}\n{str(e)}\n\nBackup at: {backup_path}\nCheck logs for details"
+        error_msg = f"UNEXPECTED ERROR - {target_date}\n{str(e)}\n\nBackup at: {backup_path}\nCheck logs for details"
         print()
         print('[ERROR] ' + error_msg)
         log_error(traceback.format_exc(), "UNKNOWN_ERROR")
         try:
-            send_discord_notification(error_msg)
+            send_discord_notification("NHL Grading Error", error_msg, color="red")
         except:
             pass
         return 1
