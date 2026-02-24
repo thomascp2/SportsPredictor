@@ -138,6 +138,7 @@ class SportConfig:
         self.grading_time = "02:00"      # 2 AM - grade yesterday first
         self.prizepicks_time = "07:30"   # 7:30 AM - fetch PrizePicks lines
         self.prediction_time = "08:00"   # 8 AM - then generate today's predictions
+        self.top_picks_time = "10:15"    # 10:15 AM - post top 20 players to Discord
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 30, 2026)
         self.ml_training_target_per_prop = 7500
@@ -187,6 +188,7 @@ class SportConfig:
         self.grading_time = "09:00"      # 9 AM - grade yesterday first
         self.prizepicks_time = "09:30"   # 9:30 AM - fetch PrizePicks lines
         self.prediction_time = "10:00"   # 10 AM - then generate today's predictions
+        self.top_picks_time = "10:15"    # 10:15 AM - post top 20 players to Discord
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 27, 2026)
         self.ml_training_target_per_prop = 7500
@@ -1668,6 +1670,74 @@ class SportsOrchestrator:
         except Exception as e:
             print(f"   [WARN] Failed to post smart picks: {e}")
 
+    def run_top_picks_notification(self):
+        """
+        Post the top 20 highest-confidence player picks for today to Discord.
+
+        Runs daily at 10:15 CST (after predictions are generated at 10:00).
+        Skips gracefully when no predictions exist (off days, breaks).
+        """
+        if not REQUESTS_AVAILABLE or not DISCORD_WEBHOOK_URL:
+            print(f"{self.config.emoji} [SKIP] Top picks: Discord webhook not configured")
+            return
+
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            cursor = conn.cursor()
+
+            # Best pick per player: highest edge (|prob - 0.5|), one row per player
+            cursor.execute("""
+                SELECT player_name, team, opponent, prop_type, line, prediction,
+                       probability, home_away
+                FROM predictions
+                WHERE game_date = ?
+                GROUP BY player_name
+                HAVING probability = MAX(probability)
+                ORDER BY ABS(probability - 0.5) DESC
+                LIMIT 20
+            """, (today,))
+            rows = cursor.fetchall()
+            conn.close()
+
+            if not rows:
+                print(f"{self.config.emoji} [SKIP] Top picks: no predictions for {today}")
+                return
+
+            sport = self.config.sport
+            lines = []
+            for i, (player, team, opp, prop, line, direction, prob, ha) in enumerate(rows, 1):
+                edge = abs(prob - 0.5) * 100
+                conf = int(prob * 100)
+                arrow = "OVER" if direction == "OVER" else "UNDER"
+                ha_str = "vs" if ha == "H" else "@"
+                lines.append(
+                    f"`{i:2d}.` **{player}** ({team} {ha_str} {opp})  "
+                    f"{arrow} {line} {prop.upper().replace('_',' ')}  "
+                    f"— {conf}% conf (+{edge:.1f}% edge)"
+                )
+
+            header = (
+                f"**{sport} TOP 20 PICKS — {today}**\n"
+                f"Ranked by model confidence edge\n"
+                f"{'='*44}\n"
+            )
+            message = header + "\n".join(lines)
+
+            response = requests.post(
+                DISCORD_WEBHOOK_URL,
+                json={"content": message},
+                timeout=10
+            )
+            if response.status_code == 204:
+                print(f"{self.config.emoji} [OK] Posted top {len(rows)} picks to Discord")
+            else:
+                print(f"{self.config.emoji} [WARN] Discord returned {response.status_code}")
+
+        except Exception as e:
+            print(f"{self.config.emoji} [WARN] Top picks notification failed: {e}")
+
     def _load_state(self) -> Dict:
         """Load orchestrator state from file"""
         if self.global_config.STATE_FILE.exists():
@@ -2060,6 +2130,11 @@ class SportsOrchestrator:
             self.run_daily_prediction_pipeline
         )
 
+        # Daily top 20 picks notification (10:15 CST, after predictions)
+        schedule.every().day.at(self.config.top_picks_time).do(
+            self.run_top_picks_notification
+        )
+
         # Hourly health checks
         schedule.every(self.global_config.HEALTH_CHECK_INTERVAL_MINUTES).minutes.do(
             self.run_health_check
@@ -2070,6 +2145,7 @@ class SportsOrchestrator:
         if PRIZEPICKS_AVAILABLE:
             print(f"   PrizePicks: Daily at {self.config.prizepicks_time}")
         print(f"   Predictions: Daily at {self.config.prediction_time}")
+        print(f"   Top 20 picks: Daily at {self.config.top_picks_time}")
         print(f"   Health checks: Every {self.global_config.HEALTH_CHECK_INTERVAL_MINUTES} minutes")
         print()
 
