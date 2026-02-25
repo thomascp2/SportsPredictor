@@ -1708,30 +1708,25 @@ class SportsOrchestrator:
         except Exception as e:
             print(f"   [WARN] Failed to post smart picks: {e}")
 
-    def run_top_picks_notification(self):
+    def _fetch_top_picks(self, today: str) -> list:
         """
-        Post the top 20 highest-confidence player picks for today to Discord.
+        Fetch top 20 picks for today, sport-aware.
 
-        Runs daily at 6:15 CST (after predictions are generated at 6:00).
-        Skips gracefully when no predictions exist (off days, breaks).
+        NBA: individual f_* columns (f_l5_success_rate, f_current_streak, etc.)
+        NHL: features stored as JSON blob (success_rate_l5, current_streak)
+
+        Returns list of dicts with keys: player, team, opp, prop, line,
+        direction, prob, ha_str, l5_rate, streak
         """
-        if not REQUESTS_AVAILABLE or not DISCORD_WEBHOOK_URL:
-            print(f"{self.config.emoji} [SKIP] Top picks: Discord webhook not configured")
-            return
+        conn = sqlite3.connect(str(self.config.db_path))
+        cursor = conn.cursor()
 
-        today = datetime.now().strftime('%Y-%m-%d')
-
-        try:
-            conn = sqlite3.connect(str(self.config.db_path))
-            cursor = conn.cursor()
-
-            # Best pick per player: filter to genuine-edge band (0.56-0.95).
-            # Excludes goblin lines (statistical model returns 1.0 for trivially
-            # easy PrizePicks lines like pts_asts 11.5) and noise picks near 50%.
+        if self.config.sport == "NBA":
+            # NBA has individual feature columns — filter and sort in SQL
             cursor.execute("""
                 SELECT player_name, team, opponent, prop_type, line, prediction,
                        probability, home_away,
-                       f_l5_success_rate, f_consistency_score, f_current_streak
+                       f_l5_success_rate, f_current_streak
                 FROM predictions
                 WHERE game_date = ?
                   AND f_insufficient_data = 0
@@ -1742,49 +1737,114 @@ class SportsOrchestrator:
                 ORDER BY
                     probability DESC,
                     f_l5_success_rate DESC,
-                    f_consistency_score DESC,
                     ABS(f_current_streak) DESC
                 LIMIT 20
             """, (today,))
-            rows = cursor.fetchall()
+            raw = cursor.fetchall()
             conn.close()
 
-            if not rows:
+            picks = []
+            for player, team, opp, prop, line, direction, prob, ha, l5_rate, streak in raw:
+                ha_str = "vs" if ha == "H" else "@"
+                picks.append(dict(player=player, team=team, opp=opp, prop=prop,
+                                  line=line, direction=direction, prob=prob,
+                                  ha_str=ha_str, l5_rate=l5_rate or 0, streak=streak or 0))
+            return picks
+
+        else:
+            # NHL: features stored in features_json — fetch candidate rows, parse in Python
+            cursor.execute("""
+                SELECT player_name, team, opponent, prop_type, line, prediction,
+                       probability, features_json
+                FROM predictions
+                WHERE game_date = ?
+                  AND probability BETWEEN 0.56 AND 0.95
+                ORDER BY probability DESC
+            """, (today,))
+            raw = cursor.fetchall()
+            conn.close()
+
+            # Best pick per player (highest prob in band), parse features from JSON
+            seen_players = {}
+            for player, team, opp, prop, line, direction, prob, feat_json in raw:
+                if player in seen_players:
+                    continue  # already have best pick (rows are prob DESC)
+                try:
+                    features = json.loads(feat_json) if feat_json else {}
+                except Exception:
+                    features = {}
+
+                games_played = features.get('games_played', 0)
+                if games_played < 5:
+                    continue  # not enough history
+
+                l5_rate = features.get('success_rate_l5', 0) or 0
+                streak = features.get('current_streak', 0) or 0
+                is_home = features.get('is_home', 0)
+                ha_str = "vs" if is_home else "@"
+
+                seen_players[player] = dict(player=player, team=team, opp=opp,
+                                            prop=prop, line=line, direction=direction,
+                                            prob=prob, ha_str=ha_str,
+                                            l5_rate=l5_rate, streak=streak)
+
+            # Sort: prob desc, then l5 desc, then streak desc; take top 20
+            picks = sorted(seen_players.values(),
+                           key=lambda p: (-p['prob'], -p['l5_rate'], -abs(p['streak'])))
+            return picks[:20]
+
+    def _format_pick_line(self, i: int, pick: dict) -> str:
+        """Format a single pick as a Discord line."""
+        conf = int(pick['prob'] * 100)
+        arrow = "OVER" if pick['direction'] == "OVER" else "UNDER"
+        # L5% is directional: OVER pick → OVER rate, UNDER pick → UNDER rate
+        l5_pct = int((pick['l5_rate'] if pick['direction'] == "OVER"
+                      else 1.0 - pick['l5_rate']) * 100)
+        streak_abs = abs(pick['streak'])
+        streak_str = f" {int(streak_abs)}x streak" if streak_abs >= 2 else ""
+        prop_str = pick['prop'].upper().replace('_', ' ')
+        return (
+            f"`{i:2d}.` **{pick['player']}** ({pick['team']} {pick['ha_str']} {pick['opp']})  "
+            f"{arrow} {pick['line']} {prop_str}  "
+            f"— {conf}% model | L5: {l5_pct}%{streak_str}"
+        )
+
+    def run_top_picks_notification(self):
+        """
+        Post the top 20 highest-confidence player picks for today to Discord.
+
+        Runs daily at 6:15 CST (after predictions are generated at 6:00).
+        Handles both NBA (f_* columns) and NHL (features_json) schemas.
+        Sends a Discord warning instead of silently skipping when no picks exist.
+        """
+        if not REQUESTS_AVAILABLE or not DISCORD_WEBHOOK_URL:
+            print(f"{self.config.emoji} [SKIP] Top picks: Discord webhook not configured")
+            return
+
+        today = datetime.now().strftime('%Y-%m-%d')
+
+        try:
+            picks = self._fetch_top_picks(today)
+
+            if not picks:
                 print(f"{self.config.emoji} [WARN] Top picks: no qualifying predictions for {today}")
-                # Alert Discord so we know something is wrong
                 self._send_discord_alert(
                     f"{self.config.emoji} NO PICKS — {today}",
                     f"Prediction pipeline ran but no picks passed the confidence filter "
-                    f"(prob 0.56-0.95, f_games_played >= 5).\n"
-                    f"Check if predictions were generated: run `python {self.config.prediction_script} {today}`"
+                    f"(prob 0.56-0.95, games_played >= 5).\n"
+                    f"Check if predictions exist: run `python {self.config.prediction_script} {today}`"
                 )
                 return
 
             sport = self.config.sport
-            lines = []
-            for i, (player, team, opp, prop, line, direction, prob, ha,
-                    l5_rate, consistency, streak) in enumerate(rows, 1):
-                conf = int(prob * 100)
-                arrow = "OVER" if direction == "OVER" else "UNDER"
-                ha_str = "vs" if ha == "H" else "@"
-                # L5% is directional: OVER pick → show OVER rate, UNDER pick → show UNDER rate
-                raw_l5 = l5_rate or 0
-                l5_pct = int((raw_l5 if direction == "OVER" else 1.0 - raw_l5) * 100)
-                # Streak: positive = OVER streak, negative = UNDER streak; display absolute value
-                streak_abs = abs(streak) if streak else 0
-                streak_str = f" {int(streak_abs)}x streak" if streak_abs >= 2 else ""
-                lines.append(
-                    f"`{i:2d}.` **{player}** ({team} {ha_str} {opp})  "
-                    f"{arrow} {line} {prop.upper().replace('_',' ')}  "
-                    f"— {conf}% model | L5: {l5_pct}%{streak_str}"
-                )
+            pick_lines = [self._format_pick_line(i, p) for i, p in enumerate(picks, 1)]
 
             header = (
                 f"**{sport} TOP 20 PICKS — {today}**\n"
                 f"Ranked by model confidence edge\n"
                 f"{'='*44}\n"
             )
-            message = header + "\n".join(lines)
+            message = header + "\n".join(pick_lines)
 
             response = requests.post(
                 DISCORD_WEBHOOK_URL,
@@ -1792,7 +1852,7 @@ class SportsOrchestrator:
                 timeout=10
             )
             if response.status_code == 204:
-                print(f"{self.config.emoji} [OK] Posted top {len(rows)} picks to Discord")
+                print(f"{self.config.emoji} [OK] Posted top {len(picks)} picks to Discord")
             else:
                 print(f"{self.config.emoji} [WARN] Discord returned {response.status_code}")
 
