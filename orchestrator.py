@@ -135,10 +135,10 @@ class SportConfig:
         self.schedule_script = "scripts/fetch_game_schedule_FINAL.py"
 
         # Timing (CST)
-        self.grading_time = "02:00"      # 2 AM - grade yesterday first
-        self.prizepicks_time = "07:30"   # 7:30 AM - fetch PrizePicks lines
-        self.prediction_time = "08:00"   # 8 AM - then generate today's predictions
-        self.top_picks_time = "10:15"    # 10:15 AM - post top 20 players to Discord
+        self.grading_time = "22:00"      # 10 PM - grade yesterday's games (complete by then)
+        self.prizepicks_time = "03:30"   # 3:30 AM - fetch PrizePicks lines
+        self.prediction_time = "04:00"   # 4 AM - generate today's predictions
+        self.top_picks_time = "06:15"    # 6:15 AM - post top 20 players to Discord
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 30, 2026)
         self.ml_training_target_per_prop = 7500
@@ -185,10 +185,10 @@ class SportConfig:
         self.schedule_script = None  # NBA uses API directly in prediction script
 
         # Timing (CST)
-        self.grading_time = "09:00"      # 9 AM - grade yesterday first
-        self.prizepicks_time = "09:30"   # 9:30 AM - fetch PrizePicks lines
-        self.prediction_time = "10:00"   # 10 AM - then generate today's predictions
-        self.top_picks_time = "10:15"    # 10:15 AM - post top 20 players to Discord
+        self.grading_time = "05:00"      # 5 AM - grade yesterday first
+        self.prizepicks_time = "05:30"   # 5:30 AM - fetch PrizePicks lines
+        self.prediction_time = "06:00"   # 6 AM - generate today's predictions
+        self.top_picks_time = "06:15"    # 6:15 AM - post top 20 players to Discord
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 27, 2026)
         self.ml_training_target_per_prop = 7500
@@ -1674,7 +1674,7 @@ class SportsOrchestrator:
         """
         Post the top 20 highest-confidence player picks for today to Discord.
 
-        Runs daily at 10:15 CST (after predictions are generated at 10:00).
+        Runs daily at 6:15 CST (after predictions are generated at 6:00).
         Skips gracefully when no predictions exist (off days, breaks).
         """
         if not REQUESTS_AVAILABLE or not DISCORD_WEBHOOK_URL:
