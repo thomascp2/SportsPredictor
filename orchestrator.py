@@ -438,12 +438,34 @@ class SportsOrchestrator:
             if not prediction_result['success']:
                 errors.append(f"Prediction generation failed: {prediction_result.get('error')}")
                 details['prediction_gen'] = prediction_result
-                # Show error output for debugging
                 if prediction_result.get('error'):
-                    print(f"   ERROR: {prediction_result.get('error')[:200]}")
+                    print(f"   ERROR: {prediction_result.get('error')[:300]}")
             else:
                 details['prediction_gen'] = prediction_result
-                print(f"   Predictions generated")
+                # Verify we actually got predictions — exit 0 doesn't mean rows were written
+                try:
+                    conn = sqlite3.connect(str(self.config.db_path))
+                    cur = conn.cursor()
+                    cur.execute('SELECT COUNT(*) FROM predictions WHERE game_date = ?', (target_date,))
+                    pred_count = cur.fetchone()[0]
+                    conn.close()
+                except Exception:
+                    pred_count = -1
+
+                if pred_count == 0:
+                    errors.append(
+                        f"Prediction script exited 0 but 0 predictions found in DB for {target_date}. "
+                        f"Check stderr: {prediction_result.get('output', '')[-300:]}"
+                    )
+                    print(f"   ERROR: Script succeeded but 0 predictions in DB — pipeline failure")
+                    self._send_discord_alert(
+                        f"{self.config.emoji} PREDICTION FAILURE {target_date}",
+                        f"Script exited OK but **0 predictions** were saved to the database.\n"
+                        f"Top-20 Discord picks will not fire.\n"
+                        f"Run manually: `python {self.config.prediction_script} {target_date} --force`"
+                    )
+                else:
+                    print(f"   Predictions generated ({pred_count:,} rows)")
             step += 1
 
             # Step 3: Verify predictions
@@ -1009,10 +1031,26 @@ class SportsOrchestrator:
             # Parse output for key metrics
             output = result.stdout
 
+            # Always log stdout + stderr to a daily pipeline log file
+            try:
+                log_dir = Path(__file__).parent / "logs"
+                log_dir.mkdir(exist_ok=True)
+                log_file = log_dir / f"pipeline_{self.config.sport.lower()}_{datetime.now().strftime('%Y%m%d')}.log"
+                with open(log_file, 'a', encoding='utf-8') as lf:
+                    lf.write(f"\n{'='*60}\n")
+                    lf.write(f"[{datetime.now().strftime('%H:%M:%S')}] {script_name} {' '.join(args or [])}\n")
+                    lf.write(f"Exit code: {result.returncode}\n")
+                    if output:
+                        lf.write("STDOUT:\n" + output + "\n")
+                    if result.stderr:
+                        lf.write("STDERR:\n" + result.stderr + "\n")
+            except Exception:
+                pass  # Never let logging crash the orchestrator
+
             return {
                 'success': result.returncode == 0,
                 'output': output,
-                'error': result.stderr if result.returncode != 0 else None
+                'error': result.stderr if result.returncode != 0 else result.stderr or None
             }
 
         except subprocess.TimeoutExpired:
@@ -1712,7 +1750,14 @@ class SportsOrchestrator:
             conn.close()
 
             if not rows:
-                print(f"{self.config.emoji} [SKIP] Top picks: no predictions for {today}")
+                print(f"{self.config.emoji} [WARN] Top picks: no qualifying predictions for {today}")
+                # Alert Discord so we know something is wrong
+                self._send_discord_alert(
+                    f"{self.config.emoji} NO PICKS — {today}",
+                    f"Prediction pipeline ran but no picks passed the confidence filter "
+                    f"(prob 0.56-0.95, f_games_played >= 5).\n"
+                    f"Check if predictions were generated: run `python {self.config.prediction_script} {today}`"
+                )
                 return
 
             sport = self.config.sport
@@ -1753,6 +1798,16 @@ class SportsOrchestrator:
 
         except Exception as e:
             print(f"{self.config.emoji} [WARN] Top picks notification failed: {e}")
+
+    def _send_discord_alert(self, title: str, body: str):
+        """Send a plain-text alert to Discord. Used for pipeline failures and warnings."""
+        if not REQUESTS_AVAILABLE or not DISCORD_WEBHOOK_URL:
+            return
+        try:
+            message = f"**{title}**\n{body}"
+            requests.post(DISCORD_WEBHOOK_URL, json={"content": message}, timeout=10)
+        except Exception:
+            pass  # Never let an alert crash the orchestrator
 
     def _load_state(self) -> Dict:
         """Load orchestrator state from file"""
