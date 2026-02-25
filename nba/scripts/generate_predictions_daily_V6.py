@@ -344,6 +344,7 @@ class NBADailyPredictorV6:
         pp_unmatched_players = 0
         predictions_by_prop = {}
         all_probabilities = []
+        skipped_errors = 0
 
         for game in games:
             print(f"{game['away_team']} @ {game['home_team']}")
@@ -400,8 +401,10 @@ class NBADailyPredictorV6:
                                     predictions_by_prop[prop_type] = predictions_by_prop.get(prop_type, 0) + 1
                                     all_probabilities.append(result['probability'])
                             except Exception as e:
-                                # Skip props we can't predict
-                                pass
+                                # Log so we can diagnose systematic failures
+                                import sys
+                                print(f"[WARN] {player_name} {prop_type} {line}: {e}", file=sys.stderr)
+                                skipped_errors += 1
 
                 print(f"   {team}: {len(players)} players")
 
@@ -436,6 +439,9 @@ class NBADailyPredictorV6:
         else:
             print("[OK] Feature variety looks good!")
 
+        if skipped_errors > 0:
+            print(f"[WARN] {skipped_errors} predictions skipped due to errors (check stderr)")
+
         # Discord notification
         if DISCORD_WEBHOOK_URL:
             self._send_discord_notification(target_date, total_predictions, unique_probs)
@@ -444,7 +450,8 @@ class NBADailyPredictorV6:
             'total_predictions': total_predictions,
             'unique_probabilities': unique_probs,
             'pp_matched': pp_matched_players,
-            'pp_unmatched': pp_unmatched_players
+            'pp_unmatched': pp_unmatched_players,
+            'skipped_errors': skipped_errors
         }
 
     def _save_games(self, conn, games, game_date):
@@ -564,10 +571,19 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    import sys as _sys
     generator = NBADailyPredictorV6()
     result = generator.generate_predictions(args.date, force=args.force)
 
-    if result.get('total_predictions', 0) > 0:
-        print(f"\n[SUCCESS] Generated {result['total_predictions']} predictions")
+    total = result.get('total_predictions', 0)
+    if total > 0:
+        print(f"\n[SUCCESS] Generated {total} predictions")
+        _sys.exit(0)
+    elif result.get('skipped') or result.get('no_games') or result.get('skipped_schedule'):
+        # Legitimate skip (off day, existing predictions)
+        print("\n[INFO] No new predictions generated (off day or already exists)")
+        _sys.exit(0)
     else:
-        print("\n[INFO] No new predictions generated")
+        # Games exist but 0 predictions generated — something went wrong
+        print("\n[ERROR] 0 predictions generated despite games being scheduled", file=_sys.stderr)
+        _sys.exit(1)
