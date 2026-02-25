@@ -135,7 +135,7 @@ class SportConfig:
         self.schedule_script = "scripts/fetch_game_schedule_FINAL.py"
 
         # Timing (CST)
-        self.grading_time = "22:00"      # 10 PM - grade yesterday's games (complete by then)
+        self.grading_time = "03:00"      # 3 AM - grade yesterday's games (west coast games finish ~1 AM CST)
         self.prizepicks_time = "03:30"   # 3:30 AM - fetch PrizePicks lines
         self.prediction_time = "04:00"   # 4 AM - generate today's predictions
         self.top_picks_time = "06:15"    # 6:15 AM - post top 20 players to Discord
