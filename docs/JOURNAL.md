@@ -87,6 +87,42 @@ was a false positive from the ESPN API health monitor, not a real grading failur
 
 ---
 
+## 2026-02-25 — Pipeline Reliability Overhaul & NHL Discord Picks
+
+**Sessions:** 1
+**Status going in:** Feb 24 Discord notification showed goblin lines at 100% confidence; Feb 25 NBA predictions never generated (0 in DB despite orchestrator reporting success); NHL had no Discord picks at all
+**Status coming out:** 4 bugs fixed; pipeline now fails loudly instead of silently; NHL top-20 picks live (two messages: all picks + OVERs); schedule shifted 4 hrs earlier for pre-work visibility
+
+### What happened
+Investigated why Feb 24 Discord report was bad and Feb 25 NBA generated 0 predictions.
+Found a chain of silent failures: the prediction loop was swallowing all exceptions with
+`except: pass`, the script always exited 0 regardless of outcome, the orchestrator never
+verified actual row counts, and the top-picks notification silently skipped instead of
+alerting. Fixed the entire chain. Also implemented NHL top-20 Discord picks — NHL's schema
+uses `features_json` blob so it needed a separate code path from NBA's `f_*` columns.
+Added a second NHL-only message for OVER picks since the model's top picks skew heavily UNDER.
+
+### Key decisions / pivots
+- **Probability band 0.56–0.95** — excludes goblin lines (stat model returns 1.0 for trivially easy lines with no ML model) and noise picks near coin-flip. Only genuine-edge picks surface.
+- **Exit code 1 on 0 predictions** — scripts now signal real failures to the orchestrator instead of always returning 0.
+- **Orchestrator verifies DB count post-run** — exit 0 alone is no longer trusted; actual row count checked after every "successful" prediction script.
+- **Pipeline logging always-on** — `logs/pipeline_{sport}_{date}.log` written even on success, providing post-mortem trace for next-day debugging.
+- **NHL two-message format** — TOP 20 PICKS (any direction) + TOP 20 OVERS separately, since UNDERs dominate the NHL model's confidence rankings.
+- **Schedule: 4 hours earlier** — grading/predictions/picks now complete by 6:15 AM CST, before leaving for work. NHL grading at 3 AM (not 10 PM) to catch west coast games ending ~1 AM CST.
+
+### What's blocked
+- OAuth providers still not configured (Discord/Google/Apple)
+- Data timing: combo stat L5 can show 0% when grading hasn't populated `player_game_logs` before predictions run
+
+### Notes
+- Root cause of 0-prediction failure at 6 AM on Feb 25 was never conclusively confirmed (silent exception swallowing destroyed the trace). The new logging will capture it if it recurs.
+- NHL `features_json` keys: `success_rate_l5`, `current_streak`, `is_home`, `games_played` — use these for any future NHL feature queries.
+- Feb 25 picks sent manually to Discord for all four messages (NBA top-20, NHL top-20, NHL OVERs, corrected Feb 24).
+
+**Detailed minutes:** `docs/sessions/2026-02-25.md`
+
+---
+
 ## 2026-02-23 — Post-Break Bug Hunt, ML Training & Learning Mode Exit
 
 **Sessions:** 2
