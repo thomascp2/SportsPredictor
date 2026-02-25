@@ -1708,12 +1708,17 @@ class SportsOrchestrator:
         except Exception as e:
             print(f"   [WARN] Failed to post smart picks: {e}")
 
-    def _fetch_top_picks(self, today: str) -> list:
+    def _fetch_top_picks(self, today: str, direction: str = None) -> list:
         """
         Fetch top 20 picks for today, sport-aware.
 
         NBA: individual f_* columns (f_l5_success_rate, f_current_streak, etc.)
         NHL: features stored as JSON blob (success_rate_l5, current_streak)
+
+        Args:
+            today: Date string YYYY-MM-DD
+            direction: Optional 'OVER' or 'UNDER' to filter to one direction only.
+                       None returns the best pick per player regardless of direction.
 
         Returns list of dicts with keys: player, team, opp, prop, line,
         direction, prob, ha_str, l5_rate, streak
@@ -1723,7 +1728,8 @@ class SportsOrchestrator:
 
         if self.config.sport == "NBA":
             # NBA has individual feature columns — filter and sort in SQL
-            cursor.execute("""
+            dir_clause = f"AND prediction = '{direction}'" if direction else ""
+            cursor.execute(f"""
                 SELECT player_name, team, opponent, prop_type, line, prediction,
                        probability, home_away,
                        f_l5_success_rate, f_current_streak
@@ -1732,6 +1738,7 @@ class SportsOrchestrator:
                   AND f_insufficient_data = 0
                   AND f_games_played >= 5
                   AND probability BETWEEN 0.56 AND 0.95
+                  {dir_clause}
                 GROUP BY player_name
                 HAVING probability = MAX(probability)
                 ORDER BY
@@ -1744,21 +1751,23 @@ class SportsOrchestrator:
             conn.close()
 
             picks = []
-            for player, team, opp, prop, line, direction, prob, ha, l5_rate, streak in raw:
+            for player, team, opp, prop, line, pred_dir, prob, ha, l5_rate, streak in raw:
                 ha_str = "vs" if ha == "H" else "@"
                 picks.append(dict(player=player, team=team, opp=opp, prop=prop,
-                                  line=line, direction=direction, prob=prob,
+                                  line=line, direction=pred_dir, prob=prob,
                                   ha_str=ha_str, l5_rate=l5_rate or 0, streak=streak or 0))
             return picks
 
         else:
             # NHL: features stored in features_json — fetch candidate rows, parse in Python
-            cursor.execute("""
+            dir_clause = f"AND prediction = '{direction}'" if direction else ""
+            cursor.execute(f"""
                 SELECT player_name, team, opponent, prop_type, line, prediction,
                        probability, features_json
                 FROM predictions
                 WHERE game_date = ?
                   AND probability BETWEEN 0.56 AND 0.95
+                  {dir_clause}
                 ORDER BY probability DESC
             """, (today,))
             raw = cursor.fetchall()
@@ -1766,7 +1775,7 @@ class SportsOrchestrator:
 
             # Best pick per player (highest prob in band), parse features from JSON
             seen_players = {}
-            for player, team, opp, prop, line, direction, prob, feat_json in raw:
+            for player, team, opp, prop, line, pred_dir, prob, feat_json in raw:
                 if player in seen_players:
                     continue  # already have best pick (rows are prob DESC)
                 try:
@@ -1784,7 +1793,7 @@ class SportsOrchestrator:
                 ha_str = "vs" if is_home else "@"
 
                 seen_players[player] = dict(player=player, team=team, opp=opp,
-                                            prop=prop, line=line, direction=direction,
+                                            prop=prop, line=line, direction=pred_dir,
                                             prob=prob, ha_str=ha_str,
                                             l5_rate=l5_rate, streak=streak)
 
@@ -1809,13 +1818,33 @@ class SportsOrchestrator:
             f"— {conf}% model | L5: {l5_pct}%{streak_str}"
         )
 
+    def _post_picks_to_discord(self, label: str, picks: list, today: str) -> bool:
+        """Build and post a picks message. Returns True on success."""
+        sport = self.config.sport
+        pick_lines = [self._format_pick_line(i, p) for i, p in enumerate(picks, 1)]
+        header = (
+            f"**{sport} {label} — {today}**\n"
+            f"Ranked by model confidence edge\n"
+            f"{'='*44}\n"
+        )
+        message = header + "\n".join(pick_lines)
+        response = requests.post(
+            DISCORD_WEBHOOK_URL,
+            json={"content": message},
+            timeout=10
+        )
+        return response.status_code == 204
+
     def run_top_picks_notification(self):
         """
-        Post the top 20 highest-confidence player picks for today to Discord.
+        Post top picks for today to Discord.
 
-        Runs daily at 6:15 CST (after predictions are generated at 6:00).
-        Handles both NBA (f_* columns) and NHL (features_json) schemas.
-        Sends a Discord warning instead of silently skipping when no picks exist.
+        NBA: one message — top 20 picks (all directions, best pick per player).
+        NHL: two messages —
+             1. top 20 overall picks (best per player, any direction)
+             2. top 20 OVER picks (best OVER per player)
+
+        Runs daily at 6:15 CST. Sends a Discord warning if no picks qualify.
         """
         if not REQUESTS_AVAILABLE or not DISCORD_WEBHOOK_URL:
             print(f"{self.config.emoji} [SKIP] Top picks: Discord webhook not configured")
@@ -1824,6 +1853,7 @@ class SportsOrchestrator:
         today = datetime.now().strftime('%Y-%m-%d')
 
         try:
+            # --- Top 20 all directions ---
             picks = self._fetch_top_picks(today)
 
             if not picks:
@@ -1836,25 +1866,23 @@ class SportsOrchestrator:
                 )
                 return
 
-            sport = self.config.sport
-            pick_lines = [self._format_pick_line(i, p) for i, p in enumerate(picks, 1)]
-
-            header = (
-                f"**{sport} TOP 20 PICKS — {today}**\n"
-                f"Ranked by model confidence edge\n"
-                f"{'='*44}\n"
-            )
-            message = header + "\n".join(pick_lines)
-
-            response = requests.post(
-                DISCORD_WEBHOOK_URL,
-                json={"content": message},
-                timeout=10
-            )
-            if response.status_code == 204:
+            ok = self._post_picks_to_discord("TOP 20 PICKS", picks, today)
+            if ok:
                 print(f"{self.config.emoji} [OK] Posted top {len(picks)} picks to Discord")
             else:
-                print(f"{self.config.emoji} [WARN] Discord returned {response.status_code}")
+                print(f"{self.config.emoji} [WARN] Discord post returned non-204")
+
+            # --- NHL only: additional top 20 OVERs message ---
+            if self.config.sport == "NHL":
+                over_picks = self._fetch_top_picks(today, direction="OVER")
+                if over_picks:
+                    ok2 = self._post_picks_to_discord("TOP 20 OVERS", over_picks, today)
+                    if ok2:
+                        print(f"{self.config.emoji} [OK] Posted top {len(over_picks)} OVER picks to Discord")
+                    else:
+                        print(f"{self.config.emoji} [WARN] OVER picks Discord post returned non-204")
+                else:
+                    print(f"{self.config.emoji} [INFO] No NHL OVER picks in confidence band for {today}")
 
         except Exception as e:
             print(f"{self.config.emoji} [WARN] Top picks notification failed: {e}")
