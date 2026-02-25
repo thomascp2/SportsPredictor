@@ -719,8 +719,19 @@ def main():
 
         if count > 0:
             print(f'[SUCCESS] Generated {count} predictions for {args.date}')
+            sys.exit(0)
         else:
-            print(f'[INFO] No new predictions generated for {args.date}')
+            # Distinguish legitimate skips from real failures
+            preds_exist, _ = check_predictions_exist(args.date)
+            games_exist, _ = check_games_exist(args.date)
+            if preds_exist or not games_exist:
+                # Off day or already existed — legitimate skip
+                print(f'[INFO] No new predictions generated for {args.date} (off day or already exists)')
+                sys.exit(0)
+            else:
+                # Games exist but 0 predictions — something went wrong
+                print(f'[ERROR] 0 predictions generated despite {args.date} having games', file=sys.stderr)
+                sys.exit(1)
 
     except Exception as e:
         print(f'[ERROR] Fatal error: {e}')
