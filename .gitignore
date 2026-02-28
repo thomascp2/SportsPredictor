@@ -1,3 +1,7 @@
+# Secrets / local startup scripts (contain API keys / tokens — never commit)
+start_orchestrator.bat
+start_bot.bat
+
 # Databases
 *.db
 *.sqlite

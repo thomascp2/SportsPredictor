@@ -9,6 +9,9 @@ Commands:
   !status          - Show system status
   !picks nba       - Get today's NBA smart picks
   !picks nba 2026-02-10  - Get picks for specific date
+  !parlay          - Random 4-leg parlay from today's top picks (both sports)
+  !parlay nba 3    - 3-leg NBA-only parlay
+  !parlay nhl 5    - 5-leg NHL-only parlay (2-6 legs supported)
   !predict nba     - Run NBA prediction pipeline
   !grade nba       - Run NBA grading pipeline
   !health          - Check API health
@@ -29,6 +32,8 @@ import os
 import sys
 import asyncio
 import sqlite3
+import json
+import random
 from datetime import datetime, date
 from pathlib import Path
 
@@ -263,6 +268,143 @@ async def refresh(ctx, sport: str = 'nba'):
 
     except Exception as e:
         await ctx.send(f"```Error: {str(e)}```")
+
+
+def _fetch_top_picks_for_parlay(sport: str, game_date: str, pool_size: int = 10) -> list:
+    """Fetch top picks from DB for parlay generation. Mirrors orchestrator._fetch_top_picks."""
+    db = NBA_DB if sport == 'nba' else NHL_DB
+    if not db.exists():
+        return []
+
+    conn = sqlite3.connect(str(db))
+    cursor = conn.cursor()
+
+    if sport == 'nba':
+        cursor.execute("""
+            SELECT player_name, team, opponent, prop_type, line, prediction,
+                   probability, home_away, f_l5_success_rate, f_current_streak
+            FROM predictions
+            WHERE game_date = ?
+              AND f_insufficient_data = 0
+              AND f_games_played >= 5
+              AND probability BETWEEN 0.56 AND 0.95
+            GROUP BY player_name
+            HAVING probability = MAX(probability)
+            ORDER BY probability DESC
+            LIMIT ?
+        """, (game_date, pool_size))
+        rows = cursor.fetchall()
+        conn.close()
+
+        picks = []
+        for player, team, opp, prop, line, direction, prob, ha, l5_rate, streak in rows:
+            picks.append(dict(player=player, team=team, opp=opp, prop=prop,
+                              line=line, direction=direction, prob=prob,
+                              ha_str="vs" if ha == "H" else "@",
+                              l5_rate=l5_rate or 0, streak=streak or 0, sport='NBA'))
+        return picks
+
+    else:  # NHL
+        cursor.execute("""
+            SELECT player_name, team, opponent, prop_type, line, prediction,
+                   probability, features_json
+            FROM predictions
+            WHERE game_date = ?
+              AND probability BETWEEN 0.56 AND 0.95
+            ORDER BY probability DESC
+        """, (game_date,))
+        rows = cursor.fetchall()
+        conn.close()
+
+        seen = {}
+        for player, team, opp, prop, line, direction, prob, feat_json in rows:
+            if player in seen:
+                continue
+            try:
+                features = json.loads(feat_json) if feat_json else {}
+            except Exception:
+                features = {}
+            if features.get('games_played', 0) < 5:
+                continue
+            l5_rate = features.get('success_rate_l5', 0) or 0
+            streak = features.get('current_streak', 0) or 0
+            is_home = features.get('is_home', 0)
+            seen[player] = dict(player=player, team=team, opp=opp, prop=prop,
+                                line=line, direction=direction, prob=prob,
+                                ha_str="vs" if is_home else "@",
+                                l5_rate=l5_rate, streak=streak, sport='NHL')
+
+        sorted_picks = sorted(seen.values(), key=lambda p: -p['prob'])
+        return sorted_picks[:pool_size]
+
+
+def _format_parlay_leg(i: int, pick: dict) -> str:
+    prop_str = pick['prop'].upper().replace('_', ' ')
+    conf = int(pick['prob'] * 100)
+    sport_tag = f"[{pick['sport']}]"
+    return (
+        f"`{i}.` **{pick['player']}** ({pick['team']} {pick['ha_str']} {pick['opp']})  "
+        f"{pick['direction']} {pick['line']} {prop_str} {sport_tag}  — {conf}%"
+    )
+
+
+@bot.command(name='parlay')
+async def parlay_cmd(ctx, sport: str = 'both', size: int = 4):
+    """Generate a quick parlay from today's top model picks.
+
+    Usage: !parlay [nba|nhl|both] [2-6]
+    Examples:
+      !parlay          → 4-leg parlay from both sports
+      !parlay nba 3    → 3-leg NBA-only parlay
+      !parlay nhl 5    → 5-leg NHL-only parlay
+    """
+    try:
+        sport = sport.lower()
+        if sport not in ('nba', 'nhl', 'both'):
+            await ctx.send("```Usage: !parlay [nba|nhl|both] [2-6]\nExample: !parlay both 4```")
+            return
+
+        size = max(2, min(6, size))
+        game_date = date.today().isoformat()
+
+        # Build pool from requested sports (top 10 per sport = quality gate)
+        pool = []
+        if sport in ('nba', 'both'):
+            pool.extend(_fetch_top_picks_for_parlay('nba', game_date, pool_size=10))
+        if sport in ('nhl', 'both'):
+            pool.extend(_fetch_top_picks_for_parlay('nhl', game_date, pool_size=10))
+
+        if len(pool) < size:
+            await ctx.send(
+                f"```Not enough qualifying picks today (need {size}, found {len(pool)}).\n"
+                f"Try a smaller size or check that predictions ran.```"
+            )
+            return
+
+        # Random sample from the pool so each call gives a fresh combo
+        legs = random.sample(pool, size)
+        legs.sort(key=lambda p: -p['prob'])  # highest confidence first
+
+        combined_prob = 1.0
+        for leg in legs:
+            combined_prob *= leg['prob']
+
+        sport_label = sport.upper() if sport != 'both' else 'NBA + NHL'
+        pick_lines = [_format_parlay_leg(i + 1, p) for i, p in enumerate(legs)]
+
+        msg = (
+            f"**QUICK PARLAY — {sport_label} — {game_date}**\n"
+            f"Sampled from today's top model picks\n"
+            f"{'=' * 44}\n"
+            + "\n".join(pick_lines)
+            + f"\n{'=' * 44}\n"
+            f"Combined probability: ~{int(combined_prob * 100)}%\n"
+            f"_Run !parlay again for a different combo_"
+        )
+        await ctx.send(msg)
+
+    except Exception as e:
+        await ctx.send(f"```Error generating parlay: {str(e)}```")
 
 
 def main():

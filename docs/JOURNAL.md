@@ -87,6 +87,61 @@ was a false positive from the ESPN API health monitor, not a real grading failur
 
 ---
 
+## 2026-02-28 — Discord Bot Live, `!parlay` Command, NHL Name-Match Fix
+
+**Sessions:** 1
+**Status going in:** Discord top-20 picks had never fired; Discord bot existed in code but was never running; `!picks nhl` returning only 2-3 picks despite hundreds of predictions
+**Status coming out:** Discord fully operational — webhook wired, bot live, top-20 fires daily at 6:15 AM CST; `!parlay` command added; `!picks nhl` fixed (3 → 39 picks)
+
+### What happened
+Traced the Discord silence to a missing `DISCORD_WEBHOOK_URL` env var — the orchestrator
+reads it from `os.getenv()` but it was never set anywhere (`.env` is never loaded by the
+orchestrator; the bat file set no vars). Fixed by adding all three Discord env vars to
+`start_orchestrator.bat`. Verified by manually test-firing today's picks — all three
+messages (NHL TOP 20, NHL TOP 20 OVERS, NBA TOP 20) delivered successfully.
+
+Set up the Discord bot end-to-end: created application, enabled Message Content Intent,
+got bot token, added it to the bat file, created `start_bot.bat` for auto-restart.
+Bot verified connecting as **FreePicks Bot**.
+
+Added `!parlay` command to the bot — randomly samples N legs from the top 10 picks per
+sport, shows combined probability, re-rolls on each call.
+
+Diagnosed `!picks nhl` returning only 2-3 picks despite 570+ predictions in the DB.
+Root cause: our NHL prediction DB stores abbreviated player names (`A. Fox`, `S. Crosby`)
+while PrizePicks uses full names (`Adam Fox`, `Sidney Crosby`). The fuzzy matcher's 85%
+threshold rejected all abbreviated names (~65% similarity). Fixed with `_is_initial_match()`
+— recognizes the `"Initial. Lastname"` convention and matches with 100% confidence.
+Result: 3 picks → 39 picks.
+
+### Key decisions / pivots
+- **Single Discord channel for now** — all sports post to the same webhook. Separate
+  NHL/NBA channels possible later with zero code changes (just swap URLs in bat file).
+- **Parlay pool = top 10 per sport** — quality gate ensures every leg is from the model's
+  best picks; random sampling provides variety across calls.
+- **`_is_initial_match()` preferred over lowering fuzzy threshold** — lowering to 65%
+  would cause false matches between similarly-named players. The initial-match check is
+  precise and handles the specific NHL abbreviation format.
+- **Bat files gitignored** — `start_orchestrator.bat` and `start_bot.bat` contain live
+  credentials and are excluded from version control.
+
+### What's blocked
+- Discord OAuth providers not yet configured (still blocking first FreePicks device test)
+- `!parlay` tested via inline Python — needs live bot test via Discord
+
+### Notes
+- The `!picks` path (SmartPickSelector + PrizePicks cross-reference) and the top-20
+  webhook path (direct DB query) are completely separate code paths. Top-20 was always
+  working correctly once webhook was set; `!picks nhl` needed the name-match fix.
+- NHL match rate after fix: 189/285 PrizePicks lines (66%). Unmatched = bench players /
+  scratches with no prediction — expected.
+- `start_bot.bat` auto-restarts the bot process with 15s cooldown if it ever crashes.
+  Both bat files are launched from one double-click on `start_orchestrator.bat`.
+
+**Detailed minutes:** `docs/sessions/2026-02-28.md`
+
+---
+
 ## 2026-02-25 — Pipeline Reliability Overhaul & NHL Discord Picks
 
 **Sessions:** 1
