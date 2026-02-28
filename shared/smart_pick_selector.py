@@ -202,6 +202,27 @@ class SmartPickSelector:
             print(f"Warning: Could not fetch fresh lines: {e}")
             return 0
 
+    def _is_initial_match(self, full_name: str, abbrev_name: str) -> bool:
+        """
+        Check if abbrev_name ('a. fox') matches full_name ('adam fox').
+        Handles the NHL prediction DB abbreviation convention.
+        """
+        if '. ' not in abbrev_name:
+            return False
+        parts = abbrev_name.split('. ', 1)
+        if len(parts[0]) != 1:
+            return False
+        initial = parts[0]          # 'a'
+        abbrev_last = parts[1]      # 'fox'
+
+        full_parts = full_name.lower().split()
+        if len(full_parts) < 2:
+            return False
+        full_initial = full_parts[0][0]   # 'a' from 'adam'
+        full_last = full_parts[-1]        # 'fox'
+
+        return initial == full_initial and abbrev_last == full_last
+
     def get_smart_picks(
         self,
         game_date: Optional[str] = None,
@@ -273,10 +294,16 @@ class SmartPickSelector:
                         continue
 
                     pred_name = pred_key[0]
-                    # Use fuzz.ratio for full name comparison
-                    score = fuzz.ratio(pp_name_lower, pred_name)
 
-                    # Require high confidence (>= 85) for fuzzy match
+                    # Initial-name match: handles NHL abbreviated names
+                    # e.g. PrizePicks 'Adam Fox' ↔ our DB 'a. fox'
+                    if self._is_initial_match(pp_name_lower, pred_name):
+                        best_match_key = pred_key
+                        best_match_score = 100
+                        break
+
+                    # Fall back to fuzzy match for other cases
+                    score = fuzz.ratio(pp_name_lower, pred_name)
                     if score > best_match_score and score >= 85:
                         best_match_score = score
                         best_match_key = pred_key
