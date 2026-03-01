@@ -32,6 +32,7 @@ from nba_config import (
     nba_has_games,
 )
 from data_fetchers.nba_stats_api import NBAStatsAPI
+from espn_nba_api import ESPNNBAApi
 from statistical_predictions import NBAStatisticalPredictor
 
 # PrizePicks Integration
@@ -102,6 +103,7 @@ class NBADailyPredictorV6:
     def __init__(self, db_path=DB_PATH):
         self.db_path = db_path
         self.api = NBAStatsAPI()
+        self.espn_api = ESPNNBAApi()
         self.predictor = NBAStatisticalPredictor()
 
         # ML predictor — wraps statistical with trained models where available
@@ -321,10 +323,22 @@ class NBADailyPredictorV6:
             print(f"[PP] Found lines for {len(pp_player_lines)} NBA players")
         print()
 
-        # STEP 2: Fetch games
+        # STEP 2: Fetch games (NBA Stats API primary, ESPN fallback)
         print("STEP 2: Fetching game schedule...")
         games = self.api.get_scoreboard(target_date)
-        print(f"[GAME] Found {len(games)} games on {target_date}")
+        print(f"[GAME] Found {len(games)} games on {target_date} (NBA Stats API)")
+
+        if len(games) == 0:
+            print("[WARN] NBA Stats API returned 0 games — trying ESPN API fallback...")
+            try:
+                espn_games = self.espn_api.get_scoreboard(target_date)
+                if espn_games:
+                    games = espn_games
+                    print(f"[GAME] ESPN fallback: found {len(games)} games on {target_date}")
+                else:
+                    print("[WARN] ESPN API also returned 0 games — no games scheduled")
+            except Exception as e:
+                print(f"[WARN] ESPN fallback failed: {e}")
 
         if len(games) == 0:
             print("[WARN] No games scheduled")
