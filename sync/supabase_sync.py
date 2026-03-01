@@ -264,10 +264,17 @@ class SupabaseSync:
         synced = 0
         for pick in picks:
             try:
+                # Use local DB name (abbreviated) as the conflict key so we UPDATE the
+                # existing prediction row rather than INSERT a new full-name duplicate.
+                # e.g. local "S. Bennett" upserts into the row sync_predictions() wrote,
+                # instead of creating a separate "Sam Bennett" row.
+                canonical_name = self._normalize_name(
+                    pick.local_player_name if pick.local_player_name else pick.player_name
+                )
                 self.client.table('daily_props').upsert({
                     'game_date': game_date,
                     'sport': sport_upper,
-                    'player_name': self._normalize_name(pick.player_name),
+                    'player_name': canonical_name,
                     'team': pick.team,
                     'opponent': pick.opponent,
                     'prop_type': pick.prop_type,
