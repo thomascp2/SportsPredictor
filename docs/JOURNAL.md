@@ -275,6 +275,54 @@ matching the pick direction.
 
 ---
 
+## 2026-03-01 — Dashboard Data Quality: Duplicate Rows, odds_type, Team Staleness & Game Times
+
+**Sessions:** 1
+**Status going in:** Cloud dashboard live; NHL back from Olympic break; user identified multiple data-quality issues in exported CSV
+**Status coming out:** 4 data-quality bugs fixed permanently; game times added to dashboard; 905 odds_type corrections applied; 9 stale NBA teams corrected
+
+### What happened
+User exported `daily_props` to CSV and spotted a cluster of problems on the first big NHL
+game day: Tkachuk, Marchand, and Bennett all showing `odds_type=standard` for lines that
+PrizePicks labels as `goblin`. On top of that, `S. Bennett` and `Sam Bennett` appeared as
+separate rows in the same table. Over on the NBA side, De'Aaron Fox was listed on the Kings
+(he was traded to San Antonio), and SGA steals OVER 0.5 and Hartenstein POINTS OVER 7.5 were
+also showing `standard` instead of `goblin`.
+
+Root-caused all four issues and fixed them permanently. Added `local_player_name` to `SmartPick`
+so the sync layer always uses the abbreviated local DB name as the upsert key — no more duplicate
+rows. Made PP team authoritative in `SmartPick` so trades are reflected within one sync cycle.
+Built `sync_odds_types()` — a direct PrizePicks-to-Supabase label sync with no edge filtering —
+which corrected 905 rows. Built `sync_game_times()` to populate the `game_time` TIMESTAMPTZ
+column; added an ET-formatted `Time` column to the dashboard. Uncovered and fixed a Supabase
+1000-row pagination cap that was silently truncating all batch-update operations.
+
+### Key decisions / pivots
+- **`odds_type` is a factual label, not a derived metric.** Never compute it from our edge model.
+  Separate `sync_odds_types()` step reads it directly from PrizePicks DB with no filtering.
+- **PP team is authoritative over local DB.** Traded players appear in PP immediately; local
+  `player_game_logs` catches up slowly. Using `pp.get('team', '') or pred.get('team', '')` fixes
+  staleness without any backfill.
+- **`local_player_name` separates display name from sync key.** NHL DB uses abbreviated names
+  (`S. Bennett`); PP uses full names (`Sam Bennett`). The SmartPick now carries both — full name
+  for display, abbreviated name for the upsert conflict key.
+- **All Supabase batch queries must paginate.** Default page size is 1000. NBA `daily_props` has
+  2,800+ rows. Every future method that fetches all rows for a date must use the `.range()` loop.
+
+### What's blocked
+- Discord OAuth providers still not configured (FreePicks app device test still blocked)
+- Streamlit Community Cloud deployment (permanent URL) — still pending push + share.streamlit.io
+
+### Notes
+- Backfill for Unicode → ASCII player names completed at session start: NBA 87/87, NHL 83/83.
+- 37 orphan full-name NHL rows (Sam Bennett, etc.) manually deleted from Supabase; fix is permanent.
+- 9 NBA traded players (Fox, Dosunmu, Lopez, Martin, Thomas, Johnson, LeVert, Yabusele, Achiuwa) corrected.
+- `sync_game_times()` stores ISO TIMESTAMPTZ (`2026-03-01T13:10:00-05:00`), not a human-readable string.
+
+**Detailed minutes:** `docs/sessions/2026-03-01.md`
+
+---
+
 <!-- Template for future entries:
 
 ## YYYY-MM-DD — [Session Title]
