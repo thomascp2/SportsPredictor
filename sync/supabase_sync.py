@@ -296,6 +296,164 @@ class SupabaseSync:
         print(f"[SYNC] Synced {synced}/{len(picks)} {sport_upper} smart picks")
         return {'synced': synced, 'total': len(picks), 'sport': sport_upper}
 
+    def sync_odds_types(self, sport: str, game_date: Optional[str] = None) -> Dict:
+        """
+        Update odds_type for all daily_props rows to match PrizePicks actual classification.
+
+        Runs after sync_predictions() + sync_smart_picks() to catch any rows where
+        smart_picks didn't fire (e.g. edge below break-even for goblin/demon lines).
+        Uses direct PP DB lookup — no edge filtering, purely factual label correction.
+
+        Examples fixed:
+          - SGA steals 0.5 → goblin (edge just below break-even, skipped by smart_picks)
+          - Hartenstein points 7.5 → goblin (same)
+          - Any goblin line our model isn't confident enough on still gets labeled correctly
+        """
+        if game_date is None:
+            game_date = date.today().isoformat()
+
+        sport_upper = sport.upper()
+        pp_db = PROJECT_ROOT / 'shared' / 'prizepicks_lines.db'
+        print(f"[SYNC] Syncing {sport_upper} odds_type labels from PP for {game_date}...")
+
+        if sport_upper == 'NHL':
+            props = ('shots', 'points', 'goals', 'assists', 'pp_points')
+        else:
+            props = ('points', 'rebounds', 'assists', 'threes', 'pra',
+                     'pts_rebs', 'pts_asts', 'rebs_asts', 'steals',
+                     'blocked_shots', 'turnovers', 'fantasy')
+
+        placeholders = ','.join(['?' for _ in props])
+        conn = sqlite3.connect(str(pp_db))
+        pp_rows = conn.execute(f'''
+            SELECT DISTINCT player_name, prop_type, line, odds_type
+            FROM prizepicks_lines
+            WHERE substr(start_time, 1, 10) = ?
+              AND league = ?
+              AND prop_type IN ({placeholders})
+        ''', [game_date, sport_upper] + list(props)).fetchall()
+        conn.close()
+
+        # Build lookup: (normalized_name_lower, prop_type, line) -> odds_type
+        pp_lookup = {}
+        for name, prop, line, odds in pp_rows:
+            key = (self._normalize_name(name).lower(), prop, line)
+            pp_lookup[key] = odds
+
+        # Fetch all prediction rows for today from Supabase (paginate past 1000-row limit)
+        all_rows = []
+        page_size = 1000
+        offset = 0
+        while True:
+            r = self.client.table('daily_props').select(
+                'player_name,prop_type,line,odds_type'
+            ).eq('sport', sport_upper).eq('game_date', game_date).range(
+                offset, offset + page_size - 1
+            ).execute()
+            batch = r.data or []
+            all_rows.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+
+        updated = 0
+        for row in all_rows:
+            norm = self._normalize_name(row['player_name']).lower()
+            prop = row['prop_type']
+            line = row['line']
+
+            pp_odds = pp_lookup.get((norm, prop, line))
+
+            # For NHL abbreviated names, try initial matching as fallback
+            if pp_odds is None and sport_upper == 'NHL':
+                for (pp_norm, pp_prop, pp_line), odds in pp_lookup.items():
+                    if pp_prop != prop or pp_line != line:
+                        continue
+                    # Check if pp_norm (full) matches norm (abbreviated) or vice versa
+                    if self._initial_match(pp_norm, norm) or self._initial_match(norm, pp_norm):
+                        pp_odds = odds
+                        break
+
+            if pp_odds is None or row['odds_type'] == pp_odds:
+                continue  # No PP line found, or already correct
+
+            try:
+                self.client.table('daily_props').update({
+                    'odds_type': pp_odds
+                }).eq('game_date', game_date).eq('sport', sport_upper).eq(
+                    'player_name', row['player_name']
+                ).eq('prop_type', prop).eq('line', line).execute()
+                updated += 1
+            except Exception as e:
+                print(f"[SYNC ERROR] odds_type {row['player_name']}: {e}")
+
+        print(f"[SYNC] Corrected {updated} odds_type labels for {sport_upper} on {game_date}")
+        return {'updated': updated, 'sport': sport_upper, 'date': game_date}
+
+    def sync_game_times(self, sport: str, game_date: Optional[str] = None) -> Dict:
+        """
+        Populate game_time field in daily_props from PrizePicks start_time data.
+        Stored as "7:10 PM ET" so the dashboard can show tip-off time per pick.
+        Batch-updates by team (all players on same team share one start_time).
+        """
+        if game_date is None:
+            game_date = date.today().isoformat()
+
+        sport_upper = sport.upper()
+        pp_db = PROJECT_ROOT / 'shared' / 'prizepicks_lines.db'
+        print(f"[SYNC] Syncing {sport_upper} game times for {game_date}...")
+
+        conn = sqlite3.connect(str(pp_db))
+        rows = conn.execute('''
+            SELECT team, MIN(start_time) as start_time
+            FROM prizepicks_lines
+            WHERE substr(start_time, 1, 10) = ?
+              AND league = ?
+              AND team NOT LIKE "%/%"
+            GROUP BY team
+        ''', [game_date, sport_upper]).fetchall()
+        conn.close()
+
+        # Store raw ISO timestamp (Supabase game_time is TIMESTAMPTZ)
+        # Dashboard formats to human-readable "h:MM PM ET" at display time
+        team_times = {}
+        for team, iso_time in rows:
+            try:
+                # Normalize: "2026-03-01T13:10:00.000-05:00" → "2026-03-01T13:10:00-05:00"
+                ts = iso_time[:19] + iso_time[23:] if '.' in iso_time else iso_time
+                team_times[team.upper()] = ts
+            except Exception:
+                pass
+
+        updated = 0
+        for team, game_time in team_times.items():
+            try:
+                r = self.client.table('daily_props').update({
+                    'game_time': game_time
+                }).eq('sport', sport_upper).eq('game_date', game_date).eq(
+                    'team', team
+                ).execute()
+                if r.data:
+                    updated += len(r.data)
+            except Exception as e:
+                print(f"[SYNC ERROR] game_time {team}: {e}")
+
+        print(f"[SYNC] Set game_time for {updated} rows ({len(team_times)} teams) for {sport_upper}")
+        return {'updated': updated, 'teams': len(team_times), 'sport': sport_upper}
+
+    @staticmethod
+    def _initial_match(full_name_lower: str, abbrev_lower: str) -> bool:
+        """Check if abbrev_lower ('s. bennett') matches full_name_lower ('sam bennett')."""
+        if '. ' not in abbrev_lower:
+            return False
+        parts = abbrev_lower.split('. ', 1)
+        if len(parts[0]) != 1:
+            return False
+        full_parts = full_name_lower.split()
+        if len(full_parts) < 2:
+            return False
+        return parts[0] == full_parts[0][0] and parts[1] == full_parts[-1]
+
     def trigger_user_grading(self, game_date: str, sport: Optional[str] = None) -> Dict:
         """
         Call the grade-user-picks Edge Function to grade user picks
@@ -381,7 +539,7 @@ class SupabaseSync:
 def main():
     parser = argparse.ArgumentParser(description='Sync predictions to Supabase')
     parser.add_argument('--sport', choices=['nhl', 'nba', 'all'], default='all')
-    parser.add_argument('--operation', choices=['predictions', 'grading', 'smart-picks', 'all'], default='all')
+    parser.add_argument('--operation', choices=['predictions', 'grading', 'smart-picks', 'odds-types', 'game-times', 'all'], default='all')
     parser.add_argument('--date', help='Date to sync (YYYY-MM-DD)')
     args = parser.parse_args()
 
@@ -394,6 +552,15 @@ def main():
 
         if args.operation in ('smart-picks', 'all'):
             syncer.sync_smart_picks(sport, args.date)
+
+        # Always run odds-type correction after smart-picks so labels are factually correct
+        # even for lines our model doesn't recommend (below goblin break-even)
+        if args.operation in ('odds-types', 'smart-picks', 'all'):
+            syncer.sync_odds_types(sport, args.date)
+
+        # Populate game_time from PP start_time data
+        if args.operation in ('game-times', 'smart-picks', 'all'):
+            syncer.sync_game_times(sport, args.date)
 
         if args.operation in ('grading', 'all'):
             grading_date = args.date or (date.today() - timedelta(days=1)).isoformat()
