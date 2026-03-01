@@ -116,19 +116,36 @@ def fetch_performance(sport: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
-def fetch_recent_results(sport: str, days: int = 7) -> pd.DataFrame:
+def fetch_recent_results(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """Fetch graded results between start_date and end_date (inclusive).
+    Pages through all results to avoid the 1000-row Supabase default limit.
+    """
     sb = get_supabase()
     if sb is None:
         return pd.DataFrame()
-    since = (date.today() - timedelta(days=days)).isoformat()
-    r = (sb.table("daily_props")
-           .select("game_date,ai_prediction,ai_tier,result,ai_probability,prop_type,actual_value")
-           .eq("sport", sport)
-           .gte("game_date", since)
-           .not_.is_("result", "null")
-           .gt("actual_value", 0)   # exclude DNP/ungraded rows (actual_value=0)
-           .execute())
-    return pd.DataFrame(r.data) if r.data else pd.DataFrame()
+
+    all_rows = []
+    page_size = 1000
+    offset = 0
+
+    while True:
+        r = (sb.table("daily_props")
+               .select("game_date,ai_prediction,ai_tier,result,ai_probability,prop_type,actual_value")
+               .eq("sport", sport)
+               .gte("game_date", start_date)
+               .lte("game_date", end_date)
+               .not_.is_("result", "null")
+               .gt("actual_value", 0)   # exclude DNP/ungraded rows (actual_value=0)
+               .order("game_date", desc=False)
+               .range(offset, offset + page_size - 1)
+               .execute())
+        batch = r.data or []
+        all_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+
+    return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
 
 @st.cache_data(ttl=300)
@@ -288,10 +305,28 @@ def main():
     # TAB 2 — PERFORMANCE
     # ═══════════════════════════════════════════════════════════════════════════
     with tab_perf:
-        ps = st.selectbox("Sport", ["NBA", "NHL"], key="perf_sport")
+        pc1, pc2 = st.columns([1, 2])
+        with pc1:
+            ps = st.selectbox("Sport", ["NBA", "NHL"], key="perf_sport")
+        with pc2:
+            # Date range slider — goes back to Nov 2024 (first data)
+            earliest = date(2024, 11, 1)
+            today = date.today()
+            default_start = today - timedelta(days=30)
+            date_range = st.slider(
+                "Date range",
+                min_value=earliest,
+                max_value=today,
+                value=(default_start, today),
+                format="MMM D, YYYY",
+                key="perf_date_range",
+            )
+            perf_start, perf_end = date_range[0].isoformat(), date_range[1].isoformat()
 
-        results_df = fetch_recent_results(ps, days=14)
-        st.caption("DNP records (actual_value=0) excluded from accuracy calculations.")
+        results_df = fetch_recent_results(ps, perf_start, perf_end)
+        days_shown = (date_range[1] - date_range[0]).days
+        st.caption(f"Showing {days_shown}-day window ({perf_start} to {perf_end}). "
+                   "DNP records (actual_value=0) excluded.")
 
         if not results_df.empty:
             hits = results_df[results_df["result"] == "HIT"]
@@ -299,7 +334,7 @@ def main():
             acc = len(hits) / total * 100 if total else 0
 
             pm1, pm2, pm3, pm4 = st.columns(4)
-            pm1.metric("Graded (14d)", total)
+            pm1.metric("Graded", total)
             pm2.metric("Accuracy", f"{acc:.1f}%")
             pm3.metric("Hits", len(hits))
             pm4.metric("Misses", total - len(hits))
@@ -355,7 +390,7 @@ def main():
                 }).sort_values("Date")
                 st.line_chart(chart_df.set_index("Date"))
         else:
-            st.info(f"No graded results yet for {ps} in the last 14 days.")
+            st.info(f"No graded results for {ps} between {perf_start} and {perf_end}.")
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TAB 3 — SYSTEM HEALTH
