@@ -17,6 +17,7 @@ import sys
 import json
 import sqlite3
 import argparse
+import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -121,7 +122,7 @@ class SupabaseSync:
             prop = {
                 'game_date': game_date,
                 'sport': sport_upper,
-                'player_name': row_dict['player_name'],
+                'player_name': self._normalize_name(row_dict['player_name']),
                 'team': row_dict.get('team', ''),
                 'opponent': row_dict.get('opponent', ''),
                 'prop_type': row_dict['prop_type'],
@@ -215,7 +216,7 @@ class SupabaseSync:
                     'status': 'graded',
                     'graded_at': datetime.now().isoformat(),
                 }).eq('game_date', game_date).eq(
-                    'player_name', row_dict['player_name']
+                    'player_name', self._normalize_name(row_dict['player_name'])
                 ).eq('prop_type', row_dict['prop_type']).eq(
                     'line', row_dict['line']
                 ).execute()
@@ -266,7 +267,7 @@ class SupabaseSync:
                 self.client.table('daily_props').upsert({
                     'game_date': game_date,
                     'sport': sport_upper,
-                    'player_name': pick.player_name,
+                    'player_name': self._normalize_name(pick.player_name),
                     'team': pick.team,
                     'opponent': pick.opponent,
                     'prop_type': pick.prop_type,
@@ -347,6 +348,14 @@ class SupabaseSync:
             print(f"[SYNC] Model performance synced: {hits}/{total} ({accuracy:.1%})")
         except Exception as e:
             print(f"[SYNC ERROR] Model performance sync failed: {e}")
+
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        """Strip diacritics so 'Luka Dončić' and 'Luka Doncic' are the same key in Supabase."""
+        return ''.join(
+            c for c in unicodedata.normalize('NFD', name)
+            if unicodedata.category(c) != 'Mn'
+        )
 
     @staticmethod
     def _get_tier(probability: float) -> str:
