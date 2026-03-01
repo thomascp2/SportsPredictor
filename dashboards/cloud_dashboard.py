@@ -122,6 +122,10 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
         return pd.DataFrame()
 
     df = pd.DataFrame(r.data)
+    # Enforce PP platform rule: goblin/demon lines only allow OVER bets
+    df = df[~(df["odds_type"].isin(["goblin", "demon"]) & (df["ai_prediction"] == "UNDER"))]
+    if df.empty:
+        return pd.DataFrame()
     df["Prob"]    = (df["ai_probability"] * 100).round(1).astype(str) + "%"
     df["Edge"]    = df["ai_edge"].round(1).apply(lambda x: f"+{x}%" if x >= 0 else f"{x}%")
     df["EV 4-leg"]= df["ai_ev_4leg"].apply(
