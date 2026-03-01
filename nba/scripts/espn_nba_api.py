@@ -1,4 +1,4 @@
-# AUTO-FIXED: 2024-12-19 - Updated ESPN NBA API to handle enhanced response structure with expanded metadata fields and improved error handling
+# AUTO-FIXED: 2024-12-19 - Updated ESPN NBA API to handle enhanced response structure with expanded metadata fields, improved statistics parsing, and better error handling for new API schema
 
 """
 ESPN NBA API Client
@@ -358,7 +358,7 @@ class ESPNNBAApi:
                 print("Warning: No valid boxscore data found")
                 return []
 
-            # Handle enhanced boxscore structure
+            # FIXED: Handle enhanced boxscore structure with both teams and players arrays
             teams_data = boxscore.get('teams', [])  # Enhanced team-level stats
             players_data = boxscore.get('players', [])
             
@@ -366,11 +366,12 @@ class ESPNNBAApi:
                 print("Warning: No valid players data found")
                 return []
             
+            # Process each team's player data
             for team_data in players_data:
                 if not isinstance(team_data, dict):
                     continue
                 
-                # Extract enhanced team information
+                # Extract enhanced team information with new fields
                 team_info = team_data.get('team', {})
                 if not isinstance(team_info, dict):
                     continue
@@ -384,7 +385,7 @@ class ESPNNBAApi:
                 if not team_abbr:
                     continue
                 
-                # Handle statistics structure
+                # FIXED: Handle enhanced statistics structure with new fields
                 statistics = team_data.get('statistics', [])
                 if not isinstance(statistics, list) or len(statistics) == 0:
                     continue
@@ -393,13 +394,13 @@ class ESPNNBAApi:
                 if not isinstance(stat_info, dict):
                     continue
                 
-                # Extract stat column headers with enhanced field names
+                # FIXED: Extract stat column headers from new field names (names, labels, descriptions, etc.)
                 stat_keys = []
                 header_sources = ['names', 'labels', 'keys', 'descriptions', 'headers']
                 for field_name in header_sources:
                     field_value = stat_info.get(field_name)
                     if isinstance(field_value, list) and field_value:
-                        stat_keys = [str(k).strip() for k in field_value if k is not None]
+                        stat_keys = [str(k).strip() for k in field_value if k is not None and str(k).strip()]
                         break
                     elif isinstance(field_value, str) and field_value.strip():
                         stat_keys = [field_value.strip()]
@@ -410,7 +411,7 @@ class ESPNNBAApi:
                     stat_keys = ['MIN', 'FGM-FGA', 'FG%', '3PM-3PA', '3P%', 'FTM-FTA', 'FT%', 
                                 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TO', 'PF', 'PTS', '+/-']
                 
-                # Process athletes data with enhanced error handling
+                # FIXED: Process athletes data with enhanced structure handling
                 athletes_data = stat_info.get('athletes', [])
                 if not isinstance(athletes_data, list):
                     print(f"Warning: athletes data is not a list for team {team_abbr}")
@@ -421,17 +422,16 @@ class ESPNNBAApi:
                         continue
                     
                     try:
-                        # Extract enhanced athlete information
+                        # Extract enhanced athlete information with new fields
                         athlete_info = athlete_data.get('athlete', {})
                         if not isinstance(athlete_info, dict):
                             continue
                         
-                        # Skip only true DNPs - 'active' field is unreliable (set False
-                        # for played players in completed games), use didNotPlay only
+                        # FIXED: Improved DNP detection - only skip true DNPs, not players with active=False
                         if athlete_data.get('didNotPlay', False):
                             continue
                         
-                        # Extract player stats
+                        # Extract player stats with better validation
                         player_stats_raw = athlete_data.get('stats', [])
                         if not isinstance(player_stats_raw, list) or not player_stats_raw:
                             continue
@@ -515,7 +515,7 @@ class ESPNNBAApi:
                         if not player_name:
                             continue
                         
-                        # Build comprehensive player stats with enhanced metadata
+                        # FIXED: Build comprehensive player stats with enhanced metadata from new API structure
                         player_stats = {
                             'game_id': str(game_id),
                             'player_name': player_name,
@@ -534,14 +534,14 @@ class ESPNNBAApi:
                             'ftm': ftm,
                             'plus_minus': plus_minus,
                             'three_point_attempts': fg3a,
-                            # Enhanced player metadata
+                            # Enhanced player metadata from new API structure
                             'player_id': str(athlete_info.get('id', '')),
                             'player_uid': str(athlete_info.get('uid', '')),
                             'jersey_number': str(athlete_info.get('jersey', '')),
                             'position': self._extract_position(athlete_info),
                             'starter': athlete_data.get('starter', False),
                             'ejected': athlete_data.get('ejected', False),
-                            # Enhanced team metadata
+                            # Enhanced team metadata from new API structure
                             'team_display_order': team_data.get('displayOrder', 0),
                             'team_id': str(team_info.get('id', '')),
                             'team_uid': str(team_info.get('uid', '')),

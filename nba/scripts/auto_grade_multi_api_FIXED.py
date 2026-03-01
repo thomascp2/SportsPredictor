@@ -92,6 +92,15 @@ class MultiAPIGrader:
                 continue
             
             player_stats, match_tier, match_score = match_result
+
+            # Skip DNP players — NBA Stats API fallback includes them with 0 minutes.
+            # ESPN API filters them out at fetch time, but the fallback does not.
+            # Grading a DNP with actual_value=0 marks all OVERs as MISS and all
+            # UNDERs as HIT, corrupting accuracy stats.
+            if player_stats.get('minutes', 1) == 0:
+                ungraded.append((player_name, "DNP (0 minutes played)"))
+                continue
+
             actual_value = self._get_stat_value(player_stats, prop_type)
 
             if actual_value is None:
