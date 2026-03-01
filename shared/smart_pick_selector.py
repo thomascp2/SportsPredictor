@@ -32,7 +32,8 @@ DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL',
 @dataclass
 class SmartPick:
     """A pick that matches an actual PrizePicks line"""
-    player_name: str
+    player_name: str        # PrizePicks display name (full name, e.g. "Sam Bennett")
+    local_player_name: str  # Local DB name (may be abbreviated, e.g. "S. Bennett")
     team: str
     opponent: str
     prop_type: str
@@ -403,6 +404,7 @@ class SmartPickSelector:
             # Create SmartPick
             pick = SmartPick(
                 player_name=pp['player_name'],
+                local_player_name=pred['player_name'],
                 team=pred.get('team', ''),
                 opponent=pred.get('opponent', ''),
                 prop_type=pp['prop_type'],
