@@ -374,13 +374,27 @@ class SupabaseSync:
                         pp_odds = odds
                         break
 
-            if pp_odds is None or row['odds_type'] == pp_odds:
-                continue  # No PP line found, or already correct
+            # Determine if we need to update odds_type and/or ai_prediction
+            needs_odds_update = pp_odds is not None and row['odds_type'] != pp_odds
+            # PP platform rule: goblin/demon lines only allow OVER bets.
+            # Fix ai_prediction=UNDER for any goblin/demon line regardless of odds_type change.
+            effective_type = pp_odds if pp_odds is not None else row.get('odds_type', 'standard')
+            needs_dir_fix = (effective_type in ('goblin', 'demon')
+                             and row.get('ai_prediction') == 'UNDER')
+
+            if not needs_odds_update and not needs_dir_fix:
+                continue  # Nothing to correct
+
+            patch = {}
+            if needs_odds_update:
+                patch['odds_type'] = pp_odds
+            if needs_dir_fix:
+                patch['ai_prediction'] = 'OVER'
 
             try:
-                self.client.table('daily_props').update({
-                    'odds_type': pp_odds
-                }).eq('game_date', game_date).eq('sport', sport_upper).eq(
+                self.client.table('daily_props').update(patch).eq(
+                    'game_date', game_date
+                ).eq('sport', sport_upper).eq(
                     'player_name', row['player_name']
                 ).eq('prop_type', prop).eq('line', line).execute()
                 updated += 1
