@@ -87,6 +87,53 @@ was a false positive from the ESPN API health monitor, not a real grading failur
 
 ---
 
+## 2026-02-28 — Cloud Dashboard Live, Cloudflare Tunnel, Options C/D Documented
+
+**Sessions:** 1 (second session of the day)
+**Status going in:** Streamlit app working locally but no mobile access; Flask dashboard broken stub; user wanted to monitor picks and system health from phone
+**Status coming out:** Cloud dashboard built (Supabase-backed, 3 tabs); Cloudflare tunnel live; auto-starts with orchestrator; Options C/D spec'd as GitHub issues
+
+### What happened
+Inventoried both existing dashboards — Streamlit (`smart_picks_app.py`) working locally,
+Flask (`performance_dashboard.py`) a broken stub (no HTML templates ever created).
+Evaluated 4 mobile access options and implemented A + B in one session.
+
+Option A (Cloudflare Tunnel): Downloaded `cloudflared.exe` directly from GitHub releases,
+opened a quick tunnel to `localhost:8502`. Created `start_dashboard.bat` to auto-start
+Streamlit + tunnel on every orchestrator launch. Mobile URL available immediately but
+changes on each restart.
+
+Option B (Supabase-backed Streamlit): Built `dashboards/cloud_dashboard.py` from scratch —
+reads from Supabase `daily_props` (22k rows already synced), `model_performance`, and
+`daily_games`. Three tabs: Today's Picks (filterable table + parlay builder), Performance
+(14-day accuracy by tier and prop), System (pipeline status per sport). Mobile-optimized
+layout (sidebar collapsed by default). Verified running at HTTP 200 on port 8502.
+
+Options C (Flask dashboard) and D (FreePicks admin tab) documented as ready-to-paste
+GitHub issue specs in `docs/github_issues/`.
+
+### Key decisions / pivots
+- **Port 8502 for cloud dashboard** — keeps local SmartPickSelector app on 8501 separately
+- **Supabase service role key in `.streamlit/secrets.toml`** — gitignored; Streamlit Cloud
+  gets secrets via their UI, local runs via the file
+- **Quick tunnel is temporary** — URL changes on restart. Named tunnel (requires Cloudflare
+  account) or Streamlit Community Cloud deployment gives a permanent URL
+- **All three processes auto-start from one bat** — orchestrator + Discord bot + dashboard + tunnel
+
+### What's blocked
+- Streamlit Community Cloud deployment (needs push + 10 min setup at share.streamlit.io)
+- Discord OAuth still not configured (FreePicks app device test still blocked)
+- Named Cloudflare tunnel (permanent URL) requires a free Cloudflare account
+
+### Notes
+- `cloudflared.exe` stored at `C:\Users\thoma\cloudflared.exe` (not in repo, not gitignored)
+- Quick tunnel URLs expire — bookmark the new URL each time until Streamlit Cloud is set up
+- `gh` CLI not installed — GitHub issues must be created manually from `docs/github_issues/`
+
+**Detailed minutes:** `docs/sessions/2026-02-28b.md`
+
+---
+
 ## 2026-02-28 — Discord Bot Live, `!parlay` Command, NHL Name-Match Fix
 
 **Sessions:** 1

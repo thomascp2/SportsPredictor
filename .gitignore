@@ -1,6 +1,8 @@
 # Secrets / local startup scripts (contain API keys / tokens — never commit)
 start_orchestrator.bat
 start_bot.bat
+.streamlit/secrets.toml
+start_dashboard.bat
 
 # Databases
 *.db
