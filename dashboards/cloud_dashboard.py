@@ -109,7 +109,7 @@ def fetch_performance(sport: str) -> pd.DataFrame:
     r = (sb.table("model_performance")
            .select("*")
            .eq("sport", sport)
-           .order("calc_date", desc=True)
+           .order("game_date", desc=True)
            .limit(30)
            .execute())
     return pd.DataFrame(r.data) if r.data else pd.DataFrame()
@@ -343,13 +343,13 @@ def main():
 
             # Model performance history
             perf_df = fetch_performance(ps)
-            if not perf_df.empty and "overall_accuracy" in perf_df.columns:
+            if not perf_df.empty and "accuracy" in perf_df.columns:
                 st.divider()
                 st.subheader("Model Accuracy Over Time")
-                chart_df = perf_df[["calc_date", "overall_accuracy"]].copy()
-                chart_df["overall_accuracy"] = (chart_df["overall_accuracy"] * 100).round(1)
+                chart_df = perf_df[["game_date", "accuracy"]].copy()
+                chart_df["accuracy"] = (chart_df["accuracy"] * 100).round(1)
                 chart_df = chart_df.rename(columns={
-                    "calc_date": "Date", "overall_accuracy": "Accuracy %"
+                    "game_date": "Date", "accuracy": "Accuracy %"
                 }).sort_values("Date")
                 st.line_chart(chart_df.set_index("Date"))
         else:
@@ -385,7 +385,9 @@ def main():
             st.caption(status_msg)
             st.divider()
 
-        st.subheader("Data Totals")
+        st.subheader("Cloud-Synced Totals")
+        st.caption("Counts reflect data synced to Supabase. Historical predictions "
+                   "pre-dating the sync layer live in local SQLite only.")
         for sport_name in ["NBA", "NHL"]:
             r = (sb.table("daily_props")
                    .select("id", count="exact")
@@ -397,7 +399,7 @@ def main():
                         .not_.is_("result", "null")
                         .execute())
             tc1, tc2 = st.columns(2)
-            tc1.metric(f"{sport_name} Total Props", f"{r.count:,}")
+            tc1.metric(f"{sport_name} Synced Props", f"{r.count:,}")
             tc2.metric(f"{sport_name} Graded", f"{graded.count:,}")
 
         st.divider()
