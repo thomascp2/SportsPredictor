@@ -122,10 +122,11 @@ def fetch_recent_results(sport: str, days: int = 7) -> pd.DataFrame:
         return pd.DataFrame()
     since = (date.today() - timedelta(days=days)).isoformat()
     r = (sb.table("daily_props")
-           .select("game_date,ai_prediction,ai_tier,result,ai_probability,prop_type")
+           .select("game_date,ai_prediction,ai_tier,result,ai_probability,prop_type,actual_value")
            .eq("sport", sport)
            .gte("game_date", since)
            .not_.is_("result", "null")
+           .gt("actual_value", 0)   # exclude DNP/ungraded rows (actual_value=0)
            .execute())
     return pd.DataFrame(r.data) if r.data else pd.DataFrame()
 
@@ -290,6 +291,7 @@ def main():
         ps = st.selectbox("Sport", ["NBA", "NHL"], key="perf_sport")
 
         results_df = fetch_recent_results(ps, days=14)
+        st.caption("DNP records (actual_value=0) excluded from accuracy calculations.")
 
         if not results_df.empty:
             hits = results_df[results_df["result"] == "HIT"]
