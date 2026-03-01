@@ -62,6 +62,37 @@ def get_supabase():
         return None
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def _fmt_time(ts):
+    if not ts:
+        return ""
+    try:
+        # "2026-03-01T19:10:00+00:00" or "2026-03-01T13:10:00-05:00"
+        s = str(ts)
+        # Parse offset
+        if '+' in s[10:]:
+            base, off = s[:19], s[19:]
+            sign = 1
+            off = off.lstrip('+')
+        elif s[19:20] == '-':
+            base = s[:19]
+            off = s[20:]
+            sign = -1
+        else:
+            base, sign, off = s[:19], 0, '00:00'
+        h_off, m_off = (int(x) for x in off.split(':')[:2])
+        offset_min = sign * (h_off * 60 + m_off)
+        dt = datetime.strptime(base, '%Y-%m-%dT%H:%M:%S')
+        # Convert to ET (UTC-5 in winter, UTC-4 in summer)
+        utc_dt = dt - timedelta(minutes=offset_min)
+        et_dt = utc_dt - timedelta(hours=5)  # EST
+        h = et_dt.hour % 12 or 12
+        ampm = 'PM' if et_dt.hour >= 12 else 'AM'
+        return f"{h}:{et_dt.minute:02d} {ampm} ET"
+    except Exception:
+        return ""
+
+
 # ── Data fetchers ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
@@ -99,38 +130,171 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
     df["Line"]    = df["ai_prediction"] + " " + df["line"].astype(str)
     df["Prop"]    = df["prop_type"].str.upper().str.replace("_", " ")
     df["Matchup"] = df["matchup"].fillna(df["team"] + " vs " + df["opponent"])
-    # Format game_time (stored as ISO TIMESTAMPTZ) to "7:10 PM ET"
-    def _fmt_time(ts):
-        if not ts:
-            return ""
-        try:
-            # "2026-03-01T19:10:00+00:00" or "2026-03-01T13:10:00-05:00"
-            from datetime import timezone, timedelta
-            s = str(ts)
-            # Parse offset
-            if '+' in s[10:]:
-                base, off = s[:19], s[19:]
-                sign = 1
-                off = off.lstrip('+')
-            elif s[19:20] == '-':
-                base = s[:19]
-                off = s[20:]
-                sign = -1
-            else:
-                base, sign, off = s[:19], 0, '00:00'
-            h_off, m_off = (int(x) for x in off.split(':')[:2])
-            offset_min = sign * (h_off * 60 + m_off)
-            dt = datetime.strptime(base, '%Y-%m-%dT%H:%M:%S')
-            # Convert to ET (UTC-5 in winter, UTC-4 in summer)
-            utc_dt = dt - timedelta(minutes=offset_min)
-            et_dt = utc_dt - timedelta(hours=5)  # EST
-            h = et_dt.hour % 12 or 12
-            ampm = 'PM' if et_dt.hour >= 12 else 'AM'
-            return f"{h}:{et_dt.minute:02d} {ampm} ET"
-        except Exception:
-            return ""
     df["Time"] = df["game_time"].apply(_fmt_time)
     return df
+
+
+@st.cache_data(ttl=300)
+def fetch_all_lines_for_players(
+    sport: str,
+    game_date: str,
+    player_prop_pairs: tuple,   # tuple of (player_name, prop_type) — must be tuple for cache hashing
+) -> pd.DataFrame:
+    """Fetch ALL lines for qualifying player-prop combos (no edge/prob filter)."""
+    sb = get_supabase()
+    if sb is None or not player_prop_pairs:
+        return pd.DataFrame()
+
+    player_names = list({pair[0] for pair in player_prop_pairs})
+
+    # Paginate — same pattern as fetch_recent_results()
+    all_rows, page_size, offset = [], 1000, 0
+    while True:
+        r = (sb.table("daily_props")
+               .select("player_name,prop_type,team,opponent,line,odds_type,"
+                       "ai_prediction,ai_probability,ai_edge,game_time")
+               .eq("sport", sport)
+               .eq("game_date", game_date)
+               .neq("status", "cancelled")
+               .lt("ai_probability", 0.95)   # same noise-floor as fetch_picks
+               .in_("player_name", player_names)
+               .range(offset, offset + page_size - 1)
+               .execute())
+        batch = r.data or []
+        all_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+
+    # Post-filter: keep only prop_types that actually qualified
+    # (prevents showing rebounds lines for a player who only qualified on points)
+    valid = set(player_prop_pairs)
+    df = df[df.apply(lambda r: (r["player_name"], r["prop_type"]) in valid, axis=1)].copy()
+
+    df["Time"] = df["game_time"].apply(_fmt_time)
+    df["Matchup"] = df["team"] + " vs " + df["opponent"]
+    return df
+
+
+# Break-even rates (must match smart_pick_selector.py BREAK_EVEN)
+_BREAK_EVEN = {"standard": 0.56, "goblin": 0.76, "demon": 0.45}
+_ODDS_ABBREV = {"standard": "STD", "goblin": "GOB", "demon": "DEM"}
+
+
+def build_line_comparison_df(all_lines_df: pd.DataFrame,
+                             qualifying_df: pd.DataFrame):
+    """
+    Pivot long-form all_lines_df into a wide comparison DataFrame.
+
+    Returns (pivot_df, meta) where:
+      pivot_df  — rows=(player,prop), cols=dynamic line headers "10.5 STD"
+      meta      — dict with qual_keys, prob_map, break_even_map for Styler
+    """
+    ODDS_A = _ODDS_ABBREV
+
+    # Set of (player_name, prop_type, line) triples that passed the user's filters
+    qual_keys = set(zip(
+        qualifying_df["player_name"],
+        qualifying_df["prop_type"],
+        qualifying_df["line"],
+    ))
+
+    df = all_lines_df.copy().sort_values(["player_name", "prop_type", "line"])
+
+    # Column header: "10.5 STD", "7.5 GOB", "14.5 DEM"
+    df["col"] = df["line"].astype(str) + " " + df["odds_type"].map(ODDS_A).fillna("???")
+
+    # Cell text: "OVER 89% +13.0%"
+    def cell_text(r):
+        edge_str = f"+{r['ai_edge']:.1f}%" if r["ai_edge"] >= 0 else f"{r['ai_edge']:.1f}%"
+        return f"{r['ai_prediction']} {r['ai_probability']*100:.0f}%  {edge_str}"
+    df["cell"] = df.apply(cell_text, axis=1)
+
+    # Pivot: one row per (player_name, prop_type, Matchup, Time)
+    pivot = df.pivot_table(
+        index=["player_name", "prop_type", "Matchup", "Time"],
+        columns="col",
+        values="cell",
+        aggfunc="first",   # UNIQUE constraint guarantees no duplicates
+    )
+    pivot.columns.name = None
+
+    # Sort columns by numeric line value (goblin->standard->demon naturally)
+    def _col_sort(c):
+        try: return float(c.split()[0])
+        except: return 9999.0
+    pivot = pivot[sorted(pivot.columns, key=_col_sort)]
+    pivot = pivot.reset_index().rename(columns={
+        "player_name": "Player", "prop_type": "Prop",
+    })
+
+    # Sort rows: players with the highest-edge qualifying pick first
+    best_edge = (qualifying_df.groupby("player_name")["ai_edge"]
+                 .max().rename("_best_edge"))
+    pivot = pivot.merge(best_edge, left_on="Player", right_index=True, how="left")
+    pivot = pivot.sort_values("_best_edge", ascending=False).drop(columns="_best_edge")
+
+    # Build prob_map and break_even_map for the Styler
+    prob_map, be_map = {}, {}
+    for _, r in df.iterrows():
+        k = (r["player_name"], r["prop_type"], r["col"])
+        prob_map[k] = (r["ai_probability"], r["line"])
+        be_map[r["col"]] = _BREAK_EVEN.get(r["odds_type"], 0.56)
+
+    meta = {"qual_keys": qual_keys, "prob_map": prob_map, "be_map": be_map}
+    return pivot, meta
+
+
+def style_line_comparison(pivot_df: pd.DataFrame, meta: dict):
+    """
+    Return a pandas Styler with per-cell color coding:
+      Recommended (passed filters)  ->  dark green  #1b4332  bold
+      Above break-even, not rec'd   ->  medium green #14532d
+      Below break-even              ->  dark red     #3f1515
+      Identity cols / em-dash       ->  no style
+    """
+    qual_keys = meta["qual_keys"]
+    prob_map  = meta["prob_map"]
+    be_map    = meta["be_map"]
+
+    id_cols = {"Player", "Prop", "Matchup", "Time"}
+    data_cols = [c for c in pivot_df.columns if c not in id_cols]
+
+    # Build a style DataFrame of the same shape (all empty strings first)
+    style_df = pd.DataFrame("", index=pivot_df.index, columns=pivot_df.columns)
+
+    for col in data_cols:
+        be = be_map.get(col, 0.56)
+        for idx, row in pivot_df.iterrows():
+            val = row[col]
+            if pd.isna(val) or val == "—":
+                continue
+            player, prop = row["Player"], row["Prop"]
+            info = prob_map.get((player, prop, col))
+            if info is None:
+                continue
+            prob, line = info
+            is_rec = (player, prop, line) in qual_keys
+
+            if is_rec:
+                style_df.at[idx, col] = (
+                    "background-color:#1b4332;color:#d1fae5;font-weight:bold;"
+                )
+            elif prob >= be:
+                style_df.at[idx, col] = (
+                    "background-color:#14532d;color:#bbf7d0;"
+                )
+            else:
+                style_df.at[idx, col] = (
+                    "background-color:#3f1515;color:#fca5a5;"
+                )
+
+    return pivot_df.style.apply(lambda _: style_df, axis=None)
 
 
 @st.cache_data(ttl=300)
@@ -266,7 +430,7 @@ def main():
             st.divider()
 
             # Inner tabs
-            pt1, pt2, pt3 = st.tabs(["All Picks", "By Prop", "Parlay Builder"])
+            pt1, pt2, pt3, pt4 = st.tabs(["All Picks", "By Prop", "Parlay Builder", "Line Compare"])
 
             display_cols = ["player_name", "Matchup", "Time", "Prop", "Line",
                             "odds_type", "Prob", "Edge", "ai_tier", "EV 4-leg"]
@@ -332,6 +496,67 @@ def main():
                         st.success(f"Positive EV parlay! {ev*100:.1f}% edge.")
                     else:
                         st.warning("Negative EV — consider higher confidence picks.")
+
+            with pt4:
+                player_prop_pairs = tuple(sorted(set(zip(df["player_name"], df["prop_type"]))))
+
+                with st.spinner("Loading all lines..."):
+                    all_lines_df = fetch_all_lines_for_players(sport, game_date, player_prop_pairs)
+
+                if all_lines_df.empty:
+                    st.warning("No line data returned. Try refreshing.")
+                else:
+                    pivot_df, meta = build_line_comparison_df(all_lines_df, df)
+                    n_pp = pivot_df["Player"].nunique()
+                    data_cols = [c for c in pivot_df.columns if c not in {"Player", "Prop", "Matchup", "Time"}]
+                    st.caption(
+                        f"{n_pp} player-props · {len(data_cols)} line columns  |  "
+                        "**Green** = passes current filters · "
+                        "**Dim green** = above break-even · "
+                        "**Red** = below break-even"
+                    )
+
+                    view = st.radio("View", ["By Prop", "All Players"], horizontal=True, key="lc_view")
+
+                    display_df = pivot_df.fillna("—")
+
+                    if view == "By Prop":
+                        for prop in sorted(display_df["Prop"].unique()):
+                            sub = display_df[display_df["Prop"] == prop].copy()
+                            sub_cols = ["Player", "Matchup", "Time"] + [
+                                c for c in data_cols if c in sub.columns and (sub[c] != "—").any()
+                            ]
+                            sub_meta = {**meta}
+                            with st.expander(f"{prop.upper()}  ({len(sub)})", expanded=True):
+                                styled = style_line_comparison(sub[sub_cols], sub_meta)
+                                st.dataframe(styled, use_container_width=True, hide_index=True)
+                    else:
+                        display_no_prop = display_df.drop(columns=["Prop"])
+                        styled = style_line_comparison(display_no_prop, meta)
+                        st.dataframe(
+                            styled,
+                            use_container_width=True,
+                            hide_index=True,
+                            height=min(50 + len(pivot_df) * 35, 800),
+                        )
+
+                    # Color legend
+                    lg1, lg2, lg3 = st.columns(3)
+                    lg1.markdown(
+                        "<span style='background:#1b4332;color:#d1fae5;padding:2px 8px;"
+                        "border-radius:3px;font-size:12px'>Recommended</span>",
+                        unsafe_allow_html=True,
+                    )
+                    lg2.markdown(
+                        "<span style='background:#14532d;color:#bbf7d0;padding:2px 8px;"
+                        "border-radius:3px;font-size:12px'>Above break-even</span>",
+                        unsafe_allow_html=True,
+                    )
+                    lg3.markdown(
+                        "<span style='background:#3f1515;color:#fca5a5;padding:2px 8px;"
+                        "border-radius:3px;font-size:12px'>Below break-even</span>",
+                        unsafe_allow_html=True,
+                    )
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TAB 2 — PERFORMANCE
