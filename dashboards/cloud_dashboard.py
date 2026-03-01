@@ -77,6 +77,7 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
            .eq("sport", sport)
            .eq("game_date", game_date)
            .gte("ai_probability", min_prob)
+           .lt("ai_probability", 0.95)   # exclude goblin lines (stat model returns 1.0 for trivially easy props)
            .gte("ai_edge", min_edge)
            .neq("status", "cancelled"))
 
