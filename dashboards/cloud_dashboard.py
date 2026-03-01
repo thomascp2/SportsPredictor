@@ -99,6 +99,37 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
     df["Line"]    = df["ai_prediction"] + " " + df["line"].astype(str)
     df["Prop"]    = df["prop_type"].str.upper().str.replace("_", " ")
     df["Matchup"] = df["matchup"].fillna(df["team"] + " vs " + df["opponent"])
+    # Format game_time (stored as ISO TIMESTAMPTZ) to "7:10 PM ET"
+    def _fmt_time(ts):
+        if not ts:
+            return ""
+        try:
+            # "2026-03-01T19:10:00+00:00" or "2026-03-01T13:10:00-05:00"
+            from datetime import timezone, timedelta
+            s = str(ts)
+            # Parse offset
+            if '+' in s[10:]:
+                base, off = s[:19], s[19:]
+                sign = 1
+                off = off.lstrip('+')
+            elif s[19:20] == '-':
+                base = s[:19]
+                off = s[20:]
+                sign = -1
+            else:
+                base, sign, off = s[:19], 0, '00:00'
+            h_off, m_off = (int(x) for x in off.split(':')[:2])
+            offset_min = sign * (h_off * 60 + m_off)
+            dt = datetime.strptime(base, '%Y-%m-%dT%H:%M:%S')
+            # Convert to ET (UTC-5 in winter, UTC-4 in summer)
+            utc_dt = dt - timedelta(minutes=offset_min)
+            et_dt = utc_dt - timedelta(hours=5)  # EST
+            h = et_dt.hour % 12 or 12
+            ampm = 'PM' if et_dt.hour >= 12 else 'AM'
+            return f"{h}:{et_dt.minute:02d} {ampm} ET"
+        except Exception:
+            return ""
+    df["Time"] = df["game_time"].apply(_fmt_time)
     return df
 
 
@@ -237,7 +268,7 @@ def main():
             # Inner tabs
             pt1, pt2, pt3 = st.tabs(["All Picks", "By Prop", "Parlay Builder"])
 
-            display_cols = ["player_name", "Matchup", "Prop", "Line",
+            display_cols = ["player_name", "Matchup", "Time", "Prop", "Line",
                             "odds_type", "Prob", "Edge", "ai_tier", "EV 4-leg"]
             col_labels = {
                 "player_name": "Player", "odds_type": "Type", "ai_tier": "Tier"

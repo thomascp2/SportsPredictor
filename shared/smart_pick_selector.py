@@ -401,11 +401,11 @@ class SmartPickSelector:
             if edge < min_edge or probability < min_prob:
                 continue
 
-            # Create SmartPick
+            # Create SmartPick - PP team is authoritative (handles recent trades)
             pick = SmartPick(
                 player_name=pp['player_name'],
                 local_player_name=pred['player_name'],
-                team=pred.get('team', ''),
+                team=pp.get('team', '') or pred.get('team', ''),
                 opponent=pred.get('opponent', ''),
                 prop_type=pp['prop_type'],
                 our_line=pred['line'],
