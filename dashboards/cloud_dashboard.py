@@ -265,6 +265,11 @@ def style_line_comparison(pivot_df: pd.DataFrame, meta: dict):
     id_cols = {"Player", "Prop", "Matchup", "Time"}
     data_cols = [c for c in pivot_df.columns if c not in id_cols]
 
+    # Fallback when Prop column is absent (All Players view drops it):
+    # build (player, col) -> prop from prob_map
+    has_prop_col = "Prop" in pivot_df.columns
+    col_to_prop = {(pn, cn): pt for (pn, pt, cn) in prob_map}
+
     # Build a style DataFrame of the same shape (all empty strings first)
     style_df = pd.DataFrame("", index=pivot_df.index, columns=pivot_df.columns)
 
@@ -274,7 +279,10 @@ def style_line_comparison(pivot_df: pd.DataFrame, meta: dict):
             val = row[col]
             if pd.isna(val) or val == "—":
                 continue
-            player, prop = row["Player"], row["Prop"]
+            player = row["Player"]
+            prop = row["Prop"] if has_prop_col else col_to_prop.get((player, col))
+            if prop is None:
+                continue
             info = prob_map.get((player, prop, col))
             if info is None:
                 continue
