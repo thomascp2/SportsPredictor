@@ -102,15 +102,21 @@ class SupabaseSync:
         for row in rows:
             row_dict = dict(row)
             probability = row_dict.get('probability', 0.5)
+            prediction_dir = row_dict.get('prediction', 'OVER')
 
-            # Calculate edge and tier
-            edge = (probability - 0.56) * 100 if probability else 0
-            tier = self._get_tier(probability)
+            # Directional confidence: probability stores raw OVER probability.
+            # For UNDER picks (probability < 0.5), the model confidence is 1-probability.
+            # Use this for tier, edge, and ai_probability so UNDER picks rank correctly.
+            confidence = probability if prediction_dir == 'OVER' else (1.0 - probability)
 
-            # Calculate EV values
-            ev_2leg = (probability ** 2) * 3.0 - 1 if probability else 0
-            ev_3leg = (probability ** 3) * 5.0 - 1 if probability else 0
-            ev_4leg = (probability ** 4) * 10.0 - 1 if probability else 0
+            # Calculate edge and tier based on directional confidence
+            edge = (confidence - 0.56) * 100 if confidence else 0
+            tier = self._get_tier(confidence)
+
+            # Calculate EV values using directional confidence
+            ev_2leg = (confidence ** 2) * 3.0 - 1 if confidence else 0
+            ev_3leg = (confidence ** 3) * 5.0 - 1 if confidence else 0
+            ev_4leg = (confidence ** 4) * 10.0 - 1 if confidence else 0
 
             prop = {
                 'game_date': game_date,
@@ -122,7 +128,7 @@ class SupabaseSync:
                 'line': row_dict['line'],
                 'odds_type': 'standard',
                 'ai_prediction': row_dict.get('prediction', ''),
-                'ai_probability': probability,
+                'ai_probability': round(confidence, 4),
                 'ai_edge': round(edge, 2),
                 'ai_tier': tier,
                 'ai_ev_2leg': round(ev_2leg, 4),
