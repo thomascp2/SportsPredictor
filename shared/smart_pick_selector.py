@@ -321,8 +321,15 @@ class SmartPickSelector:
             prop_type = pp['prop_type']
 
             # Team verification - skip if player changed teams (trade, etc.)
-            pp_team = pp.get('team', '').upper()
-            pred_team = pred.get('team', '').upper()
+            # Normalize abbreviations first: NYK=NY, SAS=SA, NOP=NO, GSW=GS, UTA=UTAH
+            _TEAM_ALIASES = {
+                'NYK': 'NY', 'NOP': 'NO', 'SAS': 'SA', 'GSW': 'GS', 'UTAH': 'UTA',
+            }
+            def _canonical(t):
+                t = t.upper()
+                return _TEAM_ALIASES.get(t, t)
+            pp_team = _canonical(pp.get('team', ''))
+            pred_team = _canonical(pred.get('team', ''))
             if pp_team and pred_team and pp_team != pred_team:
                 # Player was traded - our predictions are for wrong game
                 continue
@@ -376,8 +383,13 @@ class SmartPickSelector:
             pp_prob_under = 1 - pp_prob_over
             baseline_prob_under = 1 - baseline_prob_over
 
-            # Determine prediction based on higher probability
-            if pp_prob_over >= pp_prob_under:
+            # PP platform rule: goblin and demon lines ONLY offer OVER bets.
+            # UNDER is not available for non-standard lines on PrizePicks.
+            if pp['odds_type'] in ('goblin', 'demon'):
+                prediction = 'OVER'
+                probability = pp_prob_over
+                baseline_prob = baseline_prob_over
+            elif pp_prob_over >= pp_prob_under:
                 prediction = 'OVER'
                 probability = pp_prob_over
                 baseline_prob = baseline_prob_over
