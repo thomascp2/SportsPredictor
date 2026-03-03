@@ -267,13 +267,18 @@ class SmartPickSelector:
         predictions = self._get_predictions_with_params(game_date)
         print(f"[{self.sport}] Found {len(predictions)} predictions with lambda values")
 
-        # Build lookup by player + prop
+        # Build lookup by player + prop.
+        # Sort each group by probability descending so [0] is always the most
+        # confident prediction. This prevents probability inversion when multiple
+        # prediction rows exist for the same player+prop (e.g. duplicate STD lines).
         pred_lookup = {}
         for pred in predictions:
             key = (pred['player_name'].lower(), pred['prop_type'])
             if key not in pred_lookup:
                 pred_lookup[key] = []
             pred_lookup[key].append(pred)
+        for key in pred_lookup:
+            pred_lookup[key].sort(key=lambda p: p.get('probability', 0), reverse=True)
 
         # Match PP lines to our predictions
         smart_picks = []
@@ -331,8 +336,10 @@ class SmartPickSelector:
             pp_team = _canonical(pp.get('team', ''))
             pred_team = _canonical(pred.get('team', ''))
             if pp_team and pred_team and pp_team != pred_team:
-                # Player was traded - our predictions are for wrong game
-                continue
+                # Player was traded — PP is authoritative, log and continue.
+                # Probability is still valid (based on player stats, not team).
+                # PP team is used at SmartPick creation below (pp.get('team')).
+                print(f"[INFO] Trade detected: {pp['player_name']} local={pred_team} → PP={pp_team}")
 
             # Get season average for baseline comparison
             season_avg = pred.get('f_season_avg') or pred.get('season_avg') or 0
@@ -475,9 +482,38 @@ class SmartPickSelector:
 
         params = [game_date, self.sport] + odds_types + list(props)
         rows = conn.execute(query, params).fetchall()
-
         conn.close()
-        return [dict(row) for row in rows]
+
+        all_rows = [dict(row) for row in rows]
+
+        # Enforce platform rule: max 1 standard line per (player, prop).
+        # PP's API sometimes returns multiple projections all labeled 'standard'
+        # for the same player+prop (alt lines). Keep the median standard line —
+        # it's most likely to be the real board line; outliers are de-facto goblin/demon.
+        from collections import defaultdict
+        std_by_key = defaultdict(list)
+        for r in all_rows:
+            if r['odds_type'] == 'standard':
+                std_by_key[(r['player_name'], r['prop_type'])].append(r)
+
+        seen_std = set()
+        deduped = []
+        for r in all_rows:
+            if r['odds_type'] != 'standard':
+                deduped.append(r)
+                continue
+            key = (r['player_name'], r['prop_type'])
+            if key in seen_std:
+                continue
+            candidates = sorted(std_by_key[key], key=lambda x: x['line'])
+            if len(candidates) > 1:
+                print(f"[PP] Multiple STD lines for {r['player_name']} {r['prop_type']}: "
+                      f"{[c['line'] for c in candidates]} — keeping median")
+            keeper = candidates[len(candidates) // 2]   # median (rounds down for even count)
+            deduped.append(keeper)
+            seen_std.add(key)
+
+        return deduped
 
     def _get_predictions_with_params(self, game_date: str) -> List[Dict]:
         """Get our predictions with statistical parameters extracted from features"""
