@@ -323,6 +323,53 @@ column; added an ET-formatted `Time` column to the dashboard. Uncovered and fixe
 
 ---
 
+## 2026-03-02 — Data Quality Hardening + Dashboard UI
+
+**Sessions:** 1
+**Status going in:** Dashboard live; three data-quality issues observed from first full game day (traded player teams wrong, multiple STD lines, probability inversion); game times blank
+**Status coming out:** All three issues fixed permanently via orchestrator pipeline; game times and odds corrections now run automatically every day; Line Compare tab redesigned as card+badge layout
+
+### What happened
+User raised GitHub issues #1 and #2 noting that the traded-player team staleness fix from 3/1/26
+had already recurred (Quinn Hughes VAN→MIN still showing VAN), and that Jokic had four standard
+assists lines in the dashboard (impossible per PP platform rules) with inverted probabilities.
+Diagnosed root causes for all three: the 3/1 fix only patched `sync_smart_picks` but
+`sync_predictions` ran first and wrote stale teams; `_get_pp_lines` had no deduplication for
+multiple STD lines from the PP API; and `sync_odds_types` / `sync_game_times` were never wired
+into the orchestrator so they only ran once manually and never again. Also fixed a dashboard
+`KeyError: Prop`, a goblin/demon UNDER display bug, and replaced the Line Compare pivot table
+with a much more readable card+badge layout.
+
+### Key decisions / pivots
+- **Team staleness needs two fixes, not one.** The 3/1 fix only corrected the smart-picks row.
+  Added a PP team lookup inside `sync_predictions()` so the base prediction row is also correct
+  from the start. Both sync steps now agree on team.
+- **Stop skipping traded players.** SmartPickSelector was `continue`-ing on team mismatch, which
+  caused traded players to appear with stale team AND get no smart pick. Now logs the trade and
+  proceeds — PP team is already authoritative at SmartPick creation.
+- **Max 1 standard line per player-prop is a platform rule, not a display preference.** Enforced
+  in `_get_pp_lines()` by keeping the median standard line and dropping outliers. Logs any culled
+  duplicates for observability.
+- **`sync_odds_types` and `sync_game_times` must be in the orchestrator pipeline, not manual.**
+  Any step that needs to run daily must be wired into `run_daily_prediction_pipeline()`. Added both.
+- **Card+badge layout > pivot table for sparse multi-line data.** When different players have
+  different line sets, a pivot table produces mostly empty cells. Cards with inline badges scale
+  cleanly to any number of lines per player.
+
+### What's blocked
+- Discord OAuth providers still not configured
+- Streamlit Community Cloud permanent deployment still pending
+- Today's (3/2/26) data already synced before the fixes — needs manual re-run of odds-types and game-times sync
+
+### Notes
+- `pred_lookup` now sorts by probability desc so `[0]` is always the highest-confidence prediction.
+- Goblin/demon UNDERs now filtered at dashboard query time as a belt-and-suspenders guard.
+- All fixes are general (all players, both sports) — not Hughes-specific.
+
+**Detailed minutes:** `docs/sessions/2026-03-02.md`
+
+---
+
 <!-- Template for future entries:
 
 ## YYYY-MM-DD — [Session Title]
