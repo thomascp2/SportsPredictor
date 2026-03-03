@@ -513,11 +513,20 @@ class SportsOrchestrator:
                     syncer = SupabaseSync()
                     sync_result = syncer.sync_predictions(self.config.sport.lower(), target_date)
                     smart_sync = syncer.sync_smart_picks(self.config.sport.lower(), target_date)
+                    # Fix odds_type labels (goblin/demon rows written as 'standard' by sync_predictions)
+                    odds_sync = syncer.sync_odds_types(self.config.sport.lower(), target_date)
+                    # Populate game_time from PP start_time so dashboard shows tip-off times
+                    time_sync = syncer.sync_game_times(self.config.sport.lower(), target_date)
                     details['supabase_sync'] = {
                         'predictions': sync_result,
                         'smart_picks': smart_sync,
+                        'odds_types': odds_sync,
+                        'game_times': time_sync,
                     }
-                    print(f"[SYNC] Complete: {sync_result.get('synced', 0)} predictions, {smart_sync.get('synced', 0)} smart picks")
+                    print(f"[SYNC] Complete: {sync_result.get('synced', 0)} predictions, "
+                          f"{smart_sync.get('synced', 0)} smart picks, "
+                          f"{odds_sync.get('updated', 0)} odds corrections, "
+                          f"{time_sync.get('updated', 0)} game times")
                 except Exception as e:
                     warnings.append(f"Supabase sync failed: {str(e)}")
                     print(f"[SYNC ERROR] {e}")

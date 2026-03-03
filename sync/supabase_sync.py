@@ -98,6 +98,24 @@ class SupabaseSync:
             print(f"[SYNC] No predictions found for {sport_upper} on {game_date}")
             return {'synced': 0, 'sport': sport_upper, 'date': game_date}
 
+        # Build PP team lookup to correct stale teams for traded players.
+        # prizepicks_lines.db is the authoritative current-roster source.
+        pp_db = PROJECT_ROOT / 'shared' / 'prizepicks_lines.db'
+        pp_team_lookup = {}  # normalized_name_lower -> pp_team
+        try:
+            pp_conn = sqlite3.connect(str(pp_db))
+            pp_rows = pp_conn.execute('''
+                SELECT DISTINCT player_name, team
+                FROM prizepicks_lines
+                WHERE substr(start_time, 1, 10) = ?
+                  AND league = ?
+            ''', [game_date, sport_upper]).fetchall()
+            pp_conn.close()
+            for pp_name, pp_team in pp_rows:
+                pp_team_lookup[pp_name.lower().strip()] = pp_team
+        except Exception as e:
+            print(f"[SYNC] Warning: could not load PP teams for trade check: {e}")
+
         # Transform to Supabase format
         props = []
         for row in rows:
@@ -119,11 +137,21 @@ class SupabaseSync:
             ev_3leg = (confidence ** 3) * 5.0 - 1 if confidence else 0
             ev_4leg = (confidence ** 4) * 10.0 - 1 if confidence else 0
 
+            # Correct stale team for traded players using PP as authoritative source
+            local_team = row_dict.get('team', '')
+            norm_name = self._normalize_name(row_dict['player_name']).lower()
+            pp_team = pp_team_lookup.get(norm_name, '')
+            if pp_team and local_team and pp_team.upper() != local_team.upper():
+                print(f"[SYNC] Trade correction: {row_dict['player_name']} {local_team} → {pp_team}")
+                team = pp_team
+            else:
+                team = local_team
+
             prop = {
                 'game_date': game_date,
                 'sport': sport_upper,
                 'player_name': self._normalize_name(row_dict['player_name']),
-                'team': row_dict.get('team', ''),
+                'team': team,
                 'opponent': row_dict.get('opponent', ''),
                 'prop_type': row_dict['prop_type'],
                 'line': row_dict['line'],
