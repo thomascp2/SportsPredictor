@@ -153,9 +153,23 @@ class NBADailyPredictor:
 
         conn.commit()
 
+    # ESPN uses different abbreviations than NBA Stats API (which populates the games table).
+    TEAM_ALIASES = {
+        'WAS': 'WSH', 'WSH': 'WAS',
+        'NYK': 'NY',  'NY':  'NYK',
+        'SAS': 'SA',  'SA':  'SAS',
+        'NOP': 'NO',  'NO':  'NOP',
+        'GSW': 'GS',  'GS':  'GSW',
+        'UTA': 'UTAH','UTAH':'UTA',
+    }
+
     def _get_team_players(self, conn, team, count, game_date):
         """
         Get top N players for a team based on recent performance.
+
+        Only includes players whose MOST RECENT game was for this team (or its alias).
+        - Handles traded players: KD's most recent logs are HOU, so he won't appear in PHX.
+        - Handles abbreviation mismatches: WAS (games table) ↔ WSH (ESPN game logs).
 
         Args:
             conn: Database connection
@@ -168,23 +182,38 @@ class NBADailyPredictor:
         """
         cursor = conn.cursor()
 
-        # Get players with most recent games for this team
-        cursor.execute("""
-            SELECT player_name, AVG(minutes) as avg_minutes, COUNT(*) as games
-            FROM player_game_logs
-            WHERE team = ?
-              AND game_date < ?
-            GROUP BY player_name
+        alias = self.TEAM_ALIASES.get(team)
+        team_variants = [team, alias] if alias else [team]
+        placeholders = ','.join(['?' for _ in team_variants])
+
+        cursor.execute(f"""
+            WITH current_teams AS (
+                SELECT player_name, team AS current_team
+                FROM (
+                    SELECT player_name, team,
+                           ROW_NUMBER() OVER (PARTITION BY player_name ORDER BY game_date DESC) AS rn
+                    FROM player_game_logs
+                    WHERE game_date < ?
+                ) ranked
+                WHERE rn = 1
+            )
+            SELECT pgl.player_name, AVG(pgl.minutes) AS avg_minutes, COUNT(*) AS games
+            FROM player_game_logs pgl
+            JOIN current_teams ct ON pgl.player_name = ct.player_name
+                AND ct.current_team IN ({placeholders})
+            WHERE pgl.team IN ({placeholders})
+              AND pgl.game_date < ?
+            GROUP BY pgl.player_name
             HAVING games >= 3
             ORDER BY avg_minutes DESC
             LIMIT ?
-        """, (team, game_date, count))
+        """, (game_date, *team_variants, *team_variants, game_date, count))
 
         players = [row[0] for row in cursor.fetchall()]
 
         # If not enough players in database, return what we have
         if len(players) < count:
-            print(f"      [WARN]  Only {len(players)} players found for {team} (expected {count})")
+            print(f"      [WARN]  Only {len(players)} players found for {team} (expected {count}, may have traded players filtered out)")
 
         return players
 

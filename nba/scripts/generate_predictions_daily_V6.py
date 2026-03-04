@@ -378,8 +378,11 @@ class NBADailyPredictorV6:
                             pp_matched_players += 1
                             player_pp_lines = pp_player_lines[pp_name]
                         else:
+                            # No PP lines = player is injured, not playing today, or on wrong team.
+                            # Skip entirely — do NOT fall back to fixed lines. This prevents
+                            # generating fake predictions for traded players (e.g. KD as PHX).
                             pp_unmatched_players += 1
-                            player_pp_lines = FALLBACK_PROPS.copy()
+                            continue
                     else:
                         player_pp_lines = FALLBACK_PROPS.copy()
 
@@ -484,25 +487,61 @@ class NBADailyPredictorV6:
 
         conn.commit()
 
+    # ESPN uses different abbreviations than NBA Stats API (which populates the games table).
+    # This map lets us search player_game_logs using both the canonical abbrev and its alias.
+    TEAM_ALIASES = {
+        'WAS': 'WSH', 'WSH': 'WAS',
+        'NYK': 'NY',  'NY':  'NYK',
+        'SAS': 'SA',  'SA':  'SAS',
+        'NOP': 'NO',  'NO':  'NOP',
+        'GSW': 'GS',  'GS':  'GSW',
+        'UTA': 'UTAH','UTAH':'UTA',
+    }
+
     def _get_team_players(self, conn, team, count, game_date):
-        """Get top N players for a team based on recent performance."""
+        """Get top N players for a team based on recent performance.
+
+        Only includes players whose MOST RECENT game was for this team (or its alias).
+        - Handles traded players: KD's most recent logs are HOU, so he won't appear in PHX.
+        - Handles abbreviation mismatches: WAS (games table) ↔ WSH (ESPN game logs).
+        """
         cursor = conn.cursor()
 
-        cursor.execute("""
-            SELECT player_name, AVG(minutes) as avg_minutes, COUNT(*) as games
-            FROM player_game_logs
-            WHERE team = ?
-              AND game_date < ?
-            GROUP BY player_name
+        # Build list of team abbreviations to accept (canonical + ESPN alias).
+        alias = self.TEAM_ALIASES.get(team)
+        team_variants = [team, alias] if alias else [team]
+        placeholders = ','.join(['?' for _ in team_variants])
+
+        # Only include players whose most recent game (before target date) was for this
+        # team (in any variant). This filters out players traded away to other teams.
+        # CTE pre-computes each player's current team once (avoids O(n²) correlated subquery).
+        cursor.execute(f"""
+            WITH current_teams AS (
+                SELECT player_name, team AS current_team
+                FROM (
+                    SELECT player_name, team,
+                           ROW_NUMBER() OVER (PARTITION BY player_name ORDER BY game_date DESC) AS rn
+                    FROM player_game_logs
+                    WHERE game_date < ?
+                ) ranked
+                WHERE rn = 1
+            )
+            SELECT pgl.player_name, AVG(pgl.minutes) AS avg_minutes, COUNT(*) AS games
+            FROM player_game_logs pgl
+            JOIN current_teams ct ON pgl.player_name = ct.player_name
+                AND ct.current_team IN ({placeholders})
+            WHERE pgl.team IN ({placeholders})
+              AND pgl.game_date < ?
+            GROUP BY pgl.player_name
             HAVING games >= 3
             ORDER BY avg_minutes DESC
             LIMIT ?
-        """, (team, game_date, count))
+        """, (game_date, *team_variants, *team_variants, game_date, count))
 
         players = [row[0] for row in cursor.fetchall()]
 
         if len(players) < count:
-            print(f"      [WARN] Only {len(players)} players found for {team}")
+            print(f"      [WARN] Only {len(players)} players found for {team} (may have traded players filtered out)")
 
         return players
 

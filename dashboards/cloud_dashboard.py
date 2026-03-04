@@ -316,6 +316,41 @@ def fetch_recent_results(sport: str, start_date: str, end_date: str) -> pd.DataF
     return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
 
+@st.cache_data(ttl=3600)
+def get_ml_model_info() -> dict:
+    """Read model registry metadata from local filesystem. Cached 1 hour."""
+    import json as _json
+    from pathlib import Path as _Path
+    root = _Path(__file__).parent.parent
+    info = {}
+    for sport in ["nba", "nhl"]:
+        registry = root / "ml_training" / "model_registry" / sport
+        if not registry.exists():
+            info[sport.upper()] = {"count": 0, "last_trained": "—", "avg_accuracy": None}
+            continue
+        last_trained, accs, count = None, [], 0
+        for prop_dir in registry.iterdir():
+            latest_file = prop_dir / "latest.txt"
+            if not latest_file.exists():
+                continue
+            version = latest_file.read_text().strip()
+            meta_path = prop_dir / version / "metadata.json"
+            if not meta_path.exists():
+                continue
+            meta = _json.loads(meta_path.read_text())
+            count += 1
+            trained_at = meta.get("trained_at", "")[:10]
+            if trained_at > (last_trained or ""):
+                last_trained = trained_at
+            accs.append(meta.get("test_accuracy", 0))
+        info[sport.upper()] = {
+            "count": count,
+            "last_trained": last_trained or "—",
+            "avg_accuracy": sum(accs) / len(accs) if accs else None,
+        }
+    return info
+
+
 @st.cache_data(ttl=300)
 def fetch_pipeline_status() -> dict:
     """Last prediction date + count per sport from daily_props."""
@@ -631,6 +666,19 @@ def main():
             tc1, tc2 = st.columns(2)
             tc1.metric(f"{sport_name} Synced Props", f"{r.count:,}")
             tc2.metric(f"{sport_name} Graded", f"{graded.count:,}")
+
+        st.divider()
+        st.subheader("ML Models")
+        ml_info = get_ml_model_info()
+        for sport_name in ["NBA", "NHL"]:
+            info = ml_info.get(sport_name, {})
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric(f"{sport_name} Models", info.get("count", 0))
+            mc2.metric("Last Retrained", info.get("last_trained", "—"))
+            avg = info.get("avg_accuracy")
+            mc3.metric("Avg Accuracy", f"{avg*100:.1f}%" if avg else "—")
+        st.caption("Models auto-retrain every Sunday at 2 AM CST (NHL) / 2:30 AM (NBA) "
+                   "when 500+ new predictions have accumulated since the last train.")
 
         st.divider()
         st.caption("Dashboard reads from Supabase. Data syncs after each "

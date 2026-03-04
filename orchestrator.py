@@ -136,6 +136,7 @@ class SportConfig:
 
         # Timing (CST)
         self.grading_time = "03:00"      # 3 AM - grade yesterday's games (west coast games finish ~1 AM CST)
+        self.retrain_time = "02:00"      # 2 AM Sunday - weekly ML retrain (before grading)
         self.prizepicks_time = "03:30"   # 3:30 AM - fetch PrizePicks lines
         self.prediction_time = "04:00"   # 4 AM - generate today's predictions
         self.top_picks_time = "06:15"    # 6:15 AM - post top 20 players to Discord
@@ -186,6 +187,7 @@ class SportConfig:
 
         # Timing (CST)
         self.grading_time = "05:00"      # 5 AM - grade yesterday first
+        self.retrain_time = "02:30"      # 2:30 AM Sunday - weekly ML retrain (before grading)
         self.prizepicks_time = "05:30"   # 5:30 AM - fetch PrizePicks lines
         self.prediction_time = "06:00"   # 6 AM - generate today's predictions
         self.top_picks_time = "06:15"    # 6:15 AM - post top 20 players to Discord
@@ -2209,23 +2211,169 @@ class SportsOrchestrator:
         }
 
     def _send_ml_training_notification(self, results: List[Dict]):
-        """Send Discord notification for ML training results"""
+        """Send Discord notification for ML training results (on-demand / manual trigger)."""
+        sport = self.config.sport
+        emoji = self.config.emoji
+        success_count = sum(1 for r in results if r['success'])
+        today = datetime.now().strftime('%a %b %-d')
+
+        message = f"{emoji} **{sport} ML TRAINING — {today}**\n\n"
+        message += f"**{success_count}/{len(results)} models trained**\n"
+        for r in results:
+            status = "OK" if r['success'] else "FAIL"
+            message += f"  [{status}] {r['prop']}\n"
+
+        self._send_discord_notification(message)
+
+    # ── Weekly auto-retrain ────────────────────────────────────────────────────
+
+    def _get_last_train_date(self) -> Optional[str]:
+        """Return YYYY-MM-DD of the most recently trained model in the registry."""
+        registry = (self.global_config.ROOT / "ml_training" / "model_registry"
+                    / self.config.sport.lower())
+        if not registry.exists():
+            return None
+        latest_date = None
+        for prop_dir in registry.iterdir():
+            latest_file = prop_dir / "latest.txt"
+            if not latest_file.exists():
+                continue
+            version = latest_file.read_text().strip()
+            meta_path = prop_dir / version / "metadata.json"
+            if not meta_path.exists():
+                continue
+            trained_at = json.loads(meta_path.read_text()).get("trained_at", "")[:10]
+            if trained_at > (latest_date or ""):
+                latest_date = trained_at
+        return latest_date
+
+    def _count_new_predictions_since(self, date_str: str) -> int:
+        """Count predictions with game_date > date_str in the sport's DB."""
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM predictions WHERE game_date > ?", (date_str,))
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except Exception:
+            return 0
+
+    def run_weekly_ml_retrain(self):
+        """
+        Weekly ML retrain — runs every Sunday before grading.
+        Skips if fewer than 500 new predictions exist since the last train.
+        Sends a snug Discord notification with per-model accuracy deltas.
+        """
+        MIN_NEW = 500
         sport = self.config.sport
         emoji = self.config.emoji
 
-        success_count = sum(1 for r in results if r['success'])
+        print(f"\n{emoji} WEEKLY ML RETRAIN CHECK — {sport}")
 
-        message = f"""
-{emoji} **{sport} ML TRAINING COMPLETE**
+        last_train = self._get_last_train_date()
+        if last_train is None:
+            print("   No existing models found — skipping auto-retrain")
+            return
 
-**Results:** {success_count}/{len(results)} models trained successfully
-"""
+        new_count = self._count_new_predictions_since(last_train)
+        print(f"   Last trained: {last_train}  |  New predictions: {new_count:,}")
 
-        for r in results:
-            status = "[OK]" if r['success'] else "[FAIL]"
-            message += f"\n{status} {r['prop']}"
+        if new_count < MIN_NEW:
+            print(f"   [SKIP] Need {MIN_NEW:,} new predictions, only have {new_count:,}")
+            return
 
-        self._send_discord_notification(message)
+        print(f"   [GO] Retraining all {sport} models ({new_count:,} new predictions)...")
+
+        try:
+            result = subprocess.run(
+                [sys.executable,
+                 str(self.global_config.ROOT / "ml_training" / "train_models.py"),
+                 "--sport", self.config.sport.lower(), "--all"],
+                capture_output=True, text=True, timeout=1800
+            )
+            success = result.returncode == 0
+            if not success:
+                self._log_error(f"Weekly retrain failed:\n{result.stderr[-1000:]}", "ML_RETRAIN")
+        except Exception as e:
+            success = False
+            self._log_error(f"Weekly retrain exception: {e}", "ML_RETRAIN")
+
+        self._send_weekly_retrain_notification(new_count, last_train, success)
+
+    def _send_weekly_retrain_notification(self, new_count: int, last_train: str, success: bool):
+        """Discord notification for the weekly retrain — shows per-model accuracy deltas."""
+        sport = self.config.sport
+        emoji = self.config.emoji
+        today = datetime.now().strftime("%a %b %-d")
+
+        if not success:
+            msg = (f"{emoji} **{sport} ML RETRAIN FAILED — {today}**\n"
+                   f"Check `logs/orchestrator_errors_{sport.lower()}_{datetime.now().strftime('%Y%m%d')}.log`")
+            self._send_discord_notification(msg)
+            return
+
+        # Read updated model stats and compare with previous versions
+        registry = (self.global_config.ROOT / "ml_training" / "model_registry"
+                    / sport.lower())
+        today_tag = datetime.now().strftime("%Y%m%d")  # e.g. "20260309"
+
+        updated, deltas = [], []
+        for prop_dir in sorted(registry.iterdir()):
+            latest_file = prop_dir / "latest.txt"
+            if not latest_file.exists():
+                continue
+            latest = latest_file.read_text().strip()
+            if today_tag not in latest:
+                continue  # Not updated this run
+            meta_path = prop_dir / latest / "metadata.json"
+            if not meta_path.exists():
+                continue
+            meta = json.loads(meta_path.read_text())
+            new_acc = meta["test_accuracy"]
+
+            # Find previous version's accuracy
+            versions = sorted(
+                [d.name for d in prop_dir.iterdir() if d.is_dir() and d.name.startswith("v")],
+                reverse=True
+            )
+            prev_acc = None
+            for v in versions:
+                if v == latest:
+                    continue
+                prev_meta = prop_dir / v / "metadata.json"
+                if prev_meta.exists():
+                    prev_acc = json.loads(prev_meta.read_text()).get("test_accuracy")
+                    break
+
+            delta = (new_acc - prev_acc) if prev_acc is not None else None
+            updated.append((prop_dir.name, new_acc, delta))
+            if delta is not None:
+                deltas.append(delta)
+
+        total = len(updated)
+        avg_delta = sum(deltas) / len(deltas) if deltas else None
+        avg_str = (f" | avg {'+' if avg_delta >= 0 else ''}{avg_delta * 100:.1f}% acc"
+                   if avg_delta is not None else "")
+
+        msg = (f"{emoji} **{sport} ML RETRAIN — {today}**\n\n"
+               f"**{total} models updated** | {new_count:,} new preds since {last_train}{avg_str}\n")
+
+        if updated:
+            by_delta = sorted(updated, key=lambda x: (x[2] or 0), reverse=True)
+            improved = [(n, a, d) for n, a, d in by_delta if d is not None and d > 0.001]
+            degraded = [(n, a, d) for n, a, d in by_delta if d is not None and d < -0.001]
+
+            if improved:
+                msg += "\n**Top gains:**\n"
+                for name, acc, d in improved[:3]:
+                    msg += f"  {name}: {acc*100:.1f}% (+{d*100:.1f}%)\n"
+            if degraded:
+                msg += "\n**Degraded:**\n"
+                for name, acc, d in degraded[:3]:
+                    msg += f"  {name}: {acc*100:.1f}% ({d*100:.1f}%)\n"
+
+        self._send_discord_notification(msg)
 
     def get_ml_predictions(self, date: str) -> Dict:
         """
@@ -2308,6 +2456,11 @@ class SportsOrchestrator:
             self.run_health_check
         )
 
+        # Weekly ML retrain (Sunday only, before grading)
+        schedule.every().sunday.at(self.config.retrain_time).do(
+            self.run_weekly_ml_retrain
+        )
+
         print(f"{self.config.emoji} Scheduled {self.config.sport} tasks:")
         print(f"   Grading: Daily at {self.config.grading_time}")
         if PRIZEPICKS_AVAILABLE:
@@ -2315,6 +2468,7 @@ class SportsOrchestrator:
         print(f"   Predictions: Daily at {self.config.prediction_time}")
         print(f"   Top 20 picks: Daily at {self.config.top_picks_time}")
         print(f"   Health checks: Every {self.global_config.HEALTH_CHECK_INTERVAL_MINUTES} minutes")
+        print(f"   ML retrain: Sundays at {self.config.retrain_time} (500+ new preds required)")
         print()
 
         return True

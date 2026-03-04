@@ -16,8 +16,19 @@ Learning Mode: Caps probabilities at 30-70% during data collection.
 
 import sys
 import os
-from scipy.stats import poisson, norm
 import math
+
+# Lazy import scipy to avoid hang on Windows when scipy.stats initializes DLLs
+_poisson = None
+_norm = None
+
+def _get_scipy():
+    global _poisson, _norm
+    if _poisson is None:
+        from scipy.stats import poisson as _p, norm as _n
+        _poisson = _p
+        _norm = _n
+    return _poisson, _norm
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -217,6 +228,7 @@ class NBAStatisticalPredictor:
 
         # Calculate probability of OVER using normal distribution
         try:
+            _, norm = _get_scipy()
             probability = 1 - norm.cdf(line, loc=mu, scale=sigma)
         except:
             probability = 0.50
