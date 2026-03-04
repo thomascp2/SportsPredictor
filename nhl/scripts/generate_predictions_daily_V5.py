@@ -382,35 +382,54 @@ def fetch_game_schedule(target_date: str) -> bool:
     return False
 
 
-def get_players_with_history_for_team(team: str, min_games: int = 5, top_n: int = 12) -> list[str]:
+def get_players_with_history_for_team(team: str, game_date: str, min_games: int = 5, top_n: int = 12) -> list[str]:
     """
-    Get players who have game log history for a team
-    
+    Get players who have game log history for a team.
+
+    Only includes players whose MOST RECENT game (before game_date) was for this team.
+    This filters out traded players who still have historical logs for old teams.
+
     Args:
         team: Team abbreviation
+        game_date: Target prediction date (YYYY-MM-DD) — only logs before this date counted
         min_games: Minimum games required in history
         top_n: Number of top players to return (12 for exploration, 8 for exploitation)
-        
+
     Returns:
         List of player names with sufficient history
     """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
+
+    # Only include players whose most recent game (before game_date) was for this team.
+    # This prevents traded players from appearing on their old team's roster.
     cursor.execute('''
-        SELECT player_name, COUNT(*) as games, 
-               SUM(points) * 1.0 / COUNT(*) as ppg
-        FROM player_game_logs
-        WHERE team = ?
-        GROUP BY player_name
+        WITH current_teams AS (
+            SELECT player_name, team AS current_team
+            FROM (
+                SELECT player_name, team,
+                       ROW_NUMBER() OVER (PARTITION BY player_name ORDER BY game_date DESC) AS rn
+                FROM player_game_logs
+                WHERE game_date < ?
+            ) ranked
+            WHERE rn = 1
+        )
+        SELECT pgl.player_name, COUNT(*) AS games,
+               SUM(pgl.points) * 1.0 / COUNT(*) AS ppg
+        FROM player_game_logs pgl
+        JOIN current_teams ct ON pgl.player_name = ct.player_name
+            AND ct.current_team = ?
+        WHERE pgl.team = ?
+          AND pgl.game_date < ?
+        GROUP BY pgl.player_name
         HAVING games >= ?
         ORDER BY ppg DESC
         LIMIT ?
-    ''', (team, min_games, top_n))
-    
+    ''', (game_date, team, team, game_date, min_games, top_n))
+
     players = [row[0] for row in cursor.fetchall()]
     conn.close()
-    
+
     return players
 
 
@@ -540,7 +559,7 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
         # ====================================================================
         # AWAY TEAM PLAYERS
         # ====================================================================
-        away_players = get_players_with_history_for_team(away_team, min_games=5, top_n=players_per_team)
+        away_players = get_players_with_history_for_team(away_team, game_date, min_games=5, top_n=players_per_team)
         
         if away_players:
             print(f"{away_team}: {len(away_players)} players with history")
@@ -575,7 +594,7 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
         # ====================================================================
         # HOME TEAM PLAYERS
         # ====================================================================
-        home_players = get_players_with_history_for_team(home_team, min_games=5, top_n=players_per_team)
+        home_players = get_players_with_history_for_team(home_team, game_date, min_games=5, top_n=players_per_team)
         
         if home_players:
             print(f"{home_team}: {len(home_players)} players with history")

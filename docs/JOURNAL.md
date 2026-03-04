@@ -323,6 +323,59 @@ column; added an ET-formatted `Time` column to the dashboard. Uncovered and fixe
 
 ---
 
+## 2026-03-03 — Team Assignment Bug Fix, scipy Hang, Auto-Retrain
+
+**Sessions:** 1
+**Status going in:** 40+ NBA players predicted for wrong teams all season; prediction script hanging; no automated ML retraining
+**Status coming out:** Team assignment fixed at source; scipy lazy-loaded; weekly auto-retrain wired into orchestrator; dashboard shows last retrained date
+
+### What happened
+Discovered that `_get_team_players()` had been pulling ALL historical game logs for a team,
+not filtering to each player's current team. Kevin Durant and 40+ other traded players had
+been generating predictions for their old teams all season. A separate bug caused 6 teams
+(WAS, NYK, SAS, NOP, GSW, UTA) to return zero players because ESPN and NBA Stats API use
+different abbreviations. Fixed both with a CTE that finds each player's most recent team and
+a `TEAM_ALIASES` dict for abbrev normalization. Also removed the `FALLBACK_PROPS` fallback
+(no PP line = skip, not predict at fixed lines).
+
+During regeneration, the prediction script hung indefinitely — traced to Windows Defender
+scanning scipy/sklearn `.pyd` files after earlier process kills. Mitigated by lazy-loading
+scipy in `statistical_predictions.py`. Added weekly Sunday auto-retrain to the orchestrator
+(NHL 2 AM / NBA 2:30 AM CST, skips if <500 new predictions) with a snug Discord notification
+showing per-model accuracy deltas. Added ML model info (count, last retrained, avg accuracy)
+to the System tab of the cloud dashboard.
+
+Mar 3 predictions were not regenerated — games were already in progress by the time the
+fixes landed. Negligible training impact.
+
+### Key decisions / pivots
+- **CTE over subquery for "current team"** — confirmed fast in raw SQLite (instant vs. hanging
+  on the original O(n²) correlated subquery approach attempted earlier in the session).
+- **TEAM_ALIASES at prediction time, not stored** — ESPN vs. NBA Stats abbrev normalization
+  lives in the predictor class, not in the DB. No backfill needed.
+- **Removed FALLBACK_PROPS** — predicting at fixed lines when no PP line exists creates
+  phantom training data for lines that were never bettable. Clean skip is better.
+- **Lazy scipy import** — the permanent system fix is a Windows Defender exclusion for
+  site-packages. The lazy import is the code-level mitigation.
+- **Auto-retrain gate: 500 predictions** — conservative enough to skip dead weeks
+  (playoffs, injury waves), aggressive enough to retrain every 4–6 weeks during the season.
+
+### What's blocked
+- Discord / Google / Apple OAuth still not configured (device test still blocked)
+- Streamlit Community Cloud permanent deployment still pending
+- Windows Defender exclusion for Python site-packages (prevents future scipy hangs)
+
+### Notes
+- ML models (v20260302_001) are NOT affected: NBA models use zero opponent features, so only
+  `f_home_away_split` was wrong for ~40 players (~2-4% of training data). Reliable as-is.
+- NHL used same CTE fix but no TEAM_ALIASES needed (NHL abbrevs are consistent across APIs).
+- The 6-team abbrev mismatch (ESPN vs. NBA Stats) had silently caused zero predictions for
+  WAS, NYK, SAS, NOP, GSW, UTA players — unclear for how long before today.
+
+**Detailed minutes:** `docs/sessions/2026-03-03.md`
+
+---
+
 ## 2026-03-02 — Data Quality Hardening + Dashboard UI
 
 **Sessions:** 1
