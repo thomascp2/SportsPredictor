@@ -5,6 +5,47 @@ working session. Detailed minutes live in `docs/sessions/YYYY-MM-DD.md`.
 
 ---
 
+## 2026-03-04 — DB Lock Recovery, Dashboard Review, Defender Fix
+
+**Sessions:** 2 (morning + evening)
+**Status going in:** NBA predictions 0 for Mar 4; grading 0 for Mar 3; zombie process holding DB lock
+**Status coming out:** 1,047 Mar 4 predictions recovered; Defender exclusion applied; NBA tier display issue documented
+
+### What happened
+The orchestrator's 6:01 AM prediction run failed with `database is locked`. Root cause:
+yesterday's manual `generate_predictions_daily_V6.py 2026-03-03 --force` (started during
+the scipy-hang debugging session) was still running as a zombie process after 9+ hours —
+it had hung on Windows Defender scanning scipy `.pyd` files and never exited, holding a
+write lock on `nba_predictions.db`. Killed the zombie, ran Mar 4 predictions manually
+(1,047 predictions, 518 smart picks), synced to Supabase. Mar 3 predictions remain at 0
+permanently (games finished, training impact negligible).
+
+Evening review of the dashboard revealed NBA picks showing all T1-ELITE (189 picks at
+87.9% avg probability) vs NHL's T1–T3 spread. Investigated: Supabase actually has the
+full tier spread (T1=373, T2=101, T3=116), but the dashboard's hard `.limit(200)` ordered
+by probability DESC + the NBA ML models' high-confidence output means visible picks cluster
+at T1-ELITE. Documented as a low-priority TODO. User applied the permanent fix: Python
+site-packages added to Windows Defender exclusions — scipy/sklearn will no longer hang.
+
+### Key decisions / pivots
+- **Zombie process = always kill stray Python procs on session start.** Any manually-run
+  prediction script that hangs will hold a DB write lock indefinitely. The orchestrator's
+  next run will silently fail.
+- **NBA T1-only display: accepted for now.** High model confidence is a good problem to
+  have. The limit(200) + prob-sort means T2/T3 picks get squeezed out, but the shown
+  picks are genuinely high-quality.
+- **Windows Defender exclusion is the permanent scipy fix.** The lazy-import mitigation
+  in `statistical_predictions.py` stays as belt-and-suspenders, but the root cause is now
+  resolved at the OS level.
+
+### What's blocked
+- Discord / Google / Apple OAuth still not configured
+- Streamlit Community Cloud permanent deployment still pending
+
+**Detailed minutes:** `docs/sessions/2026-03-04.md`
+
+---
+
 ## 2026-02-14 — Phase 1 Build Sprint
 
 **Sessions:** 2 (hit context limit between them)
