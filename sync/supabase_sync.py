@@ -368,13 +368,16 @@ class SupabaseSync:
             key = (self._normalize_name(name).lower(), prop, line)
             pp_lookup[key] = odds
 
+        # Break-even probabilities by line type (must match smart_pick_selector.py)
+        BREAK_EVEN = {'standard': 0.56, 'goblin': 0.76, 'demon': 0.45}
+
         # Fetch all prediction rows for today from Supabase (paginate past 1000-row limit)
         all_rows = []
         page_size = 1000
         offset = 0
         while True:
             r = self.client.table('daily_props').select(
-                'player_name,prop_type,line,odds_type'
+                'player_name,prop_type,line,odds_type,ai_probability,ai_prediction'
             ).eq('sport', sport_upper).eq('game_date', game_date).range(
                 offset, offset + page_size - 1
             ).execute()
@@ -402,20 +405,36 @@ class SupabaseSync:
                         pp_odds = odds
                         break
 
+            # Determine the authoritative odds_type for this row
+            effective_type = pp_odds if pp_odds is not None else row.get('odds_type', 'standard')
+
             # Determine if we need to update odds_type and/or ai_prediction
             needs_odds_update = pp_odds is not None and row['odds_type'] != pp_odds
             # PP platform rule: goblin/demon lines only allow OVER bets.
             # Fix ai_prediction=UNDER for any goblin/demon line regardless of odds_type change.
-            effective_type = pp_odds if pp_odds is not None else row.get('odds_type', 'standard')
             needs_dir_fix = (effective_type in ('goblin', 'demon')
                              and row.get('ai_prediction') == 'UNDER')
 
-            if not needs_odds_update and not needs_dir_fix:
+            # Recalculate edge whenever the row's stored edge doesn't match the correct
+            # break-even for its (possibly already-corrected) odds_type. This catches rows
+            # that were relabeled in a prior sync run but never had their edge recalculated.
+            ai_prob = row.get('ai_probability')
+            if ai_prob is not None and effective_type in BREAK_EVEN:
+                expected_edge = round((ai_prob - BREAK_EVEN[effective_type]) * 100, 2)
+                stored_edge = row.get('ai_edge')
+                needs_edge_fix = (stored_edge is None or
+                                  abs(stored_edge - expected_edge) > 0.05)
+            else:
+                needs_edge_fix = False
+
+            if not needs_odds_update and not needs_dir_fix and not needs_edge_fix:
                 continue  # Nothing to correct
 
             patch = {}
             if needs_odds_update:
                 patch['odds_type'] = pp_odds
+            if needs_edge_fix:
+                patch['ai_edge'] = expected_edge
             if needs_dir_fix:
                 patch['ai_prediction'] = 'OVER'
 
