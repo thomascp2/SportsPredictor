@@ -5,6 +5,32 @@ working session. Detailed minutes live in `docs/sessions/YYYY-MM-DD.md`.
 
 ---
 
+## 2026-03-06 — Edge Calculation Bug Fix (goblin/demon break-even)
+
+**Sessions:** 1 (short)
+**Status going in:** System healthy, orchestrator running
+**Status coming out:** Systemic ai_edge bug found and fixed; 312 NHL + 1,179 NBA rows backfilled
+
+### What happened
+Noticed two NHL players on identical lines (shots goblin OVER 1.5) showing
+similar edges despite very different probabilities: Hertl 76.4%/+20.4%, Hyman
+94.9%/+18.9%. Diagnosed: `sync_odds_types()` was correctly relabeling rows from
+'standard' to 'goblin' but never recalculating `ai_edge` against the goblin
+break-even (76% vs standard's 56%). Players whose names didn't match in
+`sync_smart_picks()` (name abbreviation issues — "T. Hertl" vs "Tomas Hertl")
+fell through to `sync_odds_types()`, got the right label, but kept the wrong edge.
+
+Fixed `sync_odds_types()` to recompute `ai_edge` for any row where the stored
+edge doesn't match `(ai_probability − break_even[odds_type]) × 100`. Backfilled
+today immediately. Hertl corrected: +20.4% → +0.4% (genuinely marginal pick).
+
+### Key decision
+Fix is fully systemic — runs on every row every day. Not a targeted patch.
+
+**Detailed minutes:** `docs/sessions/2026-03-06.md`
+
+---
+
 ## 2026-03-04 — DB Lock Recovery, Dashboard Review, Defender Fix
 
 **Sessions:** 2 (morning + evening)
