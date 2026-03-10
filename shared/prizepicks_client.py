@@ -87,6 +87,31 @@ class PrizePicksAPI:
         'Stls+Blks': 'stocks',
         'Turnovers': 'turnovers',
         'Fantasy Score': 'fantasy',
+
+        # MLB Pitcher
+        'Strikeouts': 'strikeouts',
+        'Pitcher Strikeouts': 'strikeouts',
+        'Outs Recorded': 'outs_recorded',
+        'Walks Allowed': 'pitcher_walks',
+        'Walks': 'pitcher_walks',          # Context: pitcher projection
+        'Hits Allowed': 'hits_allowed',
+        'Earned Runs Allowed': 'earned_runs',
+        'Earned Runs': 'earned_runs',
+
+        # MLB Batter
+        'Hits': 'hits',
+        'Total Bases': 'total_bases',
+        'Home Runs': 'home_runs',
+        'RBIs': 'rbis',
+        'RBI': 'rbis',
+        'Runs Scored': 'runs',
+        'Runs': 'runs',
+        'Stolen Bases': 'stolen_bases',
+        'Hitter Strikeouts': 'batter_strikeouts',
+        'Batter Strikeouts': 'batter_strikeouts',
+        'H+R+RBI': 'hrr',
+        'Hits+Runs+RBIs': 'hrr',
+        'H+R+RBIs': 'hrr',
     }
 
     def __init__(self):
@@ -534,7 +559,7 @@ class PrizePicksIngestion:
             Summary dict with results
         """
         if sports is None:
-            sports = ['NHL', 'NBA']
+            sports = ['NHL', 'NBA', 'MLB']
 
         print("\n" + "=" * 60)
         print("  PRIZEPICKS LINE INGESTION")
@@ -648,7 +673,7 @@ Examples:
     )
     parser.add_argument(
         '--sport',
-        choices=['nhl', 'nba', 'all'],
+        choices=['nhl', 'nba', 'mlb', 'all'],
         default='all',
         help='Sport to fetch (default: all)'
     )
@@ -668,7 +693,7 @@ Examples:
 
     # Determine sports
     if args.sport == 'all':
-        sports = ['NHL', 'NBA']
+        sports = ['NHL', 'NBA', 'MLB']
     else:
         sports = [args.sport.upper()]
 
