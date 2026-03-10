@@ -513,3 +513,44 @@ with a much more readable card+badge layout.
 **Detailed minutes:** `docs/sessions/YYYY-MM-DD.md`
 
 -->
+
+## 2026-03-09 — Two-Run Daily Pipeline + Trade Bug Fix (V6) + Unicode Fix
+
+**Sessions:** 2 (continued from Mar 8 context)
+**Status going in:** Mar 8 session changes committed; V6 call site for trade fix still pending; smart picks sync failing with charmap error
+**Status coming out:** All fixes landed, two-run daily schedule live, orchestrator restarted
+
+### What happened
+Finished the Mar 8 trade bug fix by updating the call site in `generate_predictions_daily_V6.py` to pass
+`game_date` to the newly-fixed `get_players_with_history_for_team()` function. Re-ran today's NHL
+predictions — Q. Hughes now correctly shows on MIN, A. Panarin on LAK. Diagnosed and fixed a Windows
+`charmap` encoding crash in the smart picks sync caused by unicode `→` characters in print statements
+(replaced with ASCII `->`). Then designed and implemented a two-run daily pipeline to capture the full
+PrizePicks slate: morning run generates ML predictions, afternoon `pp-sync` re-fetches lines and
+refreshes smart picks without touching SQLite. Discord `!refresh` command now triggers the full sync.
+
+### Key decisions / pivots
+- **Two runs, not one.** Moving predictions to afternoon would miss early lines; staying at 4/6 AM means
+  smart picks match against an incomplete slate. Solution: keep morning predictions, add a dedicated
+  `pp-sync` operation at 12:30/1 PM that only updates Supabase (no new SQLite rows). Zero data pollution.
+- **`run_pp_sync()` as a first-class orchestrator operation.** Added `--operation pp-sync` to the CLI so
+  it can be triggered manually, scheduled, or called from Discord. Pure upserts — safe to run anytime.
+- **`!refresh` → full sync, not just line fetch.** The old `!refresh` only called `PrizePicksIngestion`.
+  Now it runs the full `pp-sync` pipeline (lines → predictions upsert → smart picks → odds_type → game_times)
+  and reports per-sport counts. Supports `!refresh [nba|nhl|both]`, defaults to both.
+- **Unicode `→` is fatal on Windows cp1252.** Any print/log statement with a unicode arrow will crash the
+  sync on Windows. Policy: ASCII `->` only in all runtime-printed strings.
+
+### What's blocked
+- Discord OAuth providers still not configured (blocks device test)
+- Streamlit Community Cloud permanent deployment pending
+- hits/blocked_shots ML models need ~3k graded samples before training (just started data collection Mar 8)
+
+### Notes
+- First afternoon pp-sync will fire automatically today: NBA 12:30 PM, NHL 1:00 PM CST (orchestrator restarted)
+- Discord top picks time moved from 6:15 AM to 2:00 PM (after afternoon sync, picks are fresher)
+- ML retrain: next Sunday (Mar 15) is the first test of the 3:30/5:30 AM schedule fix
+
+**Detailed minutes:** `docs/sessions/2026-03-09.md`
+
+---
