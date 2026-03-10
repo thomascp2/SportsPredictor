@@ -76,14 +76,19 @@ class SmartPick:
         self._calculate_ev()
 
     def _get_tier(self) -> str:
-        prob = self.pp_probability
-        if prob >= 0.75:
+        # Tier is based on EDGE above break-even, not raw probability.
+        # This ensures goblin/demon picks are tiered correctly:
+        #   Standard 75% = edge +19% = T1-ELITE  ✓
+        #   Goblin   75% = edge  -1% = T5-FADE   ✓ (was wrongly T1-ELITE before)
+        #   Demon    64% = edge +19% = T1-ELITE   ✓ (low prob but very profitable)
+        edge = self.edge
+        if edge >= 19:
             return 'T1-ELITE'
-        elif prob >= 0.70:
+        elif edge >= 14:
             return 'T2-STRONG'
-        elif prob >= 0.65:
+        elif edge >= 9:
             return 'T3-GOOD'
-        elif prob >= 0.55:
+        elif edge >= 0:
             return 'T4-LEAN'
         else:
             return 'T5-FADE'
@@ -358,6 +363,16 @@ class SmartPickSelector:
                 recent_avg = lambda_param
                 # Baseline: use season average lambda if available
                 baseline_prob_over = self.poisson_prob_over(season_avg, pp['line']) if season_avg > 0 else pp_prob_over
+            elif self.sport == 'NHL' and prop_type in ['hits', 'blocked_shots']:
+                # NHL: hits/blocked_shots use Normal distribution (same as shots)
+                mean_val = pred.get('mean_hits') or pred.get('mean_blocked') or pred.get('mean_shots')
+                std_dev = pred.get('std_dev') or 1.5
+                if mean_val is None or mean_val <= 0:
+                    continue
+                pp_prob_over = self.normal_prob_over(mean_val, std_dev, pp['line'])
+                our_param = mean_val
+                recent_avg = mean_val
+                baseline_prob_over = self.normal_prob_over(season_avg, season_std, pp['line']) if season_avg > 0 else pp_prob_over
             elif self.sport == 'NHL':
                 # NHL: Shots and other continuous props use Normal distribution
                 mean_shots = pred.get('mean_shots') or pred.get('sog_l10')
@@ -416,8 +431,10 @@ class SmartPickSelector:
             break_even = self.BREAK_EVEN.get(pp['odds_type'], 0.50)
             edge = (probability - break_even) * 100
 
-            # Filter by minimum edge and probability
-            if edge < min_edge or probability < min_prob:
+            # Filter by minimum edge only — edge already encodes break-even per odds_type.
+            # Raw probability threshold is NOT used here because it would incorrectly
+            # reject profitable demon picks (e.g. demon 52% is +7% edge = valid play).
+            if edge < min_edge:
                 continue
 
             # Create SmartPick - PP team is authoritative (handles recent trades)
@@ -460,7 +477,7 @@ class SmartPickSelector:
 
         # Sport-specific prop types
         if self.sport == 'NHL':
-            props = ('shots', 'points', 'goals', 'assists', 'pp_points')
+            props = ('shots', 'points', 'goals', 'assists', 'pp_points', 'hits', 'blocked_shots')
         else:
             # NBA has many more props
             props = ('points', 'rebounds', 'assists', 'threes', 'pra',
@@ -695,30 +712,30 @@ class SmartPickSelector:
         good_picks = [p for p in picks if p.tier == 'T3-GOOD']
 
         if elite_picks:
-            lines.append("[FIRE] ELITE TIER (75%+ probability)")
+            lines.append("[FIRE] ELITE TIER (+19% edge above break-even)")
             lines.append("-" * 50)
             for p in elite_picks[:8]:
                 trend = "[HOT]" if p.ml_adjustment > 5 else ("[COLD]" if p.ml_adjustment < -5 else "[--]")
                 lines.append(f"{trend} {p.player_name}")
-                lines.append(f"   {p.prediction} {p.pp_line} {p.prop_type}")
+                lines.append(f"   {p.prediction} {p.pp_line} {p.prop_type} ({p.pp_odds_type})")
                 lines.append(f"   {p.team} vs {p.opponent} | {p.pp_probability*100:.0f}% | +{p.edge:.0f}% edge")
                 lines.append("")
 
         if strong_picks:
-            lines.append("[STRONG] STRONG TIER (70-74% probability)")
+            lines.append("[STRONG] STRONG TIER (+14-18% edge)")
             lines.append("-" * 50)
             for p in strong_picks[:6]:
                 trend = "[HOT]" if p.ml_adjustment > 5 else ("[COLD]" if p.ml_adjustment < -5 else "[--]")
                 lines.append(f"{trend} {p.player_name}")
-                lines.append(f"   {p.prediction} {p.pp_line} {p.prop_type}")
+                lines.append(f"   {p.prediction} {p.pp_line} {p.prop_type} ({p.pp_odds_type})")
                 lines.append(f"   {p.team} vs {p.opponent} | {p.pp_probability*100:.0f}% | +{p.edge:.0f}% edge")
                 lines.append("")
 
         if good_picks:
-            lines.append("[GOOD] GOOD TIER (65-69% probability)")
+            lines.append("[GOOD] GOOD TIER (+9-13% edge)")
             lines.append("-" * 50)
             for p in good_picks[:4]:
-                lines.append(f"* {p.player_name}: {p.prediction} {p.pp_line} {p.prop_type} ({p.pp_probability*100:.0f}%)")
+                lines.append(f"* {p.player_name}: {p.prediction} {p.pp_line} {p.prop_type} ({p.pp_odds_type}) | {p.pp_probability*100:.0f}% | +{p.edge:.0f}% edge")
 
         lines.append("")
         lines.append("=" * 50)

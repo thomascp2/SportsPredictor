@@ -94,9 +94,11 @@ class MLConfig:
     # Model selection
     models_to_train: List[str] = None
     
-    # Calibration
+    # Calibration — uses a DEDICATED calibration split separate from val.
+    # Train→val (model selection) → cal (calibration only) → test (final eval).
     calibrate_probabilities: bool = True
-    calibration_method: str = 'isotonic'  # 'sigmoid' or 'isotonic'
+    calibration_method: str = 'isotonic'  # 'isotonic' outperforms 'sigmoid' on skewed sports data
+    cal_size: float = 0.10  # 10% of data reserved for calibration (separate from val/test)
     
     # Output
     save_models: bool = True
@@ -286,87 +288,99 @@ class ModelTrainer:
     
     def prepare_data(self, df: pd.DataFrame, feature_cols: List[str]) -> Tuple:
         """
-        Prepare data for training with temporal split
-        
+        Prepare data for training with a 4-way temporal split:
+            Train (65%) → Val (15%) → Cal (10%) → Test (10%)
+
+        Val is used ONLY for model selection (never seen by calibration).
+        Cal is used ONLY for isotonic calibration (never seen by training).
+        Test is the held-out final evaluation set.
+
         Returns:
-            X_train, X_val, X_test, y_train, y_val, y_test
+            X_train, X_val, X_cal, X_test,
+            y_train, y_val, y_cal, y_test,
+            X_train_orig, X_val_orig, X_cal_orig, X_test_orig
         """
         # Sort by date to ensure temporal ordering
         df = df.sort_values('game_date').reset_index(drop=True)
-        
+
         X = df[feature_cols].copy()
         y = df['target'].copy()
-        
+
         # Fill NaN with median (conservative approach)
         X = X.fillna(X.median())
-        
-        # Temporal split: Train -> Val -> Test
+
+        # Temporal split: Train → Val → Cal → Test
         n = len(df)
-        train_end = int(n * (1 - self.config.test_size - self.config.val_size))
-        val_end = int(n * (1 - self.config.test_size))
-        
+        train_end = int(n * (1 - self.config.test_size - self.config.val_size - self.config.cal_size))
+        val_end   = int(n * (1 - self.config.test_size - self.config.cal_size))
+        cal_end   = int(n * (1 - self.config.test_size))
+
         X_train = X.iloc[:train_end]
-        X_val = X.iloc[train_end:val_end]
-        X_test = X.iloc[val_end:]
-        
+        X_val   = X.iloc[train_end:val_end]
+        X_cal   = X.iloc[val_end:cal_end]
+        X_test  = X.iloc[cal_end:]
+
         y_train = y.iloc[:train_end]
-        y_val = y.iloc[train_end:val_end]
-        y_test = y.iloc[val_end:]
-        
-        # Scale features
+        y_val   = y.iloc[train_end:val_end]
+        y_cal   = y.iloc[val_end:cal_end]
+        y_test  = y.iloc[cal_end:]
+
+        # Scale features (fit ONLY on train — no leakage)
         X_train_scaled = self.scaler.fit_transform(X_train)
-        X_val_scaled = self.scaler.transform(X_val)
-        X_test_scaled = self.scaler.transform(X_test)
-        
+        X_val_scaled   = self.scaler.transform(X_val)
+        X_cal_scaled   = self.scaler.transform(X_cal)
+        X_test_scaled  = self.scaler.transform(X_test)
+
         return (
-            X_train_scaled, X_val_scaled, X_test_scaled,
-            y_train.values, y_val.values, y_test.values,
-            X_train, X_val, X_test  # Original for feature importance
+            X_train_scaled, X_val_scaled, X_cal_scaled, X_test_scaled,
+            y_train.values, y_val.values, y_cal.values, y_test.values,
+            X_train, X_val, X_cal, X_test  # Original DataFrames for feature importance
         )
     
     def train_all_models(
         self,
         X_train: np.ndarray,
         X_val: np.ndarray,
+        X_cal: np.ndarray,
         y_train: np.ndarray,
-        y_val: np.ndarray
+        y_val: np.ndarray,
+        y_cal: np.ndarray,
     ) -> Dict:
-        """Train all configured models"""
-        
+        """
+        Train all configured models.
+
+        Calibration pipeline (no data leakage):
+          1. Fit base model on X_train
+          2. Evaluate uncalibrated model on X_val → used for model selection only
+          3. After best model is selected (in train_model()), calibrate on X_cal
+          4. X_test is never seen until final evaluation
+        """
         results = {}
-        
+
         for model_name in self.config.models_to_train:
             print(f"\n{'='*60}")
             print(f"Training: {model_name}")
             print('='*60)
-            
+
             model = self._get_model(model_name)
-            
-            # Train
+
+            # Train on training set only
             model.fit(X_train, y_train)
-            
-            # Calibrate if configured
-            if self.config.calibrate_probabilities:
-                model = CalibratedClassifierCV(
-                    model, 
-                    method=self.config.calibration_method,
-                    cv='prefit'
-                )
-                model.fit(X_val, y_val)
-            
-            # Evaluate on validation set
+
+            # Evaluate UNCALIBRATED on val set — used purely for model selection ranking
             y_pred = model.predict(X_val)
             y_prob = model.predict_proba(X_val)[:, 1]
-            
             metrics = self._calculate_metrics(y_val, y_pred, y_prob)
-            
+
             results[model_name] = {
-                'model': model,
-                'metrics': metrics
+                'model': model,       # Raw uncalibrated model (calibration applied later)
+                'metrics': metrics,
+                'X_cal': X_cal,       # Pass through so caller can calibrate after selection
+                'y_cal': y_cal,
             }
-            
+
             self.models[model_name] = model
-            
+
             # Print results
             print(f"\nValidation Results:")
             print(f"  Accuracy:    {metrics['accuracy']:.3f}")
@@ -376,9 +390,37 @@ class ModelTrainer:
             print(f"  ROC AUC:     {metrics['roc_auc']:.3f}")
             print(f"  Brier Score: {metrics['brier']:.4f}")
             print(f"  Log Loss:    {metrics['log_loss']:.4f}")
-        
+
         self.results = results
         return results
+
+    def calibrate_best_model(self, best_model_name: str) -> None:
+        """
+        Apply isotonic calibration to the selected best model using the
+        dedicated calibration set (X_cal/y_cal stored in results).
+
+        Must be called AFTER select_best_model() and BEFORE evaluate_on_test().
+        """
+        if not self.config.calibrate_probabilities:
+            return
+
+        result = self.results[best_model_name]
+        X_cal = result['X_cal']
+        y_cal = result['y_cal']
+        base_model = self.models[best_model_name]
+
+        calibrated = CalibratedClassifierCV(
+            base_model,
+            method=self.config.calibration_method,
+            cv='prefit'
+        )
+        calibrated.fit(X_cal, y_cal)
+
+        # Replace stored model with calibrated version
+        self.models[best_model_name] = calibrated
+        self.best_model = calibrated
+        print(f"\n[CAL] Applied {self.config.calibration_method} calibration on "
+              f"{len(y_cal):,} held-out samples")
     
     def _get_model(self, model_name: str):
         """Get model instance by name"""
@@ -683,23 +725,27 @@ def train_model(
     
     # Prepare data
     trainer = ModelTrainer(config)
-    (X_train, X_val, X_test, 
-     y_train, y_val, y_test,
-     X_train_orig, X_val_orig, X_test_orig) = trainer.prepare_data(df, feature_cols)
-    
+    (X_train, X_val, X_cal, X_test,
+     y_train, y_val, y_cal, y_test,
+     X_train_orig, X_val_orig, X_cal_orig, X_test_orig) = trainer.prepare_data(df, feature_cols)
+
     print(f"\nData split:")
     print(f"  Train: {len(X_train):,} samples")
-    print(f"  Val:   {len(X_val):,} samples")
+    print(f"  Val:   {len(X_val):,} samples  (model selection only)")
+    print(f"  Cal:   {len(X_cal):,} samples  (calibration only)")
     print(f"  Test:  {len(X_test):,} samples")
-    
-    # Train models
-    results = trainer.train_all_models(X_train, X_val, y_train, y_val)
-    
-    # Select best model
+
+    # Train models (uncalibrated — calibration applied after model selection)
+    results = trainer.train_all_models(X_train, X_val, X_cal, y_train, y_val, y_cal)
+
+    # Select best model by val Brier score
     best_model_name = trainer.select_best_model(metric='brier')
     print(f"\n[BEST] Model: {best_model_name}")
-    
-    # Evaluate on test set
+
+    # Calibrate ONLY the selected best model on the dedicated cal set
+    trainer.calibrate_best_model(best_model_name)
+
+    # Evaluate calibrated model on test set
     test_metrics = trainer.evaluate_on_test(X_test, y_test, best_model_name)
     
     # Feature importance
@@ -716,8 +762,10 @@ def train_model(
     print("="*60)
     
     # Statistical model's predictions are in model_prediction column
-    baseline_pred = (df.iloc[len(X_train)+len(X_val):]['model_prediction'] == 'OVER').astype(int).values
-    baseline_prob = df.iloc[len(X_train)+len(X_val):]['model_probability'].values
+    # Test set starts after train+val+cal rows
+    test_start = len(X_train) + len(X_val) + len(X_cal)
+    baseline_pred = (df.iloc[test_start:]['model_prediction'] == 'OVER').astype(int).values
+    baseline_prob = df.iloc[test_start:]['model_probability'].values
     
     baseline_metrics = trainer._calculate_metrics(y_test, baseline_pred, baseline_prob)
     
@@ -789,7 +837,10 @@ if __name__ == '__main__':
         if args.sport == 'nhl':
             combos = [
                 ('points', 0.5), ('points', 1.5),
-                ('shots', 1.5), ('shots', 2.5), ('shots', 3.5)
+                ('shots', 1.5), ('shots', 2.5), ('shots', 3.5),
+                # New lower-variance props — will train once 3k+ graded predictions exist
+                ('hits', 0.5), ('hits', 1.5), ('hits', 2.5), ('hits', 3.5),
+                ('blocked_shots', 0.5), ('blocked_shots', 1.5),
             ]
         else:  # nba
             combos = [
