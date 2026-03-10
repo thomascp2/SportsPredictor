@@ -137,9 +137,10 @@ class SportConfig:
         # Timing (CST)
         self.grading_time = "03:00"      # 3 AM - grade yesterday's games (west coast games finish ~1 AM CST)
         self.retrain_time = "03:30"      # 3:30 AM Sunday - weekly ML retrain (after grading, ensures fresh data)
-        self.prizepicks_time = "13:00"   # 1 PM - fetch PrizePicks lines (most lines posted by early afternoon)
-        self.prediction_time = "13:30"   # 1:30 PM - generate today's predictions (after full PP slate is up)
-        self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord
+        self.prizepicks_time = "03:30"   # 3:30 AM - fetch PrizePicks lines (early pass before predictions)
+        self.prediction_time = "04:00"   # 4 AM - generate today's predictions
+        self.pp_sync_time = "13:00"      # 1 PM - afternoon PP re-sync (full slate posted by now, refresh smart picks)
+        self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord (after afternoon sync)
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 30, 2026)
         self.ml_training_target_per_prop = 7500
@@ -190,9 +191,10 @@ class SportConfig:
         # Timing (CST)
         self.grading_time = "05:00"      # 5 AM - grade yesterday first
         self.retrain_time = "05:30"      # 5:30 AM Sunday - weekly ML retrain (after grading, ensures fresh data)
-        self.prizepicks_time = "12:30"   # 12:30 PM - fetch PrizePicks lines (most lines posted by early afternoon)
-        self.prediction_time = "13:00"   # 1 PM - generate today's predictions (after full PP slate is up)
-        self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord
+        self.prizepicks_time = "05:30"   # 5:30 AM - fetch PrizePicks lines (early pass before predictions)
+        self.prediction_time = "06:00"   # 6 AM - generate today's predictions
+        self.pp_sync_time = "12:30"      # 12:30 PM - afternoon PP re-sync (full slate posted by now, refresh smart picks)
+        self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord (after afternoon sync)
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 27, 2026)
         self.ml_training_target_per_prop = 7500
@@ -1974,6 +1976,70 @@ class SportsOrchestrator:
             self._log_error(traceback.format_exc(), "PRIZEPICKS_ERROR")
             return {'success': False, 'error': str(e)}
 
+    def run_pp_sync(self, target_date: str = None) -> Dict:
+        """
+        Afternoon PP re-sync: fetch fresh PrizePicks lines and update smart picks in Supabase.
+
+        Does NOT re-run the prediction script or write new rows to SQLite.
+        Safe to run multiple times per day — all steps are upserts.
+
+        Steps:
+          1. Fetch fresh PrizePicks lines from API
+          2. Re-sync existing SQLite predictions to Supabase (upsert)
+          3. Re-match smart picks against new lines
+          4. Correct odds_type labels (goblin/demon)
+          5. Populate game_time fields
+
+        Designed for the afternoon run when the full PP slate is available.
+        """
+        if target_date is None:
+            target_date = datetime.now().strftime('%Y-%m-%d')
+
+        print(f"\n[PP-SYNC] Afternoon PP re-sync for {self.config.sport} on {target_date}")
+
+        # Step 1: fetch fresh lines
+        ingest_result = self.run_prizepicks_ingestion()
+        if not ingest_result.get('success'):
+            print(f"[PP-SYNC] Line fetch failed — aborting sync")
+            return {'success': False, 'error': 'PP ingestion failed'}
+
+        if not SUPABASE_SYNC_AVAILABLE:
+            print(f"[PP-SYNC] Supabase not available — lines fetched but not synced")
+            return {'success': True, 'note': 'lines fetched, supabase unavailable'}
+
+        try:
+            syncer = SupabaseSync()
+
+            # Step 2: upsert existing predictions (safe to repeat, no new SQLite rows)
+            sync_result = syncer.sync_predictions(self.config.sport.lower(), target_date)
+
+            # Step 3: re-match smart picks against fresh lines
+            smart_sync = syncer.sync_smart_picks(self.config.sport.lower(), target_date)
+
+            # Step 4: correct goblin/demon odds_type labels
+            odds_sync = syncer.sync_odds_types(self.config.sport.lower(), target_date)
+
+            # Step 5: refresh game_time fields
+            time_sync = syncer.sync_game_times(self.config.sport.lower(), target_date)
+
+            print(f"[PP-SYNC] Complete: {sync_result.get('synced', 0)} predictions, "
+                  f"{smart_sync.get('synced', 0)} smart picks, "
+                  f"{odds_sync.get('updated', 0)} odds corrections, "
+                  f"{time_sync.get('updated', 0)} game times")
+
+            return {
+                'success': True,
+                'predictions': sync_result.get('synced', 0),
+                'smart_picks': smart_sync.get('synced', 0),
+                'odds_corrections': odds_sync.get('updated', 0),
+                'game_times': time_sync.get('updated', 0),
+            }
+
+        except Exception as e:
+            print(f"[PP-SYNC ERROR] {e}")
+            self._log_error(traceback.format_exc(), "PP_SYNC_ERROR")
+            return {'success': False, 'error': str(e)}
+
     def get_prizepicks_filtered_picks(self, date: str, n: int = 5) -> List[Dict]:
         """
         Get top picks that are actually available on PrizePicks.
@@ -2437,7 +2503,7 @@ class SportsOrchestrator:
             self.run_daily_grading
         )
 
-        # Daily PrizePicks ingestion (before predictions)
+        # Daily PrizePicks ingestion (early pass, before predictions)
         if PRIZEPICKS_AVAILABLE:
             schedule.every().day.at(self.config.prizepicks_time).do(
                 self.run_prizepicks_ingestion
@@ -2448,7 +2514,13 @@ class SportsOrchestrator:
             self.run_daily_prediction_pipeline
         )
 
-        # Daily top 20 picks notification (10:15 CST, after predictions)
+        # Afternoon PP re-sync (full slate available by early afternoon)
+        if PRIZEPICKS_AVAILABLE:
+            schedule.every().day.at(self.config.pp_sync_time).do(
+                self.run_pp_sync
+            )
+
+        # Daily top 20 picks notification (after afternoon sync)
         schedule.every().day.at(self.config.top_picks_time).do(
             self.run_top_picks_notification
         )
@@ -2558,6 +2630,13 @@ class SportsOrchestrator:
             result = self.trigger_ml_training()
             print(f"\nResult: {result['successful']}/{result['total']} models trained")
 
+        if operation == 'pp-sync':
+            print("\n" + "="*80)
+            print(f"{self.config.emoji} RUNNING: {self.config.sport} PP Afternoon Re-Sync")
+            print("="*80)
+            result = self.run_pp_sync()
+            print(f"\nResult: {'SUCCESS' if result.get('success') else 'FAILED'}")
+
 
 # ============================================================================
 # MAIN ENTRY POINT
@@ -2610,11 +2689,18 @@ def run_all_sports_continuous(sports: list):
                 orchestrator.run_daily_prediction_pipeline
             )
 
+            if PRIZEPICKS_AVAILABLE:
+                schedule.every().day.at(orchestrator.config.pp_sync_time).do(
+                    orchestrator.run_pp_sync
+                )
+
             print(f"{orchestrator.config.emoji} {sport.upper()} scheduled:")
             print(f"   Grading: {orchestrator.config.grading_time}")
             if PRIZEPICKS_AVAILABLE:
-                print(f"   PrizePicks: {orchestrator.config.prizepicks_time}")
+                print(f"   PP early fetch: {orchestrator.config.prizepicks_time}")
             print(f"   Predictions: {orchestrator.config.prediction_time}")
+            if PRIZEPICKS_AVAILABLE:
+                print(f"   PP afternoon sync: {orchestrator.config.pp_sync_time}")
             print()
 
         except Exception as e:
@@ -2679,7 +2765,7 @@ Examples:
     )
     parser.add_argument(
         '--operation',
-        choices=['prediction', 'grading', 'health', 'prizepicks', 'ml-check', 'ml-train', 'all'],
+        choices=['prediction', 'grading', 'health', 'prizepicks', 'pp-sync', 'ml-check', 'ml-train', 'all'],
         default='all',
         help='Operation to run for once/test modes (default: all)'
     )

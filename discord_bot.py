@@ -14,6 +14,8 @@ Commands:
   !parlay nhl 5    - 5-leg NHL-only parlay (2-6 legs supported)
   !predict nba     - Run NBA prediction pipeline
   !grade nba       - Run NBA grading pipeline
+  !refresh         - Re-fetch PP lines and refresh smart picks for both sports
+  !refresh nhl     - Refresh NHL only
   !health          - Check API health
   !help            - Show commands
 
@@ -254,18 +256,47 @@ API HEALTH CHECK
 
 
 @bot.command(name='refresh')
-async def refresh(ctx, sport: str = 'nba'):
-    """Refresh PrizePicks lines"""
+async def refresh(ctx, sport: str = 'both'):
+    """
+    Re-fetch PrizePicks lines and refresh smart picks in Supabase.
+
+    Usage: !refresh [nba|nhl|both]
+    Runs the full afternoon PP re-sync: fetch lines -> re-match smart picks -> update app.
+    Safe to run anytime — does not re-generate predictions or touch the SQLite DB.
+    """
     try:
-        await ctx.send(f"```Refreshing PrizePicks {sport.upper()} lines...```")
+        sports = ['nba', 'nhl'] if sport.lower() == 'both' else [sport.lower()]
+        await ctx.send(f"```Refreshing {sport.upper()} PrizePicks lines and smart picks...```")
 
-        from prizepicks_client import PrizePicksIngestion
-        ingestion = PrizePicksIngestion()
-        result = ingestion.run_ingestion([sport.upper()])
+        import subprocess
+        all_success = True
+        summary_lines = []
 
-        total = result.get('total_lines', 0)
-        await ctx.send(f"```[OK] Fetched {total} {sport.upper()} lines from PrizePicks```")
+        for s in sports:
+            result = subprocess.run(
+                [sys.executable, 'orchestrator.py', '--sport', s, '--mode', 'once', '--operation', 'pp-sync'],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                cwd=str(PROJECT_ROOT)
+            )
+            if result.returncode == 0:
+                # Pull the summary line from output
+                for line in result.stdout.splitlines():
+                    if '[PP-SYNC] Complete:' in line:
+                        summary_lines.append(f"[{s.upper()}] {line.split('[PP-SYNC] Complete: ')[1]}")
+                        break
+                else:
+                    summary_lines.append(f"[{s.upper()}] Done")
+            else:
+                all_success = False
+                summary_lines.append(f"[{s.upper()}] FAILED")
 
+        status = "[OK]" if all_success else "[WARN]"
+        await ctx.send(f"```{status} PP sync complete!\n" + "\n".join(summary_lines) + "```")
+
+    except subprocess.TimeoutExpired:
+        await ctx.send("```[ERROR] PP sync timed out after 5 minutes```")
     except Exception as e:
         await ctx.send(f"```Error: {str(e)}```")
 
