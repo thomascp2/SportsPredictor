@@ -137,9 +137,9 @@ class SportConfig:
         # Timing (CST)
         self.grading_time = "03:00"      # 3 AM - grade yesterday's games (west coast games finish ~1 AM CST)
         self.retrain_time = "03:30"      # 3:30 AM Sunday - weekly ML retrain (after grading, ensures fresh data)
-        self.prizepicks_time = "03:30"   # 3:30 AM - fetch PrizePicks lines
-        self.prediction_time = "04:00"   # 4 AM - generate today's predictions
-        self.top_picks_time = "06:15"    # 6:15 AM - post top 20 players to Discord
+        self.prizepicks_time = "13:00"   # 1 PM - fetch PrizePicks lines (most lines posted by early afternoon)
+        self.prediction_time = "13:30"   # 1:30 PM - generate today's predictions (after full PP slate is up)
+        self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 30, 2026)
         self.ml_training_target_per_prop = 7500
@@ -190,9 +190,9 @@ class SportConfig:
         # Timing (CST)
         self.grading_time = "05:00"      # 5 AM - grade yesterday first
         self.retrain_time = "05:30"      # 5:30 AM Sunday - weekly ML retrain (after grading, ensures fresh data)
-        self.prizepicks_time = "05:30"   # 5:30 AM - fetch PrizePicks lines
-        self.prediction_time = "06:00"   # 6 AM - generate today's predictions
-        self.top_picks_time = "06:15"    # 6:15 AM - post top 20 players to Discord
+        self.prizepicks_time = "12:30"   # 12:30 PM - fetch PrizePicks lines (most lines posted by early afternoon)
+        self.prediction_time = "13:00"   # 1 PM - generate today's predictions (after full PP slate is up)
+        self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 27, 2026)
         self.ml_training_target_per_prop = 7500
