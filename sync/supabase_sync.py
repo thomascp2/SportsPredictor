@@ -142,7 +142,7 @@ class SupabaseSync:
             norm_name = self._normalize_name(row_dict['player_name']).lower()
             pp_team = pp_team_lookup.get(norm_name, '')
             if pp_team and local_team and pp_team.upper() != local_team.upper():
-                print(f"[SYNC] Trade correction: {row_dict['player_name']} {local_team} → {pp_team}")
+                print(f"[SYNC] Trade correction: {row_dict['player_name']} {local_team} -> {pp_team}")
                 team = pp_team
             else:
                 team = local_team

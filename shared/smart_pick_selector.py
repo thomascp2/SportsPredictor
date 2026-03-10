@@ -134,9 +134,9 @@ class SmartPickSelector:
     """
 
     # Break-even rates by odds type (based on leg values and parlay payouts)
-    # Goblin (0.5x leg): 4 picks = 2 legs = 3x payout → need 76% per pick
-    # Standard (1.0x leg): 4 picks = 4 legs = 10x payout → need 56% per pick
-    # Demon (1.5x leg): 4 picks = 6 legs = 25x payout → need 45% per pick
+    # Goblin (0.5x leg): 4 picks = 2 legs = 3x payout -> need 76% per pick
+    # Standard (1.0x leg): 4 picks = 4 legs = 10x payout -> need 56% per pick
+    # Demon (1.5x leg): 4 picks = 6 legs = 25x payout -> need 45% per pick
     BREAK_EVEN = {
         'standard': 0.56,
         'goblin': 0.76,   # Higher break-even (easier line, less payout)
@@ -344,7 +344,7 @@ class SmartPickSelector:
                 # Player was traded — PP is authoritative, log and continue.
                 # Probability is still valid (based on player stats, not team).
                 # PP team is used at SmartPick creation below (pp.get('team')).
-                print(f"[INFO] Trade detected: {pp['player_name']} local={pred_team} → PP={pp_team}")
+                print(f"[INFO] Trade detected: {pp['player_name']} local={pred_team} -> PP={pp_team}")
 
             # Get season average for baseline comparison
             season_avg = pred.get('f_season_avg') or pred.get('season_avg') or 0

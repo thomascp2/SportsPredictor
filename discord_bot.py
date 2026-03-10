@@ -354,9 +354,9 @@ async def parlay_cmd(ctx, sport: str = 'both', size: int = 4):
 
     Usage: !parlay [nba|nhl|both] [2-6]
     Examples:
-      !parlay          → 4-leg parlay from both sports
-      !parlay nba 3    → 3-leg NBA-only parlay
-      !parlay nhl 5    → 5-leg NHL-only parlay
+      !parlay          -> 4-leg parlay from both sports
+      !parlay nba 3    -> 3-leg NBA-only parlay
+      !parlay nhl 5    -> 5-leg NHL-only parlay
     """
     try:
         sport = sport.lower()
