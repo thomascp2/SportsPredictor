@@ -298,7 +298,7 @@ def fetch_recent_results(sport: str, start_date: str, end_date: str) -> pd.DataF
 
     while True:
         r = (sb.table("daily_props")
-               .select("game_date,ai_prediction,ai_tier,result,ai_probability,prop_type,actual_value")
+               .select("game_date,ai_prediction,ai_tier,result,ai_probability,prop_type,actual_value,odds_type")
                .eq("sport", sport)
                .gte("game_date", start_date)
                .lte("game_date", end_date)
@@ -605,6 +605,95 @@ def main():
                     pd.DataFrame(prop_stats).sort_values("Accuracy", ascending=False),
                     use_container_width=True, hide_index=True
                 )
+
+            st.divider()
+
+            # ── Hit Rate vs Model Probability (Calibration) ──────────────────
+            st.subheader("Hit Rate vs Model Confidence (Calibration)")
+            st.caption(
+                "If models are well-calibrated, the hit rate should match the model probability. "
+                "Large gaps indicate over- or under-confidence."
+            )
+
+            if "ai_probability" in results_df.columns:
+                df_cal = results_df[results_df["ai_probability"].notna()].copy()
+                df_cal["ai_probability"] = pd.to_numeric(df_cal["ai_probability"], errors="coerce")
+                df_cal["hit"] = (df_cal["result"] == "HIT").astype(int)
+
+                # Probability buckets
+                def prob_bucket(p):
+                    if p >= 0.85: return "85-95%"
+                    elif p >= 0.80: return "80-85%"
+                    elif p >= 0.75: return "75-80%"
+                    elif p >= 0.70: return "70-75%"
+                    elif p >= 0.65: return "65-70%"
+                    elif p >= 0.60: return "60-65%"
+                    else: return "<60%"
+
+                bucket_order = ["85-95%","80-85%","75-80%","70-75%","65-70%","60-65%","<60%"]
+                df_cal["bucket"] = df_cal["ai_probability"].apply(prob_bucket)
+
+                cal_rows = []
+                for bkt in bucket_order:
+                    sub = df_cal[df_cal["bucket"] == bkt]
+                    if len(sub) >= 10:
+                        actual_hr = sub["hit"].mean() * 100
+                        mid = sub["ai_probability"].mean() * 100
+                        gap = actual_hr - mid
+                        gap_str = f"+{gap:.1f}%" if gap > 0 else f"{gap:.1f}%"
+                        cal_rows.append({
+                            "Model says": bkt,
+                            "n": len(sub),
+                            "Avg model prob": f"{mid:.1f}%",
+                            "Actual hit rate": f"{actual_hr:.1f}%",
+                            "Gap": gap_str,
+                        })
+
+                if cal_rows:
+                    st.dataframe(pd.DataFrame(cal_rows), use_container_width=True, hide_index=True)
+
+                # Hit rate by OVER/UNDER direction
+                if "ai_prediction" in results_df.columns:
+                    st.markdown("**Hit rate by direction**")
+                    dir_rows = []
+                    for direction in ["OVER", "UNDER"]:
+                        sub = df_cal[df_cal["ai_prediction"] == direction]
+                        if len(sub) >= 5:
+                            hr = sub["hit"].mean() * 100
+                            avg_prob = sub["ai_probability"].mean() * 100
+                            dir_rows.append({
+                                "Direction": direction,
+                                "n": len(sub),
+                                "Avg model prob": f"{avg_prob:.1f}%",
+                                "Actual hit rate": f"{hr:.1f}%",
+                                "Gap": f"{hr - avg_prob:+.1f}%",
+                            })
+                    if dir_rows:
+                        st.dataframe(pd.DataFrame(dir_rows), use_container_width=True, hide_index=True)
+
+                # Hit rate by odds_type (standard / goblin / demon)
+                if "odds_type" in results_df.columns and results_df["odds_type"].notna().any():
+                    st.markdown("**Hit rate by line type**")
+                    BREAK_EVEN = {"standard": 0.56, "goblin": 0.76, "demon": 0.45}
+                    ot_rows = []
+                    for ot in ["standard", "goblin", "demon"]:
+                        sub = df_cal[df_cal["odds_type"] == ot]
+                        if len(sub) >= 5:
+                            hr = sub["hit"].mean() * 100
+                            avg_prob = sub["ai_probability"].mean() * 100
+                            be = BREAK_EVEN.get(ot, 0.56) * 100
+                            ot_rows.append({
+                                "Line type": ot.capitalize(),
+                                "n": len(sub),
+                                "Break-even": f"{be:.0f}%",
+                                "Avg model prob": f"{avg_prob:.1f}%",
+                                "Actual hit rate": f"{hr:.1f}%",
+                                "Profitable?": "YES" if hr >= be else "NO",
+                            })
+                    if ot_rows:
+                        st.dataframe(pd.DataFrame(ot_rows), use_container_width=True, hide_index=True)
+
+            st.divider()
 
             # Model performance history
             perf_df = fetch_performance(ps)

@@ -136,7 +136,7 @@ class SportConfig:
 
         # Timing (CST)
         self.grading_time = "03:00"      # 3 AM - grade yesterday's games (west coast games finish ~1 AM CST)
-        self.retrain_time = "02:00"      # 2 AM Sunday - weekly ML retrain (before grading)
+        self.retrain_time = "03:30"      # 3:30 AM Sunday - weekly ML retrain (after grading, ensures fresh data)
         self.prizepicks_time = "03:30"   # 3:30 AM - fetch PrizePicks lines
         self.prediction_time = "04:00"   # 4 AM - generate today's predictions
         self.top_picks_time = "06:15"    # 6:15 AM - post top 20 players to Discord
@@ -145,12 +145,14 @@ class SportConfig:
         self.ml_training_target_per_prop = 7500
         self.ml_training_start_date = "2026-01-30"
 
-        # Prop types and lines (5 combos total)
+        # Prop types and lines (11 combos total — hits/blocks added Mar 8, 2026)
         self.prop_lines = {
             'points': [0.5, 1.5],
-            'shots': [1.5, 2.5, 3.5]
+            'shots': [1.5, 2.5, 3.5],
+            'hits': [0.5, 1.5, 2.5, 3.5],          # New — data collection phase
+            'blocked_shots': [0.5, 1.5],            # New — data collection phase
         }
-        self.total_prop_combos = sum(len(lines) for lines in self.prop_lines.values())  # 5
+        self.total_prop_combos = sum(len(lines) for lines in self.prop_lines.values())  # 11
 
         # Data Quality Thresholds
         self.min_feature_completeness = 0.95
@@ -187,7 +189,7 @@ class SportConfig:
 
         # Timing (CST)
         self.grading_time = "05:00"      # 5 AM - grade yesterday first
-        self.retrain_time = "02:30"      # 2:30 AM Sunday - weekly ML retrain (before grading)
+        self.retrain_time = "05:30"      # 5:30 AM Sunday - weekly ML retrain (after grading, ensures fresh data)
         self.prizepicks_time = "05:30"   # 5:30 AM - fetch PrizePicks lines
         self.prediction_time = "06:00"   # 6 AM - generate today's predictions
         self.top_picks_time = "06:15"    # 6:15 AM - post top 20 players to Discord

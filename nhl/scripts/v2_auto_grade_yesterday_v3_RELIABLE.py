@@ -163,9 +163,10 @@ def save_player_game_logs_to_db(conn, game_id: str, game_date: str, player_stats
                     INSERT OR REPLACE INTO player_game_logs
                     (game_id, game_date, player_name, team, opponent, is_home,
                      goals, assists, points, shots_on_goal, toi_seconds, plus_minus, pim,
+                     hits, blocked_shots, assists_total,
                      scored_1plus_points, scored_2plus_shots, scored_3plus_shots, scored_4plus_shots,
                      created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     game_id,
                     game_date,
@@ -180,6 +181,9 @@ def save_player_game_logs_to_db(conn, game_id: str, game_date: str, player_stats
                     stats.get('toi_seconds', 0),
                     stats.get('plus_minus', 0),
                     stats.get('pim', 0),
+                    stats.get('hits', 0),
+                    stats.get('blocked_shots', 0),
+                    stats.get('assists', 0),  # assists_total mirrors assists
                     scored_1plus_points,
                     scored_2plus_shots,
                     scored_3plus_shots,
@@ -283,10 +287,12 @@ def fetch_actual_results(game_date: str) -> Dict[str, Dict]:
                             shots = player.get('sog', 0)
                             goals = player.get('goals', 0)
                             assists = player.get('assists', 0)
+                            hits = player.get('hits', 0)
+                            blocked_shots = player.get('blockedShots', 0)
                             toi = player.get('toi', '0:00')
                             plus_minus = player.get('plusMinus', 0)
                             pim = player.get('pim', 0)
-                            
+
                             # Convert TOI to seconds
                             toi_seconds = 0
                             if toi and ':' in toi:
@@ -296,37 +302,41 @@ def fetch_actual_results(game_date: str) -> Dict[str, Dict]:
                                         toi_seconds = int(parts[0]) * 60 + int(parts[1])
                                 except:
                                     toi_seconds = 0
-                            
+
                             player_stats[player_name] = {
                                 'points': points,
                                 'shots': shots,
                                 'goals': goals,
                                 'assists': assists,
+                                'hits': hits,
+                                'blocked_shots': blocked_shots,
                                 'team': away_abbrev,
                                 'opponent': home_abbrev,
                                 'toi_seconds': toi_seconds,
                                 'plus_minus': plus_minus,
                                 'pim': pim
                             }
-                            
+
                             away_players[player_name] = player_stats[player_name]
-                
+
                 # Process home team
                 home_players = {}
                 for position in ['forwards', 'defense']:
                     for player in home_stats.get(position, []):
                         name_data = player.get('name', {})
                         player_name = name_data.get('default', '')
-                        
+
                         if player_name:
                             points = player.get('points', 0)
                             shots = player.get('sog', 0)
                             goals = player.get('goals', 0)
                             assists = player.get('assists', 0)
+                            hits = player.get('hits', 0)
+                            blocked_shots = player.get('blockedShots', 0)
                             toi = player.get('toi', '0:00')
                             plus_minus = player.get('plusMinus', 0)
                             pim = player.get('pim', 0)
-                            
+
                             # Convert TOI to seconds
                             toi_seconds = 0
                             if toi and ':' in toi:
@@ -336,19 +346,21 @@ def fetch_actual_results(game_date: str) -> Dict[str, Dict]:
                                         toi_seconds = int(parts[0]) * 60 + int(parts[1])
                                 except:
                                     toi_seconds = 0
-                            
+
                             player_stats[player_name] = {
                                 'points': points,
                                 'shots': shots,
                                 'goals': goals,
                                 'assists': assists,
+                                'hits': hits,
+                                'blocked_shots': blocked_shots,
                                 'team': home_abbrev,
                                 'opponent': away_abbrev,
                                 'toi_seconds': toi_seconds,
                                 'plus_minus': plus_minus,
                                 'pim': pim
                             }
-                            
+
                             home_players[player_name] = player_stats[player_name]
                 
                 # V3 FEATURE: Save player stats to player_game_logs table
@@ -542,6 +554,12 @@ def grade_predictions(game_date: str) -> Dict:
             actual_value = actual['shots']
         elif prop_type == 'goals':
             actual_value = actual['goals']
+        elif prop_type == 'assists':
+            actual_value = actual['assists']
+        elif prop_type == 'hits':
+            actual_value = actual.get('hits', 0)
+        elif prop_type == 'blocked_shots':
+            actual_value = actual.get('blocked_shots', 0)
         else:
             print(f'[WARN] Unknown prop type: {prop_type}')
             continue

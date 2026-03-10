@@ -425,21 +425,40 @@ def fetch_game_schedule(target_date: str) -> bool:
     return False
 
 
-def get_players_with_history_for_team(team: str, min_games: int = 5, top_n: int = 12) -> list[str]:
-    """Get players who have game log history for a team"""
+def get_players_with_history_for_team(team: str, game_date: str, min_games: int = 5, top_n: int = 12) -> list[str]:
+    """
+    Get players who have game log history for a team.
+
+    Only includes players whose MOST RECENT game (before game_date) was for this team.
+    This filters out traded players who still have historical logs for old teams.
+    (e.g. Q. Hughes traded VAN→MIN — won't appear in VAN queries after trade date)
+    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
     cursor.execute('''
-        SELECT player_name, COUNT(*) as games,
-               SUM(points) * 1.0 / COUNT(*) as ppg
-        FROM player_game_logs
-        WHERE team = ?
-        GROUP BY player_name
+        WITH current_teams AS (
+            SELECT player_name, team AS current_team
+            FROM (
+                SELECT player_name, team,
+                       ROW_NUMBER() OVER (PARTITION BY player_name ORDER BY game_date DESC) AS rn
+                FROM player_game_logs
+                WHERE game_date < ?
+            ) ranked
+            WHERE rn = 1
+        )
+        SELECT pgl.player_name, COUNT(*) AS games,
+               SUM(pgl.points) * 1.0 / COUNT(*) AS ppg
+        FROM player_game_logs pgl
+        JOIN current_teams ct ON pgl.player_name = ct.player_name
+            AND ct.current_team = ?
+        WHERE pgl.team = ?
+          AND pgl.game_date < ?
+        GROUP BY pgl.player_name
         HAVING games >= ?
         ORDER BY ppg DESC
         LIMIT ?
-    ''', (team, min_games, top_n))
+    ''', (game_date, team, team, game_date, min_games, top_n))
 
     players = [row[0] for row in cursor.fetchall()]
     conn.close()
@@ -591,7 +610,7 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
 
     for game_date, away_team, home_team in games:
         for team, opponent, is_home in [(away_team, home_team, False), (home_team, away_team, True)]:
-            players = get_players_with_history_for_team(team, min_games=5, top_n=players_per_team)
+            players = get_players_with_history_for_team(team, game_date, min_games=5, top_n=players_per_team)
 
             if not players:
                 print(f"{team}: No players with sufficient history (skipping)")

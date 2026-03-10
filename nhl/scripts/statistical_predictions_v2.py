@@ -331,6 +331,149 @@ class StatisticalPredictionEngine:
 
         return prediction_data
 
+    def _predict_count_prop(
+        self,
+        player: str,
+        team: str,
+        game_date: str,
+        opponent: str,
+        is_home: bool,
+        prop_type: str,
+        db_column: str,
+        lines: list,
+        league_avg: float,
+        league_std: float,
+        save: bool = True
+    ) -> list:
+        """
+        Generic prediction for any count-based NHL prop (hits, blocked_shots, assists).
+
+        Queries player_game_logs for the given db_column, computes Normal distribution
+        parameters, and generates predictions for each line. Returns list of prediction dicts.
+
+        Args:
+            prop_type:   Stored as prop_type in predictions table (e.g. 'hits')
+            db_column:   Column in player_game_logs (e.g. 'hits')
+            lines:       List of lines to predict (e.g. [0.5, 1.5, 2.5])
+            league_avg:  Default mean when no player history exists
+            league_std:  Default std dev when no player history exists
+        """
+        cutoff_date = (datetime.strptime(game_date, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
+
+        # Query player history for this stat
+        cursor = self.conn.cursor()
+        cursor.execute(f"""
+            SELECT game_date, {db_column}, toi_seconds
+            FROM player_game_logs
+            WHERE player_name = ? AND team = ? AND game_date < ?
+            ORDER BY game_date DESC
+            LIMIT 30
+        """, (player, team, cutoff_date))
+        rows = cursor.fetchall()
+
+        if len(rows) < 5:
+            return []  # Insufficient data — skip this player for this prop
+
+        values = [r[1] for r in rows]
+        values_l10 = values[:10]
+        values_l5 = values[:5]
+        toi_vals = [r[2] for r in rows[:10] if r[2] > 0]
+
+        mean_season = sum(values) / len(values)
+        mean_l10 = sum(values_l10) / len(values_l10)
+        mean_l5 = sum(values_l5) / len(values_l5)
+
+        variance_l10 = sum((v - mean_l10) ** 2 for v in values_l10) / max(len(values_l10) - 1, 1)
+        std_l10 = max(variance_l10 ** 0.5, 0.5)
+
+        avg_toi_minutes = (sum(toi_vals) / len(toi_vals) / 60) if toi_vals else 15.0
+
+        # Trend: slope of L10 values (most recent first → oldest first for regression)
+        trend = 0.0
+        if len(values_l10) >= 4:
+            n = len(values_l10)
+            x = list(range(n))
+            x_mean = sum(x) / n
+            y = list(reversed(values_l10))  # oldest first
+            y_mean = sum(y) / n
+            num = sum((x[i] - x_mean) * (y[i] - y_mean) for i in range(n))
+            den = sum((xi - x_mean) ** 2 for xi in x) or 1
+            trend = num / den
+
+        results = []
+        for line in lines:
+            z_score = (line - mean_l10) / std_l10 if std_l10 > 0 else 0
+            prob_over = 0.5 * (1 - self._erf(z_score / math.sqrt(2)))
+            prob_over = max(self.min_prob, min(self.max_prob, prob_over))
+
+            prediction = 'OVER' if prob_over > 0.5 else 'UNDER'
+            confidence_prob = prob_over if prediction == 'OVER' else 1 - prob_over
+            confidence_tier = self._assign_confidence_tier(confidence_prob)
+
+            features_for_ml = {
+                f'{prop_type}_season': mean_season,
+                f'{prop_type}_l10': mean_l10,
+                f'{prop_type}_l5': mean_l5,
+                f'{prop_type}_std_l10': std_l10,
+                f'{prop_type}_trend': trend,
+                'avg_toi_minutes': avg_toi_minutes,
+                'games_played': float(len(values)),
+                'is_home': int(is_home),
+                'line': line,
+                'mean_val': mean_l10,
+                'mean_hits': mean_l10,    # alias used by smart_pick_selector
+                'mean_blocked': mean_l10,  # alias used by smart_pick_selector
+                'std_dev': std_l10,
+                'z_score': z_score,
+                'prob_over': prob_over,
+            }
+
+            prediction_data = {
+                'game_date': game_date,
+                'player_name': player,
+                'team': team,
+                'opponent': opponent,
+                'prop_type': prop_type,
+                'line': line,
+                'prediction': prediction,
+                'probability': confidence_prob,
+                'confidence_tier': confidence_tier,
+                'expected_value': mean_l10,
+                'model_version': 'statistical_v2.2_count_prop',
+                'prediction_batch_id': self.batch_id,
+                'features': features_for_ml,
+                'created_at': datetime.now().isoformat()
+            }
+
+            if save:
+                self._save_prediction(prediction_data)
+
+            results.append(prediction_data)
+
+        return results
+
+    def predict_hits(self, player, team, game_date, opponent, is_home,
+                     lines=None, save=True):
+        """Predict hits using Normal distribution. Lines default to [0.5, 1.5, 2.5, 3.5]."""
+        if lines is None:
+            lines = [0.5, 1.5, 2.5, 3.5]
+        return self._predict_count_prop(
+            player, team, game_date, opponent, is_home,
+            prop_type='hits', db_column='hits', lines=lines,
+            league_avg=2.5, league_std=2.0, save=save
+        )
+
+    def predict_blocked_shots(self, player, team, game_date, opponent, is_home,
+                              lines=None, save=True):
+        """Predict blocked shots using Normal distribution. Lines default to [0.5, 1.5]."""
+        if lines is None:
+            lines = [0.5, 1.5]
+        return self._predict_count_prop(
+            player, team, game_date, opponent, is_home,
+            prop_type='blocked_shots', db_column='blocked_shots', lines=lines,
+            league_avg=1.0, league_std=1.2, save=save
+        )
+
     def _assign_confidence_tier(self, confidence_prob: float) -> str:
         """
         Assign confidence tier based on confidence in prediction

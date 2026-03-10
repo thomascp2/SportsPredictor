@@ -58,6 +58,12 @@ SHOT_LINES = [1.5, 2.5, 3.5]
 # Points lines to predict (V5 - added O1.5 for Underdog platform)
 POINTS_LINES = [0.5, 1.5]
 
+# New lower-variance props (V6 - data collection phase, no ML yet)
+# Hits: PrizePicks offers O0.5, O1.5, O2.5, O3.5 — physical players are very consistent
+HITS_LINES = [0.5, 1.5, 2.5, 3.5]
+# Blocked shots: O0.5, O1.5 — defensive D-men are highly consistent
+BLOCKED_SHOTS_LINES = [0.5, 1.5]
+
 # ML Configuration
 USE_ML = True              # Set to False to disable ML predictions
 ENSEMBLE_MODE = True       # True = combine ML+statistical, False = ML only when available
@@ -569,24 +575,38 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
                 # 1. Points - MULTIPLE LINES (NEW IN V5)
                 for line in POINTS_LINES:
                     pred = engine.predict_points(
-                        player, away_team, game_date, home_team, 
+                        player, away_team, game_date, home_team,
                         is_home=False,
                         line=line
                     )
                     if pred:
                         total_predictions += 1
                         points_predictions[line] += 1
-                
+
                 # 2. Shots - MULTIPLE LINES (V4)
                 for line in SHOT_LINES:
                     pred = engine.predict_shots(
-                        player, away_team, game_date, home_team, 
+                        player, away_team, game_date, home_team,
                         is_home=False,
                         line=line
                     )
                     if pred:
                         total_predictions += 1
                         shots_predictions[line] += 1
+
+                # 3. Hits - data collection phase (V6)
+                hit_preds = engine.statistical_engine.predict_hits(
+                    player, away_team, game_date, home_team, is_home=False,
+                    lines=HITS_LINES
+                )
+                total_predictions += len(hit_preds)
+
+                # 4. Blocked shots - data collection phase (V6)
+                blk_preds = engine.statistical_engine.predict_blocked_shots(
+                    player, away_team, game_date, home_team, is_home=False,
+                    lines=BLOCKED_SHOTS_LINES
+                )
+                total_predictions += len(blk_preds)
         else:
             print(f"{away_team}: No players with sufficient history (skipping)")
             total_players_skipped += 1
@@ -611,7 +631,7 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
                     if pred:
                         total_predictions += 1
                         points_predictions[line] += 1
-                
+
                 # 2. Shots - MULTIPLE LINES (V4)
                 for line in SHOT_LINES:
                     pred = engine.predict_shots(
@@ -622,6 +642,20 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
                     if pred:
                         total_predictions += 1
                         shots_predictions[line] += 1
+
+                # 3. Hits - data collection phase (V6)
+                hit_preds = engine.statistical_engine.predict_hits(
+                    player, home_team, game_date, away_team, is_home=True,
+                    lines=HITS_LINES
+                )
+                total_predictions += len(hit_preds)
+
+                # 4. Blocked shots - data collection phase (V6)
+                blk_preds = engine.statistical_engine.predict_blocked_shots(
+                    player, home_team, game_date, away_team, is_home=True,
+                    lines=BLOCKED_SHOTS_LINES
+                )
+                total_predictions += len(blk_preds)
         else:
             print(f"{home_team}: No players with sufficient history (skipping)")
             total_players_skipped += 1
