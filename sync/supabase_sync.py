@@ -131,6 +131,9 @@ class SupabaseSync:
                 confidence = probability
             else:
                 confidence = probability if prediction_dir == 'OVER' else (1.0 - probability)
+            # Cap at 0.95 — no model is 100% certain. Prevents degenerate 1.0 values
+            # (e.g. UNDER with P(OVER)=0) from flooding the dashboard as T1-ELITE.
+            confidence = min(confidence, 0.95)
 
             # Calculate edge and tier based on directional confidence
             edge = (confidence - 0.56) * 100 if confidence else 0
