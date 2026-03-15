@@ -150,25 +150,29 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
 
     df = pd.DataFrame(rows)
 
-    # Enrich with game_time from Supabase (best-effort; not critical)
+    # Enrich with game_time from prizepicks_lines.db keyed by team.
+    # Same source sync_game_times() uses — no name-matching issues.
     try:
-        sb = get_supabase()
-        if sb:
-            names = list(df["player_name"].unique())
-            r = (sb.table("daily_props")
-                   .select("player_name,prop_type,game_time")
-                   .eq("sport", sport.upper())
-                   .eq("game_date", game_date)
-                   .in_("player_name", names[:200])
-                   .execute())
-            if r.data:
-                gt = {(row["player_name"], row["prop_type"]): row.get("game_time")
-                      for row in r.data if row.get("game_time")}
-                df["game_time"] = df.apply(
-                    lambda row: gt.get((row["player_name"], row["prop_type"])), axis=1
-                )
+        import sqlite3 as _sqlite3
+        pp_db = root / "shared" / "prizepicks_lines.db"
+        pp_conn = _sqlite3.connect(str(pp_db))
+        time_rows = pp_conn.execute('''
+            SELECT team, MIN(start_time) as start_time
+            FROM prizepicks_lines
+            WHERE substr(start_time, 1, 10) = ?
+              AND league = ?
+              AND team NOT LIKE "%/%"
+            GROUP BY team
+        ''', [game_date, sport.upper()]).fetchall()
+        pp_conn.close()
+        team_times = {}
+        for team, iso in time_rows:
+            ts = iso[:19] + iso[23:] if iso and '.' in iso else iso
+            if ts:
+                team_times[team.upper()] = ts
+        df["game_time"] = df["team"].apply(lambda t: team_times.get(str(t).upper()))
     except Exception:
-        pass  # game_time is nice-to-have; don't fail picks display over it
+        df["game_time"] = None  # don't fail picks display over missing game times
 
     df["Prob"]    = (df["ai_probability"] * 100).round(1).astype(str) + "%"
     df["Edge"]    = df["ai_edge"].round(1).apply(lambda x: f"+{x}%" if x >= 0 else f"{x}%")
