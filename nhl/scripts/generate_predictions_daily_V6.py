@@ -64,12 +64,14 @@ ML_WEIGHT = 0.6            # ML weight in ensemble (0.6 = 60% ML, 40% statistica
 
 # PrizePicks Configuration
 PP_DB_PATH = Path(__file__).parent.parent.parent / "shared" / "prizepicks_lines.db"
-SUPPORTED_PROPS = ['shots', 'points']  # Props we generate predictions for
+SUPPORTED_PROPS = ['shots', 'points', 'hits', 'blocked_shots']  # Props we generate predictions for
 ODDS_TYPES = ['standard', 'goblin']    # Skip demon (too risky)
 
 # Fallback lines if PP not available (should rarely be needed)
 FALLBACK_SHOT_LINES = [1.5, 2.5, 3.5]
 FALLBACK_POINTS_LINES = [0.5, 1.5]
+FALLBACK_HITS_LINES = [0.5, 1.5, 2.5]
+FALLBACK_BLOCKED_SHOTS_LINES = [0.5, 1.5]
 
 
 # ============================================================================
@@ -145,6 +147,20 @@ class HybridPredictionEngine:
             return result
 
         return stat_pred
+
+    def predict_hits(self, player, team, game_date, opponent, is_home, lines):
+        """Generate hits predictions (statistical only — no ML models yet). Returns list of dicts."""
+        results = self.statistical_engine.predict_hits(
+            player, team, game_date, opponent, is_home, lines=lines, save=True
+        )
+        return results or []
+
+    def predict_blocked_shots(self, player, team, game_date, opponent, is_home, lines):
+        """Generate blocked_shots predictions (statistical only — no ML models yet). Returns list of dicts."""
+        results = self.statistical_engine.predict_blocked_shots(
+            player, team, game_date, opponent, is_home, lines=lines, save=True
+        )
+        return results or []
 
     def predict_shots(self, player, team, game_date, opponent, is_home, line):
         """Generate prediction, using ML if available"""
@@ -290,7 +306,7 @@ def get_all_pp_player_lines(target_date: str) -> dict:
         FROM prizepicks_lines
         WHERE fetch_date = ?
         AND league = 'NHL'
-        AND prop_type IN ('points', 'shots')
+        AND prop_type IN ('points', 'shots', 'hits', 'blocked_shots')
         AND odds_type IN ({placeholders})
         ORDER BY player_name, prop_type, line
     ''', (target_date, *ODDS_TYPES))
@@ -300,7 +316,7 @@ def get_all_pp_player_lines(target_date: str) -> dict:
     for row in cursor.fetchall():
         player, prop, line = row
         if player not in player_lines:
-            player_lines[player] = {'points': [], 'shots': []}
+            player_lines[player] = {'points': [], 'shots': [], 'hits': [], 'blocked_shots': []}
         if prop in player_lines[player]:
             player_lines[player][prop].append(line)
 
@@ -602,7 +618,7 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
     total_predictions = 0
     pp_matched_players = 0
     pp_unmatched_players = 0
-    predictions_by_prop = {'points': 0, 'shots': 0}
+    predictions_by_prop = {'points': 0, 'shots': 0, 'hits': 0, 'blocked_shots': 0}
     predictions_by_line = {}
 
     print('STEP 3: Generating predictions...')
@@ -631,12 +647,16 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
                         # Fall back to standard lines for unmatched players
                         player_pp_lines = {
                             'points': FALLBACK_POINTS_LINES,
-                            'shots': FALLBACK_SHOT_LINES
+                            'shots': FALLBACK_SHOT_LINES,
+                            'hits': FALLBACK_HITS_LINES,
+                            'blocked_shots': FALLBACK_BLOCKED_SHOTS_LINES,
                         }
                 else:
                     player_pp_lines = {
                         'points': FALLBACK_POINTS_LINES,
-                        'shots': FALLBACK_SHOT_LINES
+                        'shots': FALLBACK_SHOT_LINES,
+                        'hits': FALLBACK_HITS_LINES,
+                        'blocked_shots': FALLBACK_BLOCKED_SHOTS_LINES,
                     }
 
                 # Generate predictions for POINTS
@@ -664,6 +684,36 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
                         predictions_by_prop['shots'] += 1
                         key = f"shots_O{line}"
                         predictions_by_line[key] = predictions_by_line.get(key, 0) + 1
+
+                # Generate predictions for HITS (returns list)
+                hits_lines = player_pp_lines.get('hits', [])
+                if hits_lines:
+                    preds = engine.predict_hits(
+                        player, team, game_date, opponent,
+                        is_home=is_home,
+                        lines=hits_lines
+                    )
+                    for pred in preds:
+                        if pred:
+                            total_predictions += 1
+                            predictions_by_prop['hits'] += 1
+                            key = f"hits_O{pred.get('line', '?')}"
+                            predictions_by_line[key] = predictions_by_line.get(key, 0) + 1
+
+                # Generate predictions for BLOCKED SHOTS (returns list)
+                blocked_lines = player_pp_lines.get('blocked_shots', [])
+                if blocked_lines:
+                    preds = engine.predict_blocked_shots(
+                        player, team, game_date, opponent,
+                        is_home=is_home,
+                        lines=blocked_lines
+                    )
+                    for pred in preds:
+                        if pred:
+                            total_predictions += 1
+                            predictions_by_prop['blocked_shots'] += 1
+                            key = f"blocked_shots_O{pred.get('line', '?')}"
+                            predictions_by_line[key] = predictions_by_line.get(key, 0) + 1
 
         print()
 
