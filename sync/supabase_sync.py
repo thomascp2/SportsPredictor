@@ -123,10 +123,14 @@ class SupabaseSync:
             probability = row_dict.get('probability', 0.5)
             prediction_dir = row_dict.get('prediction', 'OVER')
 
-            # Directional confidence: probability stores raw OVER probability.
-            # For UNDER picks (probability < 0.5), the model confidence is 1-probability.
-            # Use this for tier, edge, and ai_probability so UNDER picks rank correctly.
-            confidence = probability if prediction_dir == 'OVER' else (1.0 - probability)
+            # Directional confidence: depends on how each sport stores probability.
+            # NBA stores P(OVER) for every prediction regardless of direction,
+            #   so UNDER confidence = 1 - P(OVER).
+            # NHL stores P(predicted direction), so confidence = probability as-is.
+            if sport.lower() == 'nhl':
+                confidence = probability
+            else:
+                confidence = probability if prediction_dir == 'OVER' else (1.0 - probability)
 
             # Calculate edge and tier based on directional confidence
             edge = (confidence - 0.56) * 100 if confidence else 0
@@ -164,6 +168,7 @@ class SupabaseSync:
                 'ai_ev_3leg': round(ev_3leg, 4),
                 'ai_ev_4leg': round(ev_4leg, 4),
                 'status': 'open',
+                'is_smart_pick': False,  # sync_smart_picks() sets True for selected picks
             }
             props.append(prop)
 
@@ -316,6 +321,7 @@ class SupabaseSync:
                     'ai_ev_3leg': round(pick.ev_3leg, 4),
                     'ai_ev_4leg': round(pick.ev_4leg, 4),
                     'status': 'open',
+                    'is_smart_pick': True,  # Passed suppression filters and edge >= 0
                 }, on_conflict='game_date,player_name,prop_type,line').execute()
                 synced += 1
             except Exception as e:
