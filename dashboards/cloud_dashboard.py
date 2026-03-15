@@ -97,35 +97,79 @@ def _fmt_time(ts):
 @st.cache_data(ttl=300)
 def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
                 direction: Optional[str], tier_filter: list) -> pd.DataFrame:
-    sb = get_supabase()
-    if sb is None:
+    """
+    Load today's smart picks directly from SQLite via SmartPickSelector.
+    SQLite is the authoritative source for picks — Supabase sync can have
+    stale or degenerate probability values before the migration is applied.
+    """
+    import sys
+    from pathlib import Path
+    root = Path(__file__).parent.parent
+    sys.path.insert(0, str(root / "shared"))
+
+    try:
+        from smart_pick_selector import SmartPickSelector
+        selector = SmartPickSelector(sport.lower())
+        picks = selector.get_smart_picks(
+            game_date=game_date,
+            min_edge=min_edge,
+            min_prob=min_prob,
+            refresh_lines=False,  # use cached PP lines, don't re-fetch
+        )
+    except Exception as e:
+        st.warning(f"Could not load picks from SQLite: {e}")
         return pd.DataFrame()
 
-    q = (sb.table("daily_props")
-           .select("player_name,team,opponent,prop_type,line,odds_type,"
-                   "ai_prediction,ai_probability,ai_edge,ai_tier,"
-                   "ai_ev_4leg,game_time,matchup,status")
-           .eq("sport", sport)
-           .eq("game_date", game_date)
-           .eq("is_smart_pick", True)   # only picks that passed suppression + edge filter
-           .gte("ai_probability", min_prob)
-           .gte("ai_edge", min_edge)
-           .neq("status", "cancelled"))
-
-    if direction:
-        q = q.eq("ai_prediction", direction)
-    if tier_filter:
-        q = q.in_("ai_tier", tier_filter)
-
-    r = q.order("ai_probability", desc=True).limit(200).execute()
-    if not r.data:
+    if not picks:
         return pd.DataFrame()
 
-    df = pd.DataFrame(r.data)
-    # Enforce PP platform rule: goblin/demon lines only allow OVER bets
-    df = df[~(df["odds_type"].isin(["goblin", "demon"]) & (df["ai_prediction"] == "UNDER"))]
-    if df.empty:
+    rows = []
+    for p in picks:
+        if direction and p.prediction != direction:
+            continue
+        if tier_filter and p.tier not in tier_filter:
+            continue
+        rows.append({
+            "player_name": p.player_name,
+            "team": p.team,
+            "opponent": p.opponent,
+            "prop_type": p.prop_type,
+            "line": p.pp_line,
+            "odds_type": p.pp_odds_type,
+            "ai_prediction": p.prediction,
+            "ai_probability": p.pp_probability,
+            "ai_edge": p.edge,
+            "ai_tier": p.tier,
+            "ai_ev_4leg": p.ev_4leg,
+            "game_time": None,   # not on SmartPick object; filled below from Supabase
+            "matchup": f"{p.team} vs {p.opponent}",
+        })
+
+    if not rows:
         return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+
+    # Enrich with game_time from Supabase (best-effort; not critical)
+    try:
+        sb = get_supabase()
+        if sb:
+            names = list(df["player_name"].unique())
+            r = (sb.table("daily_props")
+                   .select("player_name,prop_type,game_time")
+                   .eq("sport", sport.upper())
+                   .eq("game_date", game_date)
+                   .in_("player_name", names[:200])
+                   .execute())
+            if r.data:
+                gt = {(row["player_name"], row["prop_type"]): row.get("game_time")
+                      for row in r.data if row.get("game_time")}
+                df["game_time"] = df.apply(
+                    lambda row: gt.get((row["player_name"], row["prop_type"])), axis=1
+                )
+    except Exception:
+        pass  # game_time is nice-to-have; don't fail picks display over it
+
     df["Prob"]    = (df["ai_probability"] * 100).round(1).astype(str) + "%"
     df["Edge"]    = df["ai_edge"].round(1).apply(lambda x: f"+{x}%" if x >= 0 else f"{x}%")
     df["EV 4-leg"]= df["ai_ev_4leg"].apply(
@@ -133,8 +177,8 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
     )
     df["Line"]    = df["ai_prediction"] + " " + df["line"].astype(str)
     df["Prop"]    = df["prop_type"].str.upper().str.replace("_", " ")
-    df["Matchup"] = df["matchup"].fillna(df["team"] + " vs " + df["opponent"])
-    df["Time"] = df["game_time"].apply(_fmt_time)
+    df["Matchup"] = df["matchup"]
+    df["Time"]    = df["game_time"].apply(_fmt_time)
     return df
 
 
