@@ -107,8 +107,8 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
                    "ai_ev_4leg,game_time,matchup,status")
            .eq("sport", sport)
            .eq("game_date", game_date)
+           .eq("is_smart_pick", True)   # only picks that passed suppression + edge filter
            .gte("ai_probability", min_prob)
-           .lt("ai_probability", 0.95)   # exclude goblin lines (stat model returns 1.0 for trivially easy props)
            .gte("ai_edge", min_edge)
            .neq("status", "cancelled"))
 
@@ -300,6 +300,7 @@ def fetch_recent_results(sport: str, start_date: str, end_date: str) -> pd.DataF
         r = (sb.table("daily_props")
                .select("game_date,ai_prediction,ai_tier,result,ai_probability,prop_type,actual_value,odds_type")
                .eq("sport", sport)
+               .eq("is_smart_pick", True)   # only picks that passed suppression + edge filter
                .gte("game_date", start_date)
                .lte("game_date", end_date)
                .not_.is_("result", "null")
