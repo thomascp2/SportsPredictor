@@ -288,6 +288,7 @@ class SmartPickSelector:
         # Match PP lines to our predictions
         smart_picks = []
         matched = 0
+        _logged_trades = set()  # Dedupe trade log — one message per player per run
 
         for pp in pp_lines:
             # Try to find our prediction for this player+prop
@@ -344,7 +345,11 @@ class SmartPickSelector:
                 # Player was traded — PP is authoritative, log and continue.
                 # Probability is still valid (based on player stats, not team).
                 # PP team is used at SmartPick creation below (pp.get('team')).
-                print(f"[INFO] Trade detected: {pp['player_name']} local={pred_team} -> PP={pp_team}")
+                trade_key = (pp['player_name'], pred_team, pp_team)
+                if trade_key not in _logged_trades:
+                    safe_name = pp['player_name'].encode('ascii', 'replace').decode('ascii')
+                    print(f"[INFO] Trade detected: {safe_name} local={pred_team} -> PP={pp_team}")
+                    _logged_trades.add(trade_key)
 
             # Get season average for baseline comparison
             season_avg = pred.get('f_season_avg') or pred.get('season_avg') or 0
@@ -425,6 +430,12 @@ class SmartPickSelector:
 
             # Skip if overs_only and this is an UNDER
             if overs_only and prediction != 'OVER':
+                continue
+
+            # Suppress threes OVER — 0% hit rate in grading (model is degenerate for this combo).
+            # The threes model learned to predict UNDER 100% of the time; OVER predictions are
+            # always wrong because PP sets three-pointer lines high enough that UNDER always wins.
+            if prop_type == 'threes' and prediction == 'OVER':
                 continue
 
             # Calculate edge
