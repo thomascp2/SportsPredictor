@@ -133,6 +133,30 @@ class NBAStatisticalPredictor:
         probability = base_prob + adjustments
         probability = max(0.0, min(1.0, probability))  # Clip to [0, 1]
 
+        # B2B / rest fatigue adjustment
+        days_rest = features.get('f_days_rest', 3)
+        opp_days_rest = features.get('f_opp_days_rest', 3)
+        if days_rest == 0:
+            probability -= 0.025  # Player on B2B — slight underperformance expected
+        elif days_rest >= 4:
+            probability += 0.010  # Well-rested — slight positive boost
+        if opp_days_rest == 0:
+            probability += 0.015  # Opponent on B2B — easier matchup
+        probability = max(0.0, min(1.0, probability))
+
+        # Minutes trend suppression (load management / rotation change signal).
+        # When a player's L5 minutes are trending well below their season average,
+        # all counting-stat OVERs are penalized because fewer minutes = fewer
+        # opportunities to hit the line.  We scale the suppression continuously
+        # rather than using a hard cut so the signal survives into ML training.
+        if features.get('f_minutes_trending_down', 0.0) == 1.0:
+            minutes_pct = features.get('f_minutes_pct_of_season', 1.0)
+            # At 88% minutes  → ~3% suppression;  at 75% → ~6.25% (hard-capped at 8%)
+            suppression = (1.0 - minutes_pct) * 0.25
+            suppression = min(suppression, 0.08)
+            probability -= suppression
+            probability = max(0.0, min(1.0, probability))
+
         # Apply learning mode cap
         if self.learning_mode:
             probability = self._apply_learning_cap(probability)
@@ -232,6 +256,17 @@ class NBAStatisticalPredictor:
             probability = 1 - norm.cdf(line, loc=mu, scale=sigma)
         except:
             probability = 0.50
+
+        # B2B / rest fatigue adjustment
+        days_rest = features.get('f_days_rest', 3)
+        opp_days_rest = features.get('f_opp_days_rest', 3)
+        if days_rest == 0:
+            probability -= 0.025
+        elif days_rest >= 4:
+            probability += 0.010
+        if opp_days_rest == 0:
+            probability += 0.015
+        probability = max(0.0, min(1.0, probability))
 
         # Apply learning mode cap
         if self.learning_mode:

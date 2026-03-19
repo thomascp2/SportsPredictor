@@ -32,6 +32,12 @@ DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
 DATA_COLLECTION_START = "2025-11-05"
 DATA_COLLECTION_END = "2026-01-05"
 
+# Blowout filter — skip all player props when the favorite's implied win probability
+# exceeds this threshold. NHL uses moneyline-based implied probability (not spread)
+# because the puck line is always ±1.5 and carries no mismatch signal.
+# -355 moneyline ≈ 78% implied probability — heavy, lopsided matchup.
+BLOWOUT_IMPLIED_PROB_THRESHOLD = 0.78
+
 # Feature importance thresholds
 MIN_FEATURE_IMPORTANCE = 0.01  # Drop features below this in ML training
 

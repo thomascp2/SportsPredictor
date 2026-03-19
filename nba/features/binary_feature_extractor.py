@@ -178,6 +178,36 @@ class BinaryFeatureExtractor:
             cv = features['f_season_std'] / features['f_season_avg']
             features['f_consistency_score'] = 1 / (1 + cv)
 
+        # ===== MINUTES TREND FEATURES =====
+        # These capture load management and lineup rotation changes.
+        # If a player's recent minutes are well below their season average,
+        # their counting-stat props should be suppressed accordingly.
+        features['f_minutes_season_avg'] = features['f_avg_minutes']  # alias for clarity
+        features['f_minutes_l5_avg'] = 0.0
+        features['f_minutes_l3_avg'] = 0.0
+        features['f_minutes_trending_down'] = 0.0   # 1.0 = load management signal
+        features['f_minutes_pct_of_season'] = 1.0   # L5 / season; <1 = trending down
+
+        if minutes_values:
+            if len(minutes_values) >= 5:
+                features['f_minutes_l5_avg'] = float(sum(minutes_values[:5])) / 5.0
+            elif minutes_values:
+                features['f_minutes_l5_avg'] = float(sum(minutes_values)) / len(minutes_values)
+
+            if len(minutes_values) >= 3:
+                features['f_minutes_l3_avg'] = float(sum(minutes_values[:3])) / 3.0
+            else:
+                features['f_minutes_l3_avg'] = features['f_minutes_l5_avg']
+
+            season_min = features['f_minutes_season_avg']
+            l5_min = features['f_minutes_l5_avg']
+
+            if season_min > 0:
+                features['f_minutes_pct_of_season'] = l5_min / season_min
+                # Flag: L5 minutes are at least 12% below season average
+                # 0.88 threshold captures genuine restrictions (not just one bad game)
+                features['f_minutes_trending_down'] = 1.0 if l5_min < season_min * 0.88 else 0.0
+
         # 20-24: Opponent defensive features (NEW)
         if opponent_team:
             opp_features = self.opp_extractor.extract_opponent_features(
@@ -187,7 +217,60 @@ class BinaryFeatureExtractor:
             )
             features.update(opp_features)
 
+        # Rest/fatigue features
+        rest_features = self._get_rest_features(player_name, game_date, opponent_team, cursor if False else None)
+        features.update(rest_features)
+
         return features
+
+    def _get_rest_features(self, player_name: str, game_date: str, opponent_team, _unused) -> dict:
+        """
+        Compute days_rest for player and opponent from player_game_logs.
+        0 = back-to-back (played yesterday).
+        """
+        from datetime import date as _date
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Player rest: last game before game_date
+        cursor.execute("""
+            SELECT game_date FROM player_game_logs
+            WHERE LOWER(player_name) = LOWER(?) AND game_date < ?
+            ORDER BY game_date DESC LIMIT 1
+        """, (player_name, game_date))
+        row = cursor.fetchone()
+        if row:
+            try:
+                last_game = _date.fromisoformat(row[0])
+                pred_date = _date.fromisoformat(game_date)
+                player_days_rest = max(0, (pred_date - last_game).days - 1)
+            except Exception:
+                player_days_rest = 3
+        else:
+            player_days_rest = 3  # No history — assume normal rest
+
+        # Opponent rest: any player from opponent team's last game
+        opp_days_rest = 3
+        if opponent_team:
+            cursor.execute("""
+                SELECT game_date FROM player_game_logs
+                WHERE team = ? AND game_date < ?
+                ORDER BY game_date DESC LIMIT 1
+            """, (opponent_team, game_date))
+            opp_row = cursor.fetchone()
+            if opp_row:
+                try:
+                    opp_last = _date.fromisoformat(opp_row[0])
+                    pred_date = _date.fromisoformat(game_date)
+                    opp_days_rest = max(0, (pred_date - opp_last).days - 1)
+                except Exception:
+                    opp_days_rest = 3
+
+        conn.close()
+        return {
+            'f_days_rest': player_days_rest,
+            'f_opp_days_rest': opp_days_rest,
+        }
 
     @staticmethod
     def _get_stat_column(stat_type):

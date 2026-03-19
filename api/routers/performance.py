@@ -294,3 +294,109 @@ async def calibration_check(sport: str = Query(...)):
 
     finally:
         conn.close()
+
+
+@router.get("/realized-edge")
+async def realized_edge(
+    sport: str = Query(..., description="Sport: 'nba' or 'nhl'"),
+    days: int = Query(30, description="Days of history to analyze"),
+):
+    """
+    Compare predicted edge to realized (actual) edge per prop type.
+
+    realized_edge = (hit_rate - break_even) * 100
+    edge_ratio    = realized_edge / predicted_edge  (>1 = model underestimates, <1 = overestimates)
+
+    Break-even values: standard=56.2%, goblin=76.0%, demon=44.7%
+    """
+    sport = sport.lower()
+    if sport not in ['nba', 'nhl']:
+        raise HTTPException(status_code=400, detail="Sport must be 'nba' or 'nhl'")
+
+    conn = get_db_connection(sport)
+    cursor = conn.cursor()
+
+    # Static break-even per odds_type (4-pick parlay benchmark)
+    BREAK_EVEN = {'standard': 0.562, 'goblin': 0.760, 'demon': 0.447}
+
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+
+        if sport == 'nba':
+            # NBA: join prediction_outcomes ↔ predictions on player_name+prop_type+game_date
+            # (no FK id link guaranteed in schema, so match on natural key)
+            cursor.execute("""
+                SELECT
+                    o.prop_type,
+                    COALESCE(p.odds_type, 'standard') AS odds_type,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN o.outcome = 'HIT' THEN 1 ELSE 0 END) AS hits,
+                    AVG(p.probability) AS avg_predicted_prob
+                FROM prediction_outcomes o
+                LEFT JOIN predictions p
+                    ON LOWER(o.player_name) = LOWER(p.player_name)
+                    AND LOWER(o.prop_type) = LOWER(p.prop_type)
+                    AND o.game_date = p.game_date
+                WHERE o.game_date >= ?
+                GROUP BY o.prop_type, odds_type
+                HAVING total >= 10
+                ORDER BY o.prop_type
+            """, (cutoff,))
+        else:
+            # NHL: probability stored in prediction_outcomes.predicted_probability
+            cursor.execute("""
+                SELECT
+                    prop_type,
+                    'standard' AS odds_type,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN outcome = 'HIT' THEN 1 ELSE 0 END) AS hits,
+                    AVG(predicted_probability) AS avg_predicted_prob
+                FROM prediction_outcomes
+                WHERE game_date >= ?
+                GROUP BY prop_type
+                HAVING total >= 10
+                ORDER BY prop_type
+            """, (cutoff,))
+
+        results = []
+        for row in cursor.fetchall():
+            prop_type = row[0]
+            odds_type = row[1] or 'standard'
+            total = row[2]
+            hits = row[3] or 0
+            avg_pred = row[4] or 0.56
+
+            hit_rate = hits / total if total > 0 else 0
+            break_even = BREAK_EVEN.get(odds_type, 0.562)
+            predicted_edge = (avg_pred - break_even) * 100
+            realized_edge_val = (hit_rate - break_even) * 100
+
+            edge_ratio = (
+                round(realized_edge_val / predicted_edge, 3)
+                if abs(predicted_edge) > 0.5 else None
+            )
+
+            results.append({
+                'prop_type': prop_type,
+                'odds_type': odds_type,
+                'total_graded': total,
+                'hit_rate': round(hit_rate * 100, 1),
+                'avg_predicted_prob': round(avg_pred * 100, 1),
+                'break_even': round(break_even * 100, 1),
+                'predicted_edge': round(predicted_edge, 2),
+                'realized_edge': round(realized_edge_val, 2),
+                'edge_ratio': edge_ratio,
+            })
+
+        # Sort by edge_ratio descending (best-calibrated markets first)
+        results.sort(key=lambda x: (x['edge_ratio'] or 0), reverse=True)
+
+        return {
+            "success": True,
+            "sport": sport.upper(),
+            "days": days,
+            "results": results,
+        }
+
+    finally:
+        conn.close()

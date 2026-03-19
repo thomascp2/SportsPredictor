@@ -30,10 +30,12 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from nba_config import (
     DB_PATH, DISCORD_WEBHOOK_URL, CORE_PROPS,
     STARTERS_COUNT, SIGNIFICANT_BENCH_COUNT, EXPLORATION_PLAYERS_PER_TEAM,
-    DATA_COLLECTION_START, DATA_COLLECTION_END
+    DATA_COLLECTION_START, DATA_COLLECTION_END, BLOWOUT_SPREAD_THRESHOLD
 )
 from data_fetchers.nba_stats_api import NBAStatsAPI
 from statistical_predictions import NBAStatisticalPredictor
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__))))
+from espn_nba_api import ESPNNBAApi
 
 
 class NBADailyPredictor:
@@ -42,6 +44,7 @@ class NBADailyPredictor:
     def __init__(self, db_path=DB_PATH):
         self.db_path = db_path
         self.api = NBAStatsAPI()
+        self.espn_api = ESPNNBAApi()
         self.predictor = NBAStatisticalPredictor()
 
     def generate_predictions(self, target_date=None, players_per_team=None):
@@ -78,17 +81,33 @@ class NBADailyPredictor:
         # Save games to database
         self._save_games(conn, games, target_date)
 
+        # Fetch and save betting lines from ESPN (spread, total, moneylines).
+        # This is a separate call because games come from NBA Stats API which
+        # has no odds. ESPN scoreboard has both game info and odds.
+        game_lines = self._fetch_and_save_game_lines(conn, target_date)
+
         # Generate predictions for each game
         total_predictions = 0
+        skipped_blowouts = 0
         all_probabilities = []
 
         for game in games:
-            print(f"\n{game['away_team']} @ {game['home_team']}")
+            home = game['home_team']
+            away = game['away_team']
+            print(f"\n{away} @ {home}")
+
+            # Blowout filter: skip entire game if spread is lopsided.
+            # Garbage time destroys prop accuracy for both teams.
+            abs_spread = game_lines.get(game['game_id'], {}).get('abs_spread')
+            if abs_spread is not None and abs_spread >= BLOWOUT_SPREAD_THRESHOLD:
+                print(f"   [SKIP] Blowout risk — spread {abs_spread:.1f} >= {BLOWOUT_SPREAD_THRESHOLD}. Skipping.")
+                skipped_blowouts += 1
+                continue
 
             # Get players for both teams
             for team, opponent, home_away in [
-                (game['home_team'], game['away_team'], 'H'),
-                (game['away_team'], game['home_team'], 'A')
+                (home, away, 'H'),
+                (away, home, 'A')
             ]:
                 players = self._get_team_players(conn, team, players_per_team, target_date)
 
@@ -119,6 +138,8 @@ class NBADailyPredictor:
         print("\n" + "=" * 60)
         print(f"[OK] PREDICTION GENERATION COMPLETE")
         print(f"[STATS] Total predictions: {total_predictions}")
+        if skipped_blowouts:
+            print(f"[SKIP] Blowout games skipped: {skipped_blowouts} (spread >= {BLOWOUT_SPREAD_THRESHOLD})")
         print(f" Unique probabilities: {unique_probs}")
 
         if unique_probs < 10:
@@ -138,8 +159,27 @@ class NBADailyPredictor:
         }
 
     def _save_games(self, conn, games, game_date):
-        """Save games to database."""
+        """Save games to database and ensure game_lines table exists."""
         cursor = conn.cursor()
+
+        # Create game_lines table if this is the first run after the schema update
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS game_lines (
+                game_id      TEXT NOT NULL,
+                game_date    TEXT NOT NULL,
+                home_team    TEXT,
+                away_team    TEXT,
+                spread       REAL,    -- positive = home favored, negative = away favored
+                abs_spread   REAL,    -- absolute value of spread (used for blowout filter)
+                over_under   REAL,    -- game total
+                home_moneyline INTEGER,
+                away_moneyline INTEGER,
+                odds_details TEXT,
+                odds_provider TEXT,
+                fetched_at   TEXT,
+                PRIMARY KEY (game_id)
+            )
+        """)
 
         for game in games:
             cursor.execute("""
@@ -152,6 +192,80 @@ class NBADailyPredictor:
             ))
 
         conn.commit()
+
+    def _fetch_and_save_game_lines(self, conn, game_date):
+        """
+        Fetch betting lines from ESPN scoreboard and save to game_lines table.
+
+        Matches ESPN games to DB games by team abbreviation, handling known
+        ESPN/NBA-Stats-API abbreviation mismatches (via TEAM_ALIASES).
+
+        Returns:
+            dict: {game_id: {'spread': float, 'abs_spread': float, 'over_under': float}}
+                  Only contains entries where odds were available.
+        """
+        result = {}
+        try:
+            espn_games = self.espn_api.get_scoreboard(game_date)
+        except Exception as e:
+            print(f"   [ODDS] ESPN fetch failed: {e} — skipping lines")
+            return result
+
+        if not espn_games:
+            print("   [ODDS] No ESPN games returned — lines unavailable")
+            return result
+
+        # Build a lookup: (home_abbr, away_abbr) → game_id from the DB games table
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT game_id, home_team, away_team FROM games WHERE game_date = ?",
+            (game_date,)
+        )
+        db_games = {(r[1], r[2]): r[0] for r in cursor.fetchall()}
+
+        lines_saved = 0
+        for eg in espn_games:
+            espn_home = eg.get('home_team', '')
+            espn_away = eg.get('away_team', '')
+
+            # Try direct match first, then aliases
+            game_id = db_games.get((espn_home, espn_away))
+            if not game_id:
+                # Try resolving ESPN aliases to NBA Stats API abbreviations
+                h = self.TEAM_ALIASES.get(espn_home, espn_home)
+                a = self.TEAM_ALIASES.get(espn_away, espn_away)
+                game_id = db_games.get((h, a)) or db_games.get((espn_home, a)) or db_games.get((h, espn_away))
+
+            if not game_id:
+                continue  # Couldn't match this ESPN game to a DB game
+
+            spread = eg.get('spread')
+            over_under = eg.get('over_under')
+            abs_spread = abs(spread) if spread is not None else None
+
+            cursor.execute("""
+                INSERT OR REPLACE INTO game_lines
+                (game_id, game_date, home_team, away_team,
+                 spread, abs_spread, over_under,
+                 home_moneyline, away_moneyline,
+                 odds_details, odds_provider, fetched_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                game_id, game_date, espn_home, espn_away,
+                spread, abs_spread, over_under,
+                eg.get('home_moneyline'), eg.get('away_moneyline'),
+                eg.get('odds_details', ''), eg.get('odds_provider', ''),
+                datetime.now().isoformat()
+            ))
+
+            if abs_spread is not None:
+                result[game_id] = {'spread': spread, 'abs_spread': abs_spread, 'over_under': over_under}
+                lines_saved += 1
+
+        conn.commit()
+        print(f"   [ODDS] Saved lines for {lines_saved}/{len(espn_games)} games"
+              + (f" ({len(espn_games) - lines_saved} unmatched)" if lines_saved < len(espn_games) else ""))
+        return result
 
     # ESPN uses different abbreviations than NBA Stats API (which populates the games table).
     TEAM_ALIASES = {

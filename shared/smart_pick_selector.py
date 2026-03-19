@@ -68,6 +68,21 @@ class SmartPick:
     # Confidence tier
     tier: str = 'T5-FADE'
 
+    # σ-distance and line quality signals
+    sigma: float = 0.0              # Standard deviation used for probability calculation
+    sigma_distance: float = 0.0     # (variant_line - standard_line) / sigma; 0 = standard line
+    parlay_score: float = 0.0       # Probability adjusted for player consistency (lower CoV = better)
+
+    # Line movement (did the market agree with our pick?)
+    line_movement: float = 0.0      # Standard line change today (+ = moved up, - = moved down)
+    movement_agrees: bool = True    # True if our prediction direction agrees with line movement direction
+
+    # Calibration adjustment
+    calibration_correction: float = 0.0  # Historical correction applied to probability
+
+    # Rest / fatigue signal
+    days_rest: int = 3              # Player's days since last game (0 = back-to-back)
+
     def __post_init__(self):
         # Cap probability at 95% - no model can be 100% certain
         if self.pp_probability > 0.95:
@@ -94,35 +109,53 @@ class SmartPick:
             return 'T5-FADE'
 
     def _calculate_ev(self):
-        """Calculate expected value for parlay payouts"""
-        # PrizePicks payouts by total "leg value" (as of Jan 2026)
-        # Standard picks = 1.0 leg, Goblin = 0.5 leg, Demon = 0.25 leg
-        PAYOUTS = {
-            2: 3.0,   # 2-leg: 3x
-            3: 5.0,   # 3-leg: 5x
-            4: 10.0,  # 4-leg: 10x
-            5: 20.0,  # 5-leg: 20x
-            6: 25.0,  # 6-leg: 25x
-        }
+        """
+        Calculate expected value using dynamic leg value derived from sigma_distance.
 
-        # Leg value based on odds type
-        # Goblin = easier, less payout | Demon = harder, more payout
-        LEG_VALUES = {
-            'standard': 1.0,
-            'goblin': 0.5,   # Easier line, less payout
-            'demon': 1.5,    # Harder line, more payout
-        }
+        Leg value scales with how far the line is from standard, using the
+        actual PrizePicks payout table. Verified anchors:
+          goblin at σ=-1.0 → LV=0.50 → 4-pick total=2.0 → payout=3x  → BE=76.0% ✓
+          standard         → LV=1.00 → 4-pick total=4.0 → payout=10x → BE=56.2% ✓
+          demon  at σ=+1.0 → LV=1.50 → 4-pick total=6.0 → payout=25x → BE=44.7% ✓
+        """
+        # Payout table: total leg equivalents → multiplier
+        PAYOUT_TABLE = {1.0: 2.0, 2.0: 3.0, 3.0: 5.0, 4.0: 10.0, 5.0: 20.0, 6.0: 25.0}
 
-        self.leg_value = LEG_VALUES.get(self.pp_odds_type, 1.0)
+        def _interp_payout(total_lv: float) -> float:
+            total_lv = max(1.0, min(6.0, total_lv))
+            keys = sorted(PAYOUT_TABLE.keys())
+            for i in range(len(keys) - 1):
+                lo, hi = keys[i], keys[i + 1]
+                if lo <= total_lv <= hi:
+                    t = (total_lv - lo) / (hi - lo)
+                    return PAYOUT_TABLE[lo] + t * (PAYOUT_TABLE[hi] - PAYOUT_TABLE[lo])
+            return PAYOUT_TABLE[keys[-1]]
+
+        # Dynamic leg value from sigma_distance (falls back to static defaults at σ=0)
+        if self.pp_odds_type == 'goblin' and self.sigma_distance != 0.0:
+            self.leg_value = max(0.10, min(1.0, 0.5 * abs(self.sigma_distance)))
+        elif self.pp_odds_type == 'demon' and self.sigma_distance != 0.0:
+            self.leg_value = max(1.0, min(3.0, 1.0 + 0.5 * self.sigma_distance))
+        else:
+            # Standard, or variant with no σ-distance (fallback to static)
+            fallback = {'standard': 1.0, 'goblin': 0.5, 'demon': 1.5}
+            self.leg_value = fallback.get(self.pp_odds_type, 1.0)
 
         p = self.pp_probability
-        # EV = (probability^legs * payout) - 1
-        # For single pick contribution, we use geometric mean approach
-        self.ev_2leg = (p ** 2) * PAYOUTS[2] - 1
-        self.ev_3leg = (p ** 3) * PAYOUTS[3] - 1
-        self.ev_4leg = (p ** 4) * PAYOUTS[4] - 1
-        self.ev_5leg = (p ** 5) * PAYOUTS[5] - 1
-        self.ev_6leg = (p ** 6) * PAYOUTS[6] - 1
+        # EV for N same-type picks: EV = p^N * payout(N * leg_value) - 1
+        evs = []
+        for n in [2, 3, 4, 5, 6]:
+            payout = _interp_payout(n * self.leg_value)
+            evs.append(round(p ** n * payout - 1, 4))
+        self.ev_2leg, self.ev_3leg, self.ev_4leg, self.ev_5leg, self.ev_6leg = evs
+
+        # Parlay suitability score: reward consistent players (lower CoV = better leg)
+        # CoV = sigma / recent_avg; lower = more predictable
+        if self.recent_avg > 0 and self.sigma > 0:
+            cov = self.sigma / self.recent_avg
+            self.parlay_score = round(p / (1.0 + cov), 4)
+        else:
+            self.parlay_score = round(p * 0.85, 4)  # Slight penalty for unknown variance
 
 
 class SmartPickSelector:
@@ -133,15 +166,172 @@ class SmartPickSelector:
     this starts from PP's actual lines and recalculates our predictions for them.
     """
 
-    # Break-even rates by odds type (based on leg values and parlay payouts)
-    # Goblin (0.5x leg): 4 picks = 2 legs = 3x payout -> need 76% per pick
-    # Standard (1.0x leg): 4 picks = 4 legs = 10x payout -> need 56% per pick
-    # Demon (1.5x leg): 4 picks = 6 legs = 25x payout -> need 45% per pick
-    BREAK_EVEN = {
-        'standard': 0.56,
-        'goblin': 0.76,   # Higher break-even (easier line, less payout)
-        'demon': 0.45,    # Lower break-even (harder line, more payout)
-    }
+    # Payout table: total leg-equivalents → multiplier (used by compute_break_even)
+    _PAYOUT_TABLE = {1.0: 2.0, 2.0: 3.0, 3.0: 5.0, 4.0: 10.0, 5.0: 20.0, 6.0: 25.0}
+
+    @staticmethod
+    def estimate_leg_value(odds_type: str, sigma_distance: float) -> float:
+        """
+        Estimate leg value for a line variant based on σ-distance from the standard line.
+
+        Derivation (4-pick parlay, verified against PP payout table):
+          goblin σ=-0.5 → LV=0.25 → total=1.0 → payout=2x  → break-even=84.1%
+          goblin σ=-1.0 → LV=0.50 → total=2.0 → payout=3x  → break-even=76.0% ✓ static
+          goblin σ=-1.5 → LV=0.75 → total=3.0 → payout=5x  → break-even=66.9%
+          demon  σ=+0.5 → LV=1.25 → total=5.0 → payout=20x → break-even=47.3%
+          demon  σ=+1.0 → LV=1.50 → total=6.0 → payout=25x → break-even=44.7% ✓ static
+        """
+        if odds_type == 'standard':
+            return 1.0
+        if odds_type == 'goblin':
+            # More negative σ = easier line = worse payout = smaller leg value
+            return max(0.10, min(1.0, 0.5 * abs(sigma_distance)))
+        if odds_type == 'demon':
+            # More positive σ = harder line = better payout = larger leg value
+            return max(1.0, min(3.0, 1.0 + 0.5 * sigma_distance))
+        return 1.0
+
+    @classmethod
+    def _interpolate_payout(cls, total_lv: float) -> float:
+        """Linearly interpolate payout from the PrizePicks payout table."""
+        total_lv = max(1.0, min(6.0, total_lv))
+        keys = sorted(cls._PAYOUT_TABLE.keys())
+        for i in range(len(keys) - 1):
+            lo, hi = keys[i], keys[i + 1]
+            if lo <= total_lv <= hi:
+                t = (total_lv - lo) / (hi - lo)
+                return cls._PAYOUT_TABLE[lo] + t * (cls._PAYOUT_TABLE[hi] - cls._PAYOUT_TABLE[lo])
+        return cls._PAYOUT_TABLE[keys[-1]]
+
+    def compute_break_even(self, odds_type: str, sigma_distance: float, n_picks: int = 4) -> float:
+        """
+        Compute the break-even probability for a line variant.
+        Uses dynamic leg value (σ-distance based), not a static constant.
+        Falls back to standard leg values when sigma_distance is 0 (no standard line found).
+        """
+        if sigma_distance == 0.0 and odds_type != 'standard':
+            # No standard line found for comparison — use historical static values
+            fallback = {'standard': 0.56, 'goblin': 0.76, 'demon': 0.45}
+            return fallback.get(odds_type, 0.56)
+        lv = self.estimate_leg_value(odds_type, sigma_distance)
+        total_lv = max(1.0, min(6.0, n_picks * lv))
+        payout = self._interpolate_payout(total_lv)
+        return (1.0 / payout) ** (1.0 / n_picks)
+
+    def _load_line_movements(self, game_date: str) -> dict:
+        """
+        Detect today's line movement by comparing first vs latest fetched_at value
+        for each (player, prop) standard line.
+
+        Returns: {(player_name_lower, prop_type): {'line_movement': float, 'direction': str}}
+        """
+        try:
+            conn = sqlite3.connect(str(self.pp_db_path))
+            # Use CTEs to pre-compute min/max fetched_at per player+prop — avoids
+            # correlated subqueries which are O(n²) on large prizepicks_lines tables.
+            rows = conn.execute("""
+                WITH bounds AS (
+                    SELECT
+                        LOWER(player_name) AS player_lower,
+                        prop_type,
+                        MIN(fetched_at) AS first_fetch,
+                        MAX(fetched_at) AS last_fetch
+                    FROM prizepicks_lines
+                    WHERE odds_type = 'standard'
+                      AND substr(start_time, 1, 10) = ?
+                      AND league = ?
+                    GROUP BY LOWER(player_name), prop_type
+                ),
+                open_lines AS (
+                    SELECT LOWER(p.player_name) AS player_lower, p.prop_type, p.line, p.player_name
+                    FROM prizepicks_lines p
+                    JOIN bounds b
+                      ON LOWER(p.player_name) = b.player_lower
+                      AND p.prop_type = b.prop_type
+                      AND p.fetched_at = b.first_fetch
+                    WHERE p.odds_type = 'standard' AND substr(p.start_time, 1, 10) = ?
+                ),
+                close_lines AS (
+                    SELECT LOWER(p.player_name) AS player_lower, p.prop_type, p.line
+                    FROM prizepicks_lines p
+                    JOIN bounds b
+                      ON LOWER(p.player_name) = b.player_lower
+                      AND p.prop_type = b.prop_type
+                      AND p.fetched_at = b.last_fetch
+                    WHERE p.odds_type = 'standard' AND substr(p.start_time, 1, 10) = ?
+                )
+                SELECT o.player_name, o.prop_type, o.line AS open_line, c.line AS close_line
+                FROM open_lines o
+                JOIN close_lines c ON o.player_lower = c.player_lower AND o.prop_type = c.prop_type
+            """, (game_date, self.sport, game_date, game_date)).fetchall()
+            conn.close()
+
+            movements = {}
+            for r in rows:
+                open_l = r[2] or 0
+                close_l = r[3] or 0
+                delta = round(close_l - open_l, 1)
+                key = (r[0].lower(), r[1])
+                movements[key] = {
+                    'line_movement': delta,
+                    'direction': 'up' if delta > 0.05 else ('down' if delta < -0.05 else 'none'),
+                }
+            return movements
+        except Exception as e:
+            print(f"[WARN] Could not load line movements: {e}")
+            return {}
+
+    def _load_calibration(self) -> dict:
+        """
+        Load per-prop-type calibration corrections from prediction_outcomes.
+        Bucket predictions into 5% probability windows and compute actual vs predicted hit rate.
+        Returns: {(prop_type, prob_bucket): correction_float}
+        Requires >= 20 samples per bucket; underpopulated buckets return 0.0.
+        """
+        try:
+            conn = sqlite3.connect(str(self.pred_db_path))
+            if self.sport == 'NBA':
+                rows = conn.execute("""
+                    SELECT
+                        o.prop_type,
+                        ROUND(p.probability / 0.05) * 0.05 AS bucket,
+                        COUNT(*) AS n,
+                        AVG(CASE WHEN o.outcome = 'HIT' THEN 1.0 ELSE 0.0 END) AS actual_rate,
+                        AVG(p.probability) AS avg_predicted
+                    FROM prediction_outcomes o
+                    JOIN predictions p ON o.prediction_id = p.id
+                    WHERE p.probability IS NOT NULL
+                    GROUP BY o.prop_type, bucket
+                    HAVING n >= 20
+                """).fetchall()
+            else:
+                # NHL: probability stored directly in prediction_outcomes
+                rows = conn.execute("""
+                    SELECT
+                        prop_type,
+                        ROUND(predicted_probability / 0.05) * 0.05 AS bucket,
+                        COUNT(*) AS n,
+                        AVG(CASE WHEN outcome = 'HIT' THEN 1.0 ELSE 0.0 END) AS actual_rate,
+                        ROUND(predicted_probability / 0.05) * 0.05 AS avg_predicted
+                    FROM prediction_outcomes
+                    WHERE predicted_probability IS NOT NULL
+                    GROUP BY prop_type, bucket
+                    HAVING n >= 20
+                """).fetchall()
+            conn.close()
+
+            calibration = {}
+            for r in rows:
+                prop_type, bucket, n, actual_rate, avg_predicted = r[0], r[1], r[2], r[3], r[4]
+                if bucket is None or actual_rate is None or avg_predicted is None:
+                    continue
+                # Dampen: don't fully trust — only apply 50% of the measured correction
+                correction = (actual_rate - avg_predicted) * 0.5
+                calibration[(prop_type, round(float(bucket), 2))] = round(correction, 4)
+            return calibration
+        except Exception as e:
+            print(f"[WARN] Could not load calibration: {e}")
+            return {}
 
     def __init__(self, sport: str = 'nhl'):
         self.sport = sport.upper()
@@ -272,6 +462,16 @@ class SmartPickSelector:
         predictions = self._get_predictions_with_params(game_date)
         print(f"[{self.sport}] Found {len(predictions)} predictions with lambda values")
 
+        # Load auxiliary signals (non-blocking — return empty dict on failure)
+        movements = self._load_line_movements(game_date)
+        calibration = self._load_calibration()
+
+        # Build lookup: (player_lower, prop_type) → standard line, for σ-distance
+        standard_lines_by_player = {
+            (r['player_name'].lower(), r['prop_type']): r['line']
+            for r in pp_lines if r['odds_type'] == 'standard'
+        }
+
         # Build lookup by player + prop.
         # Sort each group by probability descending so [0] is always the most
         # confident prediction. This prevents probability inversion when multiple
@@ -332,9 +532,15 @@ class SmartPickSelector:
             prop_type = pp['prop_type']
 
             # Team verification - skip if player changed teams (trade, etc.)
-            # Normalize abbreviations first: NYK=NY, SAS=SA, NOP=NO, GSW=GS, UTA=UTAH
+            # Normalize abbreviations: NBA and NHL both have ESPN vs API mismatches
             _TEAM_ALIASES = {
+                # NBA
                 'NYK': 'NY', 'NOP': 'NO', 'SAS': 'SA', 'GSW': 'GS', 'UTAH': 'UTA',
+                # NHL (ESPN vs NHL API)
+                'NJD': 'NJ', 'NJ': 'NJD',
+                'SJS': 'SJ', 'SJ': 'SJS',
+                'LAK': 'LA', 'LA': 'LAK',
+                'TBL': 'TB', 'TB': 'TBL',
             }
             def _canonical(t):
                 t = t.upper()
@@ -358,6 +564,7 @@ class SmartPickSelector:
             recent_std = 1.0
 
             # Recalculate probability based on sport and prop type
+            std_dev = 1.0  # default; overridden per branch below
             if self.sport == 'NHL' and prop_type in ['points', 'goals', 'assists', 'pp_points']:
                 # NHL: Points-based props use Poisson distribution
                 lambda_param = pred.get('lambda_param')
@@ -366,11 +573,14 @@ class SmartPickSelector:
                 pp_prob_over = self.poisson_prob_over(lambda_param, pp['line'])
                 our_param = lambda_param
                 recent_avg = lambda_param
+                std_dev = math.sqrt(lambda_param)  # σ for Poisson = sqrt(λ)
                 # Baseline: use season average lambda if available
                 baseline_prob_over = self.poisson_prob_over(season_avg, pp['line']) if season_avg > 0 else pp_prob_over
             elif self.sport == 'NHL' and prop_type in ['hits', 'blocked_shots']:
                 # NHL: hits/blocked_shots use Normal distribution (same as shots)
-                mean_val = pred.get('mean_hits') or pred.get('mean_blocked') or pred.get('mean_shots')
+                # Try legacy keys first, then canonical f_l10_avg (written by statistical_predictions_v2)
+                mean_val = (pred.get('mean_hits') or pred.get('mean_blocked')
+                            or pred.get('mean_shots') or pred.get('sog_l10'))
                 std_dev = pred.get('std_dev') or 1.5
                 if mean_val is None or mean_val <= 0:
                     continue
@@ -405,6 +615,21 @@ class SmartPickSelector:
                 else:
                     baseline_prob_over = pp_prob_over
 
+            # Compute σ-distance for goblin/demon variants and apply quality gates
+            sigma_distance = 0.0
+            if pp['odds_type'] != 'standard' and std_dev > 0:
+                std_line = standard_lines_by_player.get((pp['player_name'].lower(), prop_type))
+                if not std_line:
+                    # No standard line exists for this player/prop — can't compute σ-distance
+                    # or verify the payout math, so skip entirely rather than guess.
+                    continue
+                sigma_distance = (pp['line'] - std_line) / std_dev
+                # Quality gates: skip junk variants
+                if pp['odds_type'] == 'goblin' and sigma_distance >= -0.3:
+                    continue  # Nearly same as standard but with 84%+ break-even — skip
+                if pp['odds_type'] == 'demon' and sigma_distance >= 1.5:
+                    continue  # Too far above standard to be achievable — skip
+
             matched += 1
 
             pp_prob_under = 1 - pp_prob_over
@@ -425,6 +650,11 @@ class SmartPickSelector:
                 probability = pp_prob_under
                 baseline_prob = baseline_prob_under
 
+            # Apply calibration correction (50%-damped; 0.0 if insufficient history)
+            bucket = round(round(probability / 0.05) * 0.05, 2)
+            calib_correction = calibration.get((prop_type, bucket), 0.0)
+            probability = max(0.45, min(0.95, probability + calib_correction))
+
             # Calculate ML adjustment (how much better/worse than naive baseline)
             ml_adjustment = (probability - baseline_prob) * 100
 
@@ -438,8 +668,8 @@ class SmartPickSelector:
             if prop_type == 'threes' and prediction == 'OVER':
                 continue
 
-            # Calculate edge
-            break_even = self.BREAK_EVEN.get(pp['odds_type'], 0.50)
+            # Dynamic break-even derived from σ-distance and PAYOUTS table
+            break_even = self.compute_break_even(pp['odds_type'], sigma_distance)
             edge = (probability - break_even) * 100
 
             # Filter by minimum edge only — edge already encodes break-even per odds_type.
@@ -447,6 +677,24 @@ class SmartPickSelector:
             # reject profitable demon picks (e.g. demon 52% is +7% edge = valid play).
             if edge < min_edge:
                 continue
+
+            # Line movement signal
+            move_info = movements.get((pp['player_name'].lower(), prop_type), {})
+            line_movement = move_info.get('line_movement', 0.0)
+            move_dir = move_info.get('direction', 'none')
+            movement_agrees = (
+                (prediction == 'OVER' and move_dir == 'up') or
+                (prediction == 'UNDER' and move_dir == 'down') or
+                move_dir == 'none'
+            )
+
+            # Rest / fatigue signal — extracted from features_json for both NBA and NHL
+            days_rest = 3
+            try:
+                fj = json.loads(pred.get('features_json') or '{}')
+                days_rest = int(fj.get('f_days_rest', 3))
+            except Exception:
+                pass
 
             # Create SmartPick - PP team is authoritative (handles recent trades)
             pick = SmartPick(
@@ -466,13 +714,29 @@ class SmartPickSelector:
                 season_avg=season_avg,
                 recent_avg=recent_avg,
                 baseline_prob=baseline_prob,
-                ml_adjustment=ml_adjustment
+                ml_adjustment=ml_adjustment,
+                sigma=std_dev,
+                sigma_distance=sigma_distance,
+                line_movement=line_movement,
+                movement_agrees=movement_agrees,
+                calibration_correction=calib_correction,
+                days_rest=days_rest,
             )
 
             smart_picks.append(pick)
 
         print(f"[{self.sport}] Matched {matched} PP lines to predictions")
         print(f"[{self.sport}] Found {len(smart_picks)} picks with edge >= {min_edge}%")
+
+        # Dedup: for each (player, prop, odds_type), keep only the highest-edge variant.
+        # This prevents multiple goblin or demon lines for the same player/prop from
+        # cluttering the picks — only the sweet-spot variant (best edge) survives.
+        best_by_key: Dict[tuple, SmartPick] = {}
+        for pick in smart_picks:
+            key = (pick.player_name.lower(), pick.prop_type, pick.pp_odds_type)
+            if key not in best_by_key or pick.edge > best_by_key[key].edge:
+                best_by_key[key] = pick
+        smart_picks = list(best_by_key.values())
 
         # Sort by edge descending
         smart_picks.sort(key=lambda x: x.edge, reverse=True)
@@ -574,16 +838,20 @@ class SmartPickSelector:
                 # NHL: Extract parameters from features_json
                 try:
                     features = json.loads(row['features_json'])
-                    # For points (Poisson)
-                    pred['lambda_param'] = features.get('lambda_param')
-                    # For shots (Normal)
-                    pred['mean_shots'] = features.get('mean_shots') or features.get('sog_l10')
-                    pred['std_dev'] = features.get('std_dev') or features.get('sog_std_l10')
-                    pred['sog_l10'] = features.get('sog_l10')
-                    pred['sog_std_l10'] = features.get('sog_std_l10')
+                    # For points (Poisson) — try legacy key then canonical
+                    pred['lambda_param'] = features.get('lambda_param') or features.get('f_lambda_param')
+                    # For shots / hits / blocked_shots (Normal) — try legacy then canonical
+                    pred['mean_shots'] = (features.get('mean_shots') or features.get('sog_l10')
+                                          or features.get('f_l10_avg'))
+                    pred['std_dev'] = (features.get('std_dev') or features.get('sog_std_l10')
+                                       or features.get('f_std_dev'))
+                    pred['sog_l10'] = features.get('sog_l10') or features.get('f_l10_avg')
+                    pred['sog_std_l10'] = features.get('sog_std_l10') or features.get('f_std_dev')
                     # Season averages for baseline comparison
-                    pred['f_season_avg'] = features.get('season_avg') or features.get('pts_l20') or features.get('sog_season')
-                    pred['f_season_std'] = features.get('season_std') or features.get('sog_std_season') or 1.0
+                    pred['f_season_avg'] = (features.get('season_avg') or features.get('pts_l20')
+                                            or features.get('sog_season') or features.get('f_season_avg'))
+                    pred['f_season_std'] = (features.get('season_std') or features.get('sog_std_season')
+                                            or features.get('f_season_std') or 1.0)
                 except:
                     pred['lambda_param'] = None
                     pred['mean_shots'] = None

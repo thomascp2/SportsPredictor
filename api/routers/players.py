@@ -269,6 +269,84 @@ async def player_history(
                 'outcome': r['outcome'],
             })
 
+        # Fetch most-recent model signal features per prop_type from predictions table
+        model_signals = {}
+        for prop in by_prop_type.keys():
+            if sport == 'nba':
+                cursor.execute("""
+                    SELECT
+                        f_season_success_rate, f_l10_success_rate, f_l5_success_rate,
+                        f_l3_success_rate, f_current_streak, f_trend_slope,
+                        f_season_avg, f_l10_avg, f_l5_avg, features_json
+                    FROM predictions
+                    WHERE LOWER(player_name) = LOWER(?) AND LOWER(prop_type) = LOWER(?)
+                    ORDER BY game_date DESC
+                    LIMIT 1
+                """, (actual_name, prop))
+            else:
+                # NHL stores all features in features_json
+                cursor.execute("""
+                    SELECT features_json
+                    FROM predictions
+                    WHERE LOWER(player_name) = LOWER(?) AND LOWER(prop_type) = LOWER(?)
+                    ORDER BY game_date DESC
+                    LIMIT 1
+                """, (actual_name, prop))
+
+            sig_row = cursor.fetchone()
+            if not sig_row:
+                continue
+
+            if sport == 'nba':
+                import json
+                opp_data = {}
+                try:
+                    raw = sig_row['features_json']
+                    if raw:
+                        fj = json.loads(raw)
+                        opp_key = f"opp_{prop}_defensive_rating"
+                        opp_trend_key = f"opp_{prop}_defensive_trend"
+                        opp_data = {
+                            'opp_defensive_rating': fj.get(opp_key),
+                            'opp_defensive_trend': fj.get(opp_trend_key),
+                        }
+                except Exception:
+                    pass
+
+                model_signals[prop] = {
+                    'season_success_rate': sig_row['f_season_success_rate'],
+                    'l10_success_rate': sig_row['f_l10_success_rate'],
+                    'l5_success_rate': sig_row['f_l5_success_rate'],
+                    'l3_success_rate': sig_row['f_l3_success_rate'],
+                    'current_streak': sig_row['f_current_streak'],
+                    'trend_slope': sig_row['f_trend_slope'],
+                    'season_avg': sig_row['f_season_avg'],
+                    'l10_avg': sig_row['f_l10_avg'],
+                    'l5_avg': sig_row['f_l5_avg'],
+                    **opp_data,
+                }
+            else:
+                import json
+                signals = {}
+                try:
+                    raw = sig_row['features_json']
+                    if raw:
+                        fj = json.loads(raw)
+                        signals = {
+                            'season_success_rate': fj.get('f_season_success_rate') or fj.get('season_success_rate'),
+                            'l10_success_rate': fj.get('f_l10_success_rate') or fj.get('l10_success_rate'),
+                            'l5_success_rate': fj.get('f_l5_success_rate') or fj.get('l5_success_rate'),
+                            'current_streak': fj.get('f_current_streak') or fj.get('current_streak'),
+                            'trend_slope': fj.get('f_trend_slope') or fj.get('trend_slope'),
+                            'season_avg': fj.get('f_season_avg') or fj.get('season_avg'),
+                            'l10_avg': fj.get('f_l10_avg') or fj.get('l10_avg'),
+                            'l5_avg': fj.get('f_l5_avg') or fj.get('l5_avg'),
+                        }
+                except Exception:
+                    pass
+                if signals:
+                    model_signals[prop] = signals
+
         return {
             "success": True,
             "player_name": row['player_name'],
@@ -280,6 +358,7 @@ async def player_history(
             },
             "by_prop_type": by_prop_type,
             "predictions": predictions,
+            "model_signals": model_signals,
         }
 
     finally:

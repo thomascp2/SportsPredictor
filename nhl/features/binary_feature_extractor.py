@@ -121,13 +121,55 @@ class BinaryFeatureExtractor:
         )
         features.update(opponent_features)  # Merge opponent features into main features dict
         
+        # REST / FATIGUE FEATURES
+        rest_features = self._get_rest_features(player_name, team, opponent, game_date)
+        features.update(rest_features)
+
         # VALIDATE TEMPORAL SAFETY
         is_safe, violation_date = self._validate_temporal_safety(games, game_date)
         if not is_safe:
             logger.error(f"TEMPORAL VIOLATION: Used data from {violation_date} >= {game_date}")
             raise ValueError("Data leakage detected!")
-            
+
         return features
+
+    def _get_rest_features(self, player_name: str, team: str, opponent: str, game_date: str) -> Dict[str, float]:
+        """
+        Compute days_rest for player and opponent from player_game_logs.
+        0 = back-to-back (played yesterday).
+        """
+        from datetime import date as _date
+        result = {'f_days_rest': 3.0, 'f_opp_days_rest': 3.0}
+        try:
+            cursor = self.conn.cursor()
+
+            # Player rest
+            cursor.execute("""
+                SELECT game_date FROM player_game_logs
+                WHERE LOWER(player_name) = LOWER(?) AND team = ? AND game_date < ?
+                ORDER BY game_date DESC LIMIT 1
+            """, (player_name, team, game_date))
+            row = cursor.fetchone()
+            if row:
+                last_game = _date.fromisoformat(row[0])
+                pred_date = _date.fromisoformat(game_date)
+                result['f_days_rest'] = float(max(0, (pred_date - last_game).days - 1))
+
+            # Opponent rest
+            if opponent:
+                cursor.execute("""
+                    SELECT game_date FROM player_game_logs
+                    WHERE team = ? AND game_date < ?
+                    ORDER BY game_date DESC LIMIT 1
+                """, (opponent, game_date))
+                opp_row = cursor.fetchone()
+                if opp_row:
+                    opp_last = _date.fromisoformat(opp_row[0])
+                    pred_date = _date.fromisoformat(game_date)
+                    result['f_opp_days_rest'] = float(max(0, (pred_date - opp_last).days - 1))
+        except Exception as e:
+            logger.warning(f"Could not compute rest features: {e}")
+        return result
         
     def _get_player_history(self, 
                            player_name: str, 

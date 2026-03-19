@@ -10,6 +10,20 @@ const api = axios.create({
 });
 
 // Types
+export interface ModelSignals {
+  season_success_rate?: number;  // % of all games that went OVER the line this season
+  l10_success_rate?: number;     // Hit rate over last 10 games
+  l5_success_rate?: number;      // Hit rate over last 5 games
+  l3_success_rate?: number;      // Hit rate over last 3 games
+  current_streak?: number;       // Positive = consecutive OVERs, negative = consecutive UNDERs
+  trend_slope?: number;          // Linear regression slope on last 10 games (positive = improving)
+  season_avg?: number;           // Season average stat value
+  l10_avg?: number;              // Average stat value over last 10 games
+  l5_avg?: number;               // Average stat value over last 5 games
+  opp_defensive_rating?: number; // How many of this stat the opponent allows (higher = weaker defense)
+  opp_defensive_trend?: number;  // Opponent defense trend (positive = getting worse = easier matchup)
+}
+
 export interface SmartPick {
   player_name: string;
   team: string;
@@ -29,13 +43,24 @@ export interface SmartPick {
   ev_4leg: number;
   ev_5leg: number;
   ev_6leg: number;
-  // New fields for game time
+  // Game time fields
   game_time?: string;
   game_time_utc?: string;
   has_started?: boolean;
   game_state?: string;
   matchup?: string;
   venue?: string;
+  // ML signal fields
+  season_avg?: number;      // Season average stat value
+  recent_avg?: number;      // Recent form average (L10 or L5)
+  ml_adjustment?: number;   // % difference between ML probability and naive baseline (positive = ML likes it more)
+  // Profitability enhancement fields
+  sigma_distance?: number;          // (variant_line - standard_line) / σ; 0 for standard lines
+  parlay_score?: number;            // Probability adjusted for player consistency (lower CoV = better leg)
+  line_movement?: number;           // Standard line change today (+ = moved up, - = moved down)
+  movement_agrees?: boolean;        // True if our prediction direction agrees with line movement
+  calibration_correction?: number;  // Historical calibration adjustment applied to probability (%)
+  days_rest?: number;               // Player's days since last game (0 = back-to-back)
 }
 
 export interface GameGroup {
@@ -131,6 +156,7 @@ export interface PlayerHistory {
     actual_value?: number;
     outcome?: string;
   }>;
+  model_signals?: Record<string, ModelSignals>;  // keyed by prop_type
   message?: string;
 }
 
