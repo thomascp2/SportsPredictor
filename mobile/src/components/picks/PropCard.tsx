@@ -76,7 +76,7 @@ export function PropCard({ prop, userPick, onPick, showAI = false, onUnlockAI }:
         />
       )}
 
-      {/* Pick Buttons */}
+      {/* Pick Buttons — goblin/demon only allow OVER on PP */}
       <View style={styles.buttons}>
         <PickButton
           type="OVER"
@@ -85,14 +85,18 @@ export function PropCard({ prop, userPick, onPick, showAI = false, onUnlockAI }:
           result={userPick?.prediction === 'OVER' ? userPick.outcome : null}
           onPress={() => onPick(prop.id, 'OVER')}
         />
-        <View style={styles.buttonGap} />
-        <PickButton
-          type="UNDER"
-          selected={userPick?.prediction === 'UNDER'}
-          disabled={isLocked || (!!userPick && userPick.prediction !== 'UNDER')}
-          result={userPick?.prediction === 'UNDER' ? userPick.outcome : null}
-          onPress={() => onPick(prop.id, 'UNDER')}
-        />
+        {prop.odds_type === 'standard' && (
+          <>
+            <View style={styles.buttonGap} />
+            <PickButton
+              type="UNDER"
+              selected={userPick?.prediction === 'UNDER'}
+              disabled={isLocked || (!!userPick && userPick.prediction !== 'UNDER')}
+              result={userPick?.prediction === 'UNDER' ? userPick.outcome : null}
+              onPress={() => onPick(prop.id, 'UNDER')}
+            />
+          </>
+        )}
       </View>
 
       {/* Community consensus bar */}

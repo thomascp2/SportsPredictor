@@ -659,7 +659,9 @@ class SportsOrchestrator:
             self.send_grading_notification(yesterday, details)
 
             # Sync grading results to Supabase + trigger user pick grading
-            if success and SUPABASE_SYNC_AVAILABLE:
+            # Run sync even if grading had non-fatal errors — partial results are
+            # better than no results in Supabase.
+            if SUPABASE_SYNC_AVAILABLE:
                 try:
                     print(f"\n[SYNC] Syncing grading results to Supabase...")
                     syncer = SupabaseSync()
@@ -669,10 +671,22 @@ class SportsOrchestrator:
                         'grading': grading_sync,
                         'user_grading': user_grading,
                     }
-                    print(f"[SYNC] Grading sync complete: {grading_sync.get('synced', 0)} results")
+                    synced_count = grading_sync.get('synced', 0)
+                    print(f"[SYNC] Grading sync complete: {synced_count} results")
+                    if synced_count == 0:
+                        self._send_discord_alert(
+                            f"{self.config.emoji} GRADING SYNC WARNING {yesterday}",
+                            f"Grading ran but **0 results synced to Supabase**.\n"
+                            f"Mobile app will show stale data. Check sync logs."
+                        )
                 except Exception as e:
                     warnings.append(f"Supabase grading sync failed: {str(e)}")
                     print(f"[SYNC ERROR] {e}")
+                    self._send_discord_alert(
+                        f"{self.config.emoji} GRADING SYNC FAILED {yesterday}",
+                        f"Supabase sync threw an exception after grading:\n`{str(e)[:300]}`\n"
+                        f"Mobile app will show stale/ungraded data."
+                    )
 
             return PipelineResult(
                 success=success,

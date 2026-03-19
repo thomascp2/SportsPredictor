@@ -636,7 +636,7 @@ class ESPNNBAApi:
         
         # Parse all statistics
         fgm, fga = parse_made_attempted(['FGM-FGA', 'FG', 'Field Goals', 'fieldGoals', 'FGM/FGA'])
-        fg3m, fg3a = parse_made_attempted(['3PM-3PA', '3P', 'Three Pointers', '3FG', 'threePointers', '3PM/3PA'])
+        fg3m, fg3a = parse_made_attempted(['3PM-3PA', '3PT', '3P', 'Three Pointers', '3FG', 'threePointers', '3PM/3PA'])
         ftm, fta = parse_made_attempted(['FTM-FTA', 'FT', 'Free Throws', 'freeThrows', 'FTM/FTA'])
         
         return {

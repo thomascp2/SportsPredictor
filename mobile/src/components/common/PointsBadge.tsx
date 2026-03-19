@@ -1,11 +1,5 @@
-import React, { useEffect } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withSpring,
-  withSequence,
-} from 'react-native-reanimated';
+import React, { useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, Animated } from 'react-native';
 
 interface PointsBadgeProps {
   points: number;
@@ -13,19 +7,16 @@ interface PointsBadgeProps {
 }
 
 export function PointsBadge({ points, compact = false }: PointsBadgeProps) {
-  const scale = useSharedValue(1);
+  const scale = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    // Bounce animation when points change
-    scale.value = withSequence(
-      withSpring(1.2, { damping: 8, stiffness: 200 }),
-      withSpring(1, { damping: 12, stiffness: 180 })
-    );
-  }, [points, scale]);
+    Animated.sequence([
+      Animated.spring(scale, { toValue: 1.2, damping: 8, stiffness: 200, useNativeDriver: true }),
+      Animated.spring(scale, { toValue: 1, damping: 12, stiffness: 180, useNativeDriver: true }),
+    ]).start();
+  }, [points]);
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-  }));
+  const animatedStyle = { transform: [{ scale }] };
 
   if (compact) {
     return (

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { API_BASE_URL } from '../utils/constants';
+import { supabase } from './supabase';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -253,12 +254,163 @@ export async function searchPlayers(
 
 export async function fetchPlayerHistory(
   playerName: string,
-  sport?: string
+  sport?: string,
+  ppLine?: number,
 ): Promise<PlayerHistory> {
-  const response = await api.get<PlayerHistory>(`/players/${encodeURIComponent(playerName)}/history`, {
-    params: { sport },
+  const sportUpper = (sport ?? 'NBA').toUpperCase();
+
+  // 90-day window — enough for ~25 game dates per player
+  const since = new Date();
+  since.setDate(since.getDate() - 90);
+  const sinceStr = `${since.getFullYear()}-${String(since.getMonth()+1).padStart(2,'0')}-${String(since.getDate()).padStart(2,'0')}`;
+
+  let query = supabase
+    .from('daily_props')
+    .select('game_date,prop_type,line,odds_type,ai_prediction,actual_value,opponent')
+    .eq('player_name', playerName)
+    .eq('sport', sportUpper)
+    .gte('game_date', sinceStr)
+    .order('game_date', { ascending: false })
+    .limit(500);
+
+  // Filter to lines within ±8 of today's PP line to exclude junk model lines (e.g. U40.5 for bench players)
+  // Fall back to is_smart_pick filter when line is unknown
+  if (ppLine != null) {
+    query = query.gte('line', ppLine - 8).lte('line', ppLine + 8);
+  } else {
+    query = query.eq('is_smart_pick', true);
+  }
+
+  const { data, error } = await query;
+
+  if (error) throw error;
+
+  const rows = data || [];
+
+  // Deduplicate: one entry per (game_date, prop_type) — actual_value is the same
+  // across all line variants for the same game, so we prefer graded rows.
+  const ODDS_RANK: Record<string, number> = { standard: 0, goblin: 1, demon: 2 };
+
+  const seen = new Map<string, typeof rows[0]>();
+  for (const row of rows) {
+    const key = `${row.game_date}|${row.prop_type}`;
+    const existing = seen.get(key);
+    if (!existing) {
+      seen.set(key, row);
+    } else {
+      // Prefer: graded > ungraded, then standard > goblin > demon
+      const existingGraded = existing.actual_value != null;
+      const rowGraded = row.actual_value != null;
+      if (rowGraded && !existingGraded) {
+        seen.set(key, row);
+      } else if (existingGraded === rowGraded) {
+        const existingRank = ODDS_RANK[existing.odds_type ?? 'standard'] ?? 0;
+        const rowRank = ODDS_RANK[row.odds_type ?? 'standard'] ?? 0;
+        if (rowRank < existingRank) seen.set(key, row);
+      }
+    }
+  }
+  const deduped = [...seen.values()].sort((a, b) =>
+    b.game_date.localeCompare(a.game_date)
+  );
+
+  // Build predictions array
+  const predictions = deduped.map((row) => {
+    // Always compute from actual_value + ai_prediction — the stored `result` column
+    // reflects the model's original prediction direction, which may differ from the
+    // ai_prediction stored in daily_props (set by smart pick selector). Computing
+    // directly avoids showing inverted outcomes.
+    let outcome: string | undefined;
+    if (row.actual_value != null && row.ai_prediction) {
+      outcome = (row.ai_prediction === 'OVER' ? row.actual_value > row.line : row.actual_value < row.line)
+        ? 'HIT' : 'MISS';
+    }
+    return {
+      date: row.game_date,
+      prop_type: row.prop_type,
+      line: row.line,
+      prediction: row.ai_prediction,
+      actual_value: row.actual_value,
+      outcome,
+    };
   });
-  return response.data;
+
+  const graded = predictions.filter((p) => p.outcome);
+  const hits = graded.filter((p) => p.outcome === 'HIT').length;
+
+  // by_prop_type accuracy
+  const by_prop_type: Record<string, { accuracy: number; total: number; hits: number }> = {};
+  for (const p of graded) {
+    const pt = p.prop_type;
+    if (!by_prop_type[pt]) by_prop_type[pt] = { accuracy: 0, total: 0, hits: 0 };
+    by_prop_type[pt].total++;
+    if (p.outcome === 'HIT') by_prop_type[pt].hits++;
+  }
+  for (const pt of Object.keys(by_prop_type)) {
+    const s = by_prop_type[pt];
+    s.accuracy = s.total > 0 ? (s.hits / s.total) * 100 : 0;
+  }
+
+  // model_signals per prop_type
+  const model_signals: Record<string, ModelSignals> = {};
+  const propTypes = [...new Set(graded.map((p) => p.prop_type))];
+
+  for (const pt of propTypes) {
+    const ptRows = graded.filter((p) => p.prop_type === pt);
+    const l5 = ptRows.slice(0, 5);
+    const l10 = ptRows.slice(0, 10);
+
+    const avg = (arr: typeof ptRows) =>
+      arr.length > 0 ? arr.reduce((s, p) => s + (p.actual_value ?? 0), 0) / arr.length : undefined;
+
+    // Streak: consecutive HITs (positive) or MISSes (negative)
+    let streak = 0;
+    if (ptRows.length > 0) {
+      const dir = ptRows[0].outcome;
+      for (const p of ptRows) {
+        if (p.outcome === dir) streak += dir === 'HIT' ? 1 : -1;
+        else break;
+      }
+    }
+
+    // Linear regression slope on last 10 actual values (oldest→newest)
+    let trendSlope: number | undefined;
+    const trendData = l10.filter((p) => p.actual_value != null).reverse();
+    if (trendData.length >= 3) {
+      const n = trendData.length;
+      const ys = trendData.map((p) => p.actual_value!);
+      const xMean = (n - 1) / 2;
+      const yMean = ys.reduce((a, b) => a + b, 0) / n;
+      const num = ys.reduce((s, y, i) => s + (i - xMean) * (y - yMean), 0);
+      const den = ys.reduce((s, _, i) => s + (i - xMean) ** 2, 0);
+      trendSlope = den > 0 ? num / den : 0;
+    }
+
+    model_signals[pt] = {
+      l5_success_rate: l5.length > 0 ? l5.filter((p) => p.outcome === 'HIT').length / l5.length : undefined,
+      l10_success_rate: l10.length > 0 ? l10.filter((p) => p.outcome === 'HIT').length / l10.length : undefined,
+      season_success_rate: ptRows.length > 0 ? ptRows.filter((p) => p.outcome === 'HIT').length / ptRows.length : undefined,
+      l5_avg: avg(l5),
+      l10_avg: avg(l10),
+      season_avg: avg(ptRows),
+      current_streak: streak || undefined,
+      trend_slope: trendSlope,
+    };
+  }
+
+  return {
+    player_name: playerName,
+    sport: sportUpper,
+    success: true,
+    overall: {
+      total_predictions: graded.length,
+      accuracy: graded.length > 0 ? (hits / graded.length) * 100 : 0,
+      hits,
+    },
+    by_prop_type,
+    predictions,
+    model_signals,
+  };
 }
 
 export async function calculateParlay(

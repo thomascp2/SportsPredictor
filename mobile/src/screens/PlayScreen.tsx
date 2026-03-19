@@ -7,11 +7,13 @@ import {
   RefreshControl,
   ActivityIndicator,
   Alert,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFreePicks } from '../hooks/useFreePicks';
 import { useWatchlistStore } from '../store/watchlistStore';
 import { PropCard } from '../components/picks/PropCard';
+import { PlayerCardModal } from '../components/picks/PlayerCardModal';
 import { PointsBadge } from '../components/common/PointsBadge';
 import { StreakBadge } from '../components/common/StreakBadge';
 import { WatchlistStrip } from '../components/watchlist/WatchlistStrip';
@@ -35,6 +37,7 @@ export function PlayScreen() {
 
   const { items: watchlistItems } = useWatchlistStore();
   const [watchlistFilter, setWatchlistFilter] = useState<string | null>(null);
+  const [selectedProp, setSelectedProp] = useState<DailyProp | null>(null);
 
   const filteredProps = watchlistFilter
     ? props.filter(p => p.player_name === watchlistFilter)
@@ -53,12 +56,14 @@ export function PlayScreen() {
   }, [isAuthenticated, makePick]);
 
   const renderProp = useCallback(({ item }: { item: DailyProp }) => (
-    <PropCard
-      prop={item}
-      userPick={userPicks[item.id]}
-      onPick={handlePick}
-      showAI={profile?.premium || false}
-    />
+    <Pressable onPress={() => setSelectedProp(item)}>
+      <PropCard
+        prop={item}
+        userPick={userPicks[item.id]}
+        onPick={handlePick}
+        showAI={profile?.premium || __DEV__}
+      />
+    </Pressable>
   ), [userPicks, handlePick, profile?.premium]);
 
   return (
@@ -127,6 +132,15 @@ export function PlayScreen() {
           }
         />
       )}
+
+      <PlayerCardModal
+        visible={!!selectedProp}
+        playerName={selectedProp?.player_name ?? ''}
+        sport={sport}
+        propType={selectedProp?.prop_type}
+        ppLine={selectedProp?.line}
+        onClose={() => setSelectedProp(null)}
+      />
     </SafeAreaView>
   );
 }

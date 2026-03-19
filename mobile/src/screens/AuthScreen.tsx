@@ -10,7 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuthStore } from '../store/authStore';
 
 export function AuthScreen() {
-  const { signInWithGoogle, signInWithApple, signInWithDiscord, loading } = useAuthStore();
+  const { signInWithGoogle, signInWithApple, signInWithDiscord, devSignIn, loading } = useAuthStore();
 
   return (
     <SafeAreaView style={styles.container}>
@@ -73,6 +73,13 @@ export function AuthScreen() {
             </>
           )}
         </View>
+
+        {/* Dev bypass — only visible in Expo Go / development */}
+        {__DEV__ && (
+          <Pressable style={styles.devButton} onPress={devSignIn}>
+            <Text style={styles.devButtonText}>Dev Mode — Skip Login</Text>
+          </Pressable>
+        )}
 
         {/* Footer */}
         <Text style={styles.disclaimer}>
@@ -176,5 +183,19 @@ const styles = StyleSheet.create({
     fontSize: 11,
     textAlign: 'center',
     lineHeight: 18,
+  },
+  devButton: {
+    marginBottom: 16,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#444',
+    borderRadius: 8,
+    borderStyle: 'dashed',
+  },
+  devButtonText: {
+    color: '#555',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
