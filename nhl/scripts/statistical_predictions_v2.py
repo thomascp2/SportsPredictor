@@ -154,7 +154,18 @@ class StatisticalPredictionEngine:
         
         # Adjust based on recent success rate
         prob_over = (prob_over * 0.7) + (success_rate * 0.3)
-        
+
+        # B2B / rest fatigue adjustment
+        days_rest = features.get('f_days_rest', 3)
+        opp_days_rest = features.get('f_opp_days_rest', 3)
+        if days_rest == 0:
+            prob_over -= 0.025  # Player on B2B — underperformance expected
+        elif days_rest >= 4:
+            prob_over += 0.010  # Well-rested — slight boost
+        if opp_days_rest == 0:
+            prob_over += 0.015  # Opponent on B2B — easier matchup
+        prob_over = max(0.0, min(1.0, prob_over))
+
         # Apply learning mode caps
         prob_over = max(self.min_prob, min(self.max_prob, prob_over))
         
@@ -170,34 +181,36 @@ class StatisticalPredictionEngine:
         # Assign confidence tier (based on confidence in prediction)
         confidence_tier = self._assign_confidence_tier(confidence_prob)
         
-        # Include ALL features from extractor, including opponent features
+        # Include ALL features from extractor, including opponent features.
+        # Keys use the canonical f_ prefix schema shared with NBA for ML consistency.
         features_for_ml = {
-            # Player features (12)
-            'success_rate_season': features.get('success_rate_season', 0.35),
-            'success_rate_l20': features.get('success_rate_l20', 0.35),
-            'success_rate_l10': features.get('success_rate_l10', 0.35),
-            'success_rate_l5': features.get('success_rate_l5', 0.35),
-            'success_rate_l3': features.get('success_rate_l3', 0.35),
-            'current_streak': features.get('current_streak', 0),
-            'max_hot_streak': features.get('max_hot_streak', 0),
-            'recent_momentum': features.get('recent_momentum', 0.35),
-            'games_played': features.get('games_played', 0),
-            'is_home': int(is_home),
-            'line': line,  # NEW: Include the line being predicted
-            'lambda_param': lambda_param,
-            'poisson_prob': prob_over,  # Store the calculated probability
-            
-            # Opponent defensive features (5)
-            'opp_points_allowed_l10': features.get('opp_points_allowed_l10', 0.65),
-            'opp_points_allowed_l5': features.get('opp_points_allowed_l5', 0.65),
-            'opp_scoring_pct_allowed': features.get('opp_scoring_pct_allowed', 0.35),
-            'opp_points_std': features.get('opp_points_std', 0.5),
-            'opp_defensive_trend': features.get('opp_defensive_trend', 0.0),
-            
-            # Reference
-            'prob_over': prob_over,
+            # Player binary features (12) — canonical names
+            'f_season_success_rate': features.get('success_rate_season', 0.35),
+            'f_l20_success_rate': features.get('success_rate_l20', 0.35),
+            'f_l10_success_rate': features.get('success_rate_l10', 0.35),
+            'f_l5_success_rate': features.get('success_rate_l5', 0.35),
+            'f_l3_success_rate': features.get('success_rate_l3', 0.35),
+            'f_current_streak': features.get('current_streak', 0),
+            'f_max_streak': features.get('max_hot_streak', 0),
+            'f_recent_momentum': features.get('recent_momentum', 0.35),
+            'f_games_played': features.get('games_played', 0),
+            'f_is_home': int(is_home),
+            'f_line': line,
+            'f_lambda_param': lambda_param,
+            'f_prob_over': prob_over,
+
+            # Opponent defensive features (5) — canonical names
+            'f_opp_allowed_l10': features.get('opp_points_allowed_l10', 0.65),
+            'f_opp_allowed_l5': features.get('opp_points_allowed_l5', 0.65),
+            'f_opp_scoring_pct_allowed': features.get('opp_scoring_pct_allowed', 0.35),
+            'f_opp_std': features.get('opp_points_std', 0.5),
+            'f_opp_defensive_trend': features.get('opp_defensive_trend', 0.0),
+
+            # Rest features (already canonical)
+            'f_days_rest': features.get('f_days_rest', 3),
+            'f_opp_days_rest': features.get('f_opp_days_rest', 3),
         }
-        
+
         # Build prediction dict
         prediction_data = {
             'game_date': game_date,
@@ -263,13 +276,24 @@ class StatisticalPredictionEngine:
         
         # P(X > line) = 1 - CDF(z_score)
         prob_over = 0.5 * (1 - self._erf(z_score / math.sqrt(2)))
-        
+
+        # B2B / rest fatigue adjustment
+        days_rest = features.get('f_days_rest', 3)
+        opp_days_rest = features.get('f_opp_days_rest', 3)
+        if days_rest == 0:
+            prob_over -= 0.025
+        elif days_rest >= 4:
+            prob_over += 0.010
+        if opp_days_rest == 0:
+            prob_over += 0.015
+        prob_over = max(0.0, min(1.0, prob_over))
+
         # Apply learning mode caps
         prob_over = max(self.min_prob, min(self.max_prob, prob_over))
-        
+
         # Determine prediction
         prediction = 'OVER' if prob_over > 0.5 else 'UNDER'
-        
+
         # Store probability as confidence in the prediction
         if prediction == 'OVER':
             confidence_prob = prob_over
@@ -279,34 +303,37 @@ class StatisticalPredictionEngine:
         # Assign confidence tier
         confidence_tier = self._assign_confidence_tier(confidence_prob)
         
-        # Include ALL features from extractor, including opponent features
+        # Include ALL features from extractor, including opponent features.
+        # Keys use the canonical f_ prefix schema shared with NBA for ML consistency.
         features_for_ml = {
-            # Player features (13)
-            'sog_season': features.get('sog_season', 2.5),
-            'sog_l10': features.get('sog_l10', 2.5),
-            'sog_l5': features.get('sog_l5', 2.5),
-            'sog_std_season': features.get('sog_std_season', 1.2),
-            'sog_std_l10': features.get('sog_std_l10', 1.2),
-            'sog_trend': features.get('sog_trend', 0.0),
-            'avg_toi_minutes': features.get('avg_toi_minutes', 15.0),
-            'games_played': features.get('games_played', 0),
-            'is_home': int(is_home),
-            'line': line,
-            'mean_shots': mean_shots,
-            'std_dev': std_dev,
-            'z_score': z_score,
-            
-            # Opponent defensive features (5)
-            'opp_shots_allowed_l10': features.get('opp_shots_allowed_l10', 2.5),
-            'opp_shots_allowed_l5': features.get('opp_shots_allowed_l5', 2.5),
-            'opp_shots_std': features.get('opp_shots_std', 1.2),
-            'opp_shots_trend': features.get('opp_shots_trend', 0.0),
-            'opp_defensive_consistency': features.get('opp_defensive_consistency', 1.2),
-            
-            # Reference
-            'prob_over': prob_over,
+            # Player continuous features (13) — canonical names
+            'f_season_avg': features.get('sog_season', 2.5),
+            'f_l10_avg': features.get('sog_l10', 2.5),
+            'f_l5_avg': features.get('sog_l5', 2.5),
+            'f_season_std': features.get('sog_std_season', 1.2),
+            'f_l10_std': features.get('sog_std_l10', 1.2),
+            'f_trend_slope': features.get('sog_trend', 0.0),
+            'f_avg_minutes': features.get('avg_toi_minutes', 15.0),
+            'f_games_played': features.get('games_played', 0),
+            'f_is_home': int(is_home),
+            'f_line': line,
+            'f_expected_value': mean_shots,
+            'f_std_dev': std_dev,
+            'f_z_score': z_score,
+
+            # Opponent defensive features (5) — canonical names
+            'f_opp_allowed_l10': features.get('opp_shots_allowed_l10', 2.5),
+            'f_opp_allowed_l5': features.get('opp_shots_allowed_l5', 2.5),
+            'f_opp_std': features.get('opp_shots_std', 1.2),
+            'f_opp_defensive_trend': features.get('opp_shots_trend', 0.0),
+            'f_opp_defensive_consistency': features.get('opp_defensive_consistency', 1.2),
+
+            # Rest features (already canonical)
+            'f_prob_over': prob_over,
+            'f_days_rest': features.get('f_days_rest', 3),
+            'f_opp_days_rest': features.get('f_opp_days_rest', 3),
         }
-        
+
         # Build prediction dict
         prediction_data = {
             'game_date': game_date,
@@ -400,32 +427,68 @@ class StatisticalPredictionEngine:
             den = sum((xi - x_mean) ** 2 for xi in x) or 1
             trend = num / den
 
+        # Rest / fatigue (query once for all lines)
+        days_rest = 3
+        opp_days_rest = 3
+        try:
+            from datetime import date as _date
+            cursor.execute("""
+                SELECT game_date FROM player_game_logs
+                WHERE player_name = ? AND team = ? AND game_date < ?
+                ORDER BY game_date DESC LIMIT 1
+            """, (player, team, cutoff_date))
+            r = cursor.fetchone()
+            if r:
+                days_rest = max(0, (_date.fromisoformat(game_date) - _date.fromisoformat(r[0])).days - 1)
+            cursor.execute("""
+                SELECT game_date FROM player_game_logs
+                WHERE team = ? AND game_date < ?
+                ORDER BY game_date DESC LIMIT 1
+            """, (opponent, cutoff_date))
+            r = cursor.fetchone()
+            if r:
+                opp_days_rest = max(0, (_date.fromisoformat(game_date) - _date.fromisoformat(r[0])).days - 1)
+        except Exception:
+            pass
+
         results = []
         for line in lines:
             z_score = (line - mean_l10) / std_l10 if std_l10 > 0 else 0
             prob_over = 0.5 * (1 - self._erf(z_score / math.sqrt(2)))
+
+            # B2B / rest fatigue adjustment
+            if days_rest == 0:
+                prob_over -= 0.025
+            elif days_rest >= 4:
+                prob_over += 0.010
+            if opp_days_rest == 0:
+                prob_over += 0.015
+            prob_over = max(0.0, min(1.0, prob_over))
+
             prob_over = max(self.min_prob, min(self.max_prob, prob_over))
 
             prediction = 'OVER' if prob_over > 0.5 else 'UNDER'
             confidence_prob = prob_over if prediction == 'OVER' else 1 - prob_over
             confidence_tier = self._assign_confidence_tier(confidence_prob)
 
+            # Canonical f_ prefix schema shared with NBA for ML consistency.
+            # prop_type stored separately in prediction_data so we don't need it in features.
             features_for_ml = {
-                f'{prop_type}_season': mean_season,
-                f'{prop_type}_l10': mean_l10,
-                f'{prop_type}_l5': mean_l5,
-                f'{prop_type}_std_l10': std_l10,
-                f'{prop_type}_trend': trend,
-                'avg_toi_minutes': avg_toi_minutes,
-                'games_played': float(len(values)),
-                'is_home': int(is_home),
-                'line': line,
-                'mean_val': mean_l10,
-                'mean_hits': mean_l10,    # alias used by smart_pick_selector
-                'mean_blocked': mean_l10,  # alias used by smart_pick_selector
-                'std_dev': std_l10,
-                'z_score': z_score,
-                'prob_over': prob_over,
+                'f_season_avg': mean_season,
+                'f_l10_avg': mean_l10,
+                'f_l5_avg': mean_l5,
+                'f_l10_std': std_l10,
+                'f_trend_slope': trend,
+                'f_avg_minutes': avg_toi_minutes,
+                'f_games_played': float(len(values)),
+                'f_is_home': int(is_home),
+                'f_line': line,
+                'f_expected_value': mean_l10,
+                'f_std_dev': std_l10,
+                'f_z_score': z_score,
+                'f_prob_over': prob_over,
+                'f_days_rest': days_rest,
+                'f_opp_days_rest': opp_days_rest,
             }
 
             prediction_data = {

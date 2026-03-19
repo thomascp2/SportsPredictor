@@ -10,7 +10,7 @@ import {
   Dimensions,
 } from 'react-native';
 import { LineChart } from 'react-native-chart-kit';
-import { fetchPlayerHistory, PlayerHistory, SmartPick } from '../../services/api';
+import { fetchPlayerHistory, PlayerHistory, SmartPick, ModelSignals } from '../../services/api';
 import { TIER_COLORS } from '../../utils/constants';
 
 const screenWidth = Dimensions.get('window').width;
@@ -144,6 +144,75 @@ export function PlayerCardModal({
 
   const getTierColor = (tier: string) => {
     return TIER_COLORS[tier] || '#888';
+  };
+
+  // Merge model signals from two sources: history (per prop_type) and currentPick (ML averages)
+  const modelSignals: ModelSignals | null = useMemo(() => {
+    const fromHistory = propType && history?.model_signals
+      ? history.model_signals[propType] ?? history.model_signals[propType.toLowerCase()] ?? null
+      : null;
+
+    const fromPick: Partial<ModelSignals> = currentPick
+      ? {
+          season_avg: currentPick.season_avg,
+          l10_avg: currentPick.recent_avg,
+        }
+      : {};
+
+    if (!fromHistory && !currentPick) return null;
+    return { ...fromPick, ...fromHistory };
+  }, [history, currentPick, propType]);
+
+  const formatRate = (rate?: number) => {
+    if (rate == null) return '-';
+    // Stored as 0-1 fraction
+    return `${(rate * 100).toFixed(0)}%`;
+  };
+
+  const formatAvg = (avg?: number) => {
+    if (avg == null || avg === 0) return '-';
+    return avg % 1 === 0 ? avg.toFixed(0) : avg.toFixed(1);
+  };
+
+  const formatStreak = (streak?: number) => {
+    if (streak == null || streak === 0) return '-';
+    return streak > 0 ? `+${streak} OVER` : `${streak} UNDER`;
+  };
+
+  const getStreakColor = (streak?: number) => {
+    if (!streak) return '#888';
+    return streak > 0 ? '#4CAF50' : '#F44336';
+  };
+
+  const formatTrend = (slope?: number) => {
+    if (slope == null) return '-';
+    if (slope > 0.5) return 'Rising';
+    if (slope < -0.5) return 'Falling';
+    return 'Flat';
+  };
+
+  const getTrendColor = (slope?: number) => {
+    if (slope == null) return '#888';
+    if (slope > 0.5) return '#4CAF50';
+    if (slope < -0.5) return '#F44336';
+    return '#FFC107';
+  };
+
+  const formatMatchup = (rating?: number, ppLine?: number) => {
+    if (rating == null || ppLine == null) return '-';
+    // rating = avg stat the opponent allows; compare to the PP line as rough proxy
+    const diff = rating - ppLine;
+    if (diff > 2) return 'Weak DEF';
+    if (diff < -2) return 'Strong DEF';
+    return 'Avg DEF';
+  };
+
+  const getMatchupColor = (rating?: number, ppLine?: number) => {
+    if (rating == null || ppLine == null) return '#888';
+    const diff = rating - ppLine;
+    if (diff > 2) return '#4CAF50';   // Weak defense = good for OVER
+    if (diff < -2) return '#F44336';  // Strong defense = bad for OVER
+    return '#FFC107';
   };
 
   return (
@@ -282,6 +351,125 @@ export function PlayerCardModal({
                     segments={4}
                     formatYLabel={(value) => Math.round(parseFloat(value)).toString()}
                   />
+                </View>
+              )}
+
+              {/* Model Signals Section */}
+              {modelSignals && propType && (
+                <View style={styles.signalsContainer}>
+                  <Text style={styles.sectionTitle}>Model Signals</Text>
+
+                  {/* Row 1: Hit rates */}
+                  <View style={styles.signalRow}>
+                    <View style={styles.signalTile}>
+                      <Text style={styles.signalValue}>{formatRate(modelSignals.l5_success_rate)}</Text>
+                      <Text style={styles.signalLabel}>L5 Hit Rate</Text>
+                    </View>
+                    <View style={styles.signalTile}>
+                      <Text style={styles.signalValue}>{formatRate(modelSignals.l10_success_rate)}</Text>
+                      <Text style={styles.signalLabel}>L10 Hit Rate</Text>
+                    </View>
+                    <View style={styles.signalTile}>
+                      <Text style={styles.signalValue}>{formatRate(modelSignals.season_success_rate)}</Text>
+                      <Text style={styles.signalLabel}>Season Rate</Text>
+                    </View>
+                  </View>
+
+                  {/* Row 2: Averages */}
+                  <View style={styles.signalRow}>
+                    <View style={styles.signalTile}>
+                      <Text style={styles.signalValue}>{formatAvg(modelSignals.l5_avg)}</Text>
+                      <Text style={styles.signalLabel}>L5 Avg</Text>
+                    </View>
+                    <View style={styles.signalTile}>
+                      <Text style={styles.signalValue}>{formatAvg(modelSignals.l10_avg)}</Text>
+                      <Text style={styles.signalLabel}>L10 Avg</Text>
+                    </View>
+                    <View style={styles.signalTile}>
+                      <Text style={styles.signalValue}>{formatAvg(modelSignals.season_avg)}</Text>
+                      <Text style={styles.signalLabel}>Season Avg</Text>
+                    </View>
+                  </View>
+
+                  {/* Row 3: Streak, Trend, Matchup */}
+                  <View style={styles.signalRow}>
+                    <View style={styles.signalTile}>
+                      <Text style={[styles.signalValue, { color: getStreakColor(modelSignals.current_streak) }]}>
+                        {formatStreak(modelSignals.current_streak)}
+                      </Text>
+                      <Text style={styles.signalLabel}>Streak</Text>
+                    </View>
+                    <View style={styles.signalTile}>
+                      <Text style={[styles.signalValue, { color: getTrendColor(modelSignals.trend_slope) }]}>
+                        {formatTrend(modelSignals.trend_slope)}
+                      </Text>
+                      <Text style={styles.signalLabel}>Trend</Text>
+                    </View>
+                    <View style={styles.signalTile}>
+                      <Text style={[styles.signalValue, { color: getMatchupColor(modelSignals.opp_defensive_rating, currentPick?.pp_line) }]}>
+                        {formatMatchup(modelSignals.opp_defensive_rating, currentPick?.pp_line)}
+                      </Text>
+                      <Text style={styles.signalLabel}>Matchup</Text>
+                    </View>
+                  </View>
+
+                  {/* ML Adjustment badge (only if non-trivial) */}
+                  {currentPick?.ml_adjustment != null && Math.abs(currentPick.ml_adjustment) >= 1 && (
+                    <View style={[
+                      styles.mlAdjBadge,
+                      { backgroundColor: currentPick.ml_adjustment > 0 ? '#4CAF5020' : '#F4433620' },
+                    ]}>
+                      <Text style={[
+                        styles.mlAdjText,
+                        { color: currentPick.ml_adjustment > 0 ? '#4CAF50' : '#F44336' },
+                      ]}>
+                        ML model {currentPick.ml_adjustment > 0 ? '+' : ''}{currentPick.ml_adjustment.toFixed(1)}% vs naive baseline
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Rest / fatigue badge */}
+                  {currentPick?.days_rest != null && (
+                    <View style={[
+                      styles.mlAdjBadge,
+                      {
+                        backgroundColor: currentPick.days_rest === 0 ? '#F4433620'
+                          : currentPick.days_rest >= 3 ? '#4CAF5020' : '#FF980020',
+                      },
+                    ]}>
+                      <Text style={[
+                        styles.mlAdjText,
+                        {
+                          color: currentPick.days_rest === 0 ? '#F44336'
+                            : currentPick.days_rest >= 3 ? '#4CAF50' : '#FF9800',
+                        },
+                      ]}>
+                        {currentPick.days_rest === 0
+                          ? 'Back-to-back — fatigue risk'
+                          : currentPick.days_rest === 1
+                          ? '1 day rest'
+                          : `${currentPick.days_rest}+ days rest`}
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Line movement badge (only if movement detected) */}
+                  {currentPick?.line_movement != null && Math.abs(currentPick.line_movement) >= 0.5 && (
+                    <View style={[
+                      styles.mlAdjBadge,
+                      {
+                        backgroundColor: currentPick.movement_agrees ? '#4CAF5020' : '#FF980020',
+                      },
+                    ]}>
+                      <Text style={[
+                        styles.mlAdjText,
+                        { color: currentPick.movement_agrees ? '#4CAF50' : '#FF9800' },
+                      ]}>
+                        Line {currentPick.line_movement > 0 ? 'moved up' : 'moved down'} {Math.abs(currentPick.line_movement).toFixed(1)}
+                        {currentPick.movement_agrees ? ' — market agrees' : ' — fading market'}
+                      </Text>
+                    </View>
+                  )}
                 </View>
               )}
 
@@ -777,6 +965,47 @@ const styles = StyleSheet.create({
   inParlayText: {
     color: '#4CAF50',
     fontSize: 9,
+    fontWeight: 'bold',
+  },
+  signalsContainer: {
+    backgroundColor: '#252525',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 20,
+  },
+  signalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  signalTile: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: '#1E1E1E',
+    borderRadius: 8,
+    paddingVertical: 8,
+    marginHorizontal: 3,
+  },
+  signalValue: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  signalLabel: {
+    color: '#666',
+    fontSize: 10,
+    marginTop: 3,
+    textAlign: 'center',
+  },
+  mlAdjBadge: {
+    borderRadius: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    marginTop: 4,
+    alignItems: 'center',
+  },
+  mlAdjText: {
+    fontSize: 11,
     fontWeight: 'bold',
   },
 });

@@ -57,6 +57,17 @@ def get_smart_picks(sport: str, date: str = None, min_edge: float = 5.0, min_pro
                 'ev_4leg': round(pick.ev_4leg, 4) if pick.ev_4leg else 0,
                 'ev_5leg': round(pick.ev_5leg, 4) if pick.ev_5leg else 0,
                 'ev_6leg': round(pick.ev_6leg, 4) if pick.ev_6leg else 0,
+                # ML signal fields (season avg, recent form, ML adjustment vs naive baseline)
+                'season_avg': round(pick.season_avg, 1) if pick.season_avg else 0,
+                'recent_avg': round(pick.recent_avg, 1) if pick.recent_avg else 0,
+                'ml_adjustment': round(pick.ml_adjustment, 1) if pick.ml_adjustment else 0,
+                # Profitability enhancement fields
+                'sigma_distance': round(pick.sigma_distance, 3),
+                'parlay_score': round(pick.parlay_score, 4),
+                'line_movement': round(pick.line_movement, 1),
+                'movement_agrees': pick.movement_agrees,
+                'calibration_correction': round(pick.calibration_correction * 100, 2),
+                'days_rest': pick.days_rest,
             })
 
         return result
@@ -113,6 +124,8 @@ def sort_picks(picks: list, sort_by: str) -> list:
     elif sort_by == 'tier':
         tier_order = {'T1-ELITE': 0, 'T2-STRONG': 1, 'T3-GOOD': 2, 'T4-LEAN': 3, 'T5-FADE': 4}
         return sorted(picks, key=lambda x: tier_order.get(x.get('tier', 'T5-FADE'), 5))
+    elif sort_by == 'parlay_score':
+        return sorted(picks, key=lambda x: x.get('parlay_score', 0), reverse=True)
     else:
         return picks
 

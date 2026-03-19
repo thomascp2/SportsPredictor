@@ -31,9 +31,10 @@ SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(SCRIPT_DIR.parent))  # For features module
 
-from v2_config import DB_PATH
+from v2_config import DB_PATH, BLOWOUT_IMPLIED_PROB_THRESHOLD
 from statistical_predictions_v2 import StatisticalPredictionEngine
 from v2_discord_notifications import send_discord_notification
+from espn_nhl_api import ESPNNHLApi
 
 # ML Integration
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "ml_training"))
@@ -515,6 +516,102 @@ def match_player_to_pp(player_name: str, pp_player_lines: dict) -> str | None:
 
 
 # ============================================================================
+# NHL ODDS FETCH (ESPN)
+# ============================================================================
+
+# ESPN uses different abbreviations than the NHL API in some cases
+_ESPN_NHL_ALIASES = {
+    'TB': 'TBL', 'TBL': 'TB',
+    'SJ': 'SJS', 'SJS': 'SJ',
+    'NJ': 'NJD', 'NJD': 'NJ',
+    'LA': 'LAK', 'LAK': 'LA',
+    'CBJ': 'CBJ',
+}
+
+
+def _fetch_and_save_nhl_game_lines(conn, game_date: str, games: list) -> dict:
+    """
+    Fetch betting lines from ESPN NHL scoreboard and save to game_lines table.
+
+    Args:
+        conn: Open SQLite connection to nhl_predictions_v2.db
+        game_date: 'YYYY-MM-DD'
+        games: list of (game_date, away_team, home_team, game_id) tuples from DB
+
+    Returns:
+        {game_id: {'max_implied_prob': float, 'spread': float, ...}}
+        Only entries where odds were available are included.
+    """
+    result = {}
+    try:
+        espn = ESPNNHLApi()
+        espn_games = espn.get_scoreboard(game_date)
+    except Exception as e:
+        print(f"   [ODDS] ESPN NHL fetch failed: {e} — skipping lines")
+        return result
+
+    if not espn_games:
+        print("   [ODDS] No ESPN NHL games returned — lines unavailable")
+        return result
+
+    # Build lookup: (home_abbr, away_abbr) -> game_id from DB
+    db_lookup = {}
+    for _, away, home, gid in games:
+        db_lookup[(home.upper(), away.upper())] = gid
+
+    cursor = conn.cursor()
+    lines_saved = 0
+
+    for eg in espn_games:
+        espn_home = eg['home_team']
+        espn_away = eg['away_team']
+
+        # Try direct match, then alias resolution
+        game_id = db_lookup.get((espn_home, espn_away))
+        if not game_id:
+            h = _ESPN_NHL_ALIASES.get(espn_home, espn_home)
+            a = _ESPN_NHL_ALIASES.get(espn_away, espn_away)
+            game_id = (db_lookup.get((h, a)) or db_lookup.get((espn_home, a))
+                       or db_lookup.get((h, espn_away)))
+
+        if not game_id:
+            continue
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO game_lines
+            (game_id, game_date, home_team, away_team,
+             spread, over_under, home_moneyline, away_moneyline,
+             home_implied_prob, away_implied_prob, max_implied_prob,
+             odds_details, odds_provider, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            game_id, game_date, espn_home, espn_away,
+            eg.get('spread'), eg.get('over_under'),
+            eg.get('home_moneyline'), eg.get('away_moneyline'),
+            eg.get('home_implied_prob'), eg.get('away_implied_prob'),
+            eg.get('max_implied_prob'),
+            eg.get('odds_details', ''), eg.get('odds_provider', ''),
+            datetime.now().isoformat()
+        ))
+
+        if eg.get('max_implied_prob') is not None:
+            result[game_id] = {
+                'max_implied_prob': eg['max_implied_prob'],
+                'spread': eg.get('spread'),
+                'over_under': eg.get('over_under'),
+                'home_moneyline': eg.get('home_moneyline'),
+                'away_moneyline': eg.get('away_moneyline'),
+            }
+            lines_saved += 1
+
+    conn.commit()
+    unmatched = len(espn_games) - lines_saved
+    print(f"   [ODDS] Saved NHL lines for {lines_saved}/{len(espn_games)} games"
+          + (f" ({unmatched} unmatched)" if unmatched else ""))
+    return result
+
+
+# ============================================================================
 # MAIN PREDICTION GENERATION
 # ============================================================================
 
@@ -599,12 +696,39 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
     # Get games from database
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+
+    # Ensure game_lines table exists (created once, safe to repeat)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS game_lines (
+            game_id          TEXT NOT NULL,
+            game_date        TEXT NOT NULL,
+            home_team        TEXT,
+            away_team        TEXT,
+            spread           REAL,          -- puck line (typically +/-1.5)
+            over_under       REAL,          -- game total
+            home_moneyline   INTEGER,
+            away_moneyline   INTEGER,
+            home_implied_prob REAL,         -- implied win probability (0.0-1.0)
+            away_implied_prob REAL,
+            max_implied_prob  REAL,         -- max(home, away) — used for blowout filter
+            odds_details     TEXT,
+            odds_provider    TEXT,
+            fetched_at       TEXT,
+            PRIMARY KEY (game_id)
+        )
+    """)
+    conn.commit()
+
     cursor.execute('''
-        SELECT game_date, away_team, home_team
+        SELECT game_date, away_team, home_team, game_id
         FROM games
         WHERE game_date = ?
     ''', (target_date,))
     games = cursor.fetchall()
+
+    # Fetch ESPN odds and save to game_lines
+    game_lines = _fetch_and_save_nhl_game_lines(conn, target_date, games)
+
     conn.close()
 
     # Initialize prediction engine
@@ -620,11 +744,20 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
     pp_unmatched_players = 0
     predictions_by_prop = {'points': 0, 'shots': 0, 'hits': 0, 'blocked_shots': 0}
     predictions_by_line = {}
+    skipped_blowouts = 0
 
     print('STEP 3: Generating predictions...')
     print()
 
-    for game_date, away_team, home_team in games:
+    for game_date, away_team, home_team, game_id in games:
+        # Blowout filter: skip if favorite's implied win probability is too high.
+        # Uses moneyline-based implied probability (not spread — puck line doesn't vary).
+        max_prob = game_lines.get(game_id, {}).get('max_implied_prob')
+        if max_prob is not None and max_prob >= BLOWOUT_IMPLIED_PROB_THRESHOLD:
+            print(f"[SKIP] {away_team} @ {home_team} — blowout risk "
+                  f"(implied prob {max_prob:.0%} >= {BLOWOUT_IMPLIED_PROB_THRESHOLD:.0%}). Skipping.")
+            skipped_blowouts += 1
+            continue
         for team, opponent, is_home in [(away_team, home_team, False), (home_team, away_team, True)]:
             players = get_players_with_history_for_team(team, game_date, min_games=5, top_n=players_per_team)
 
@@ -725,6 +858,11 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
     print(f'V6: GENERATED {total_predictions} PREDICTIONS')
     print('=' * 80)
     print()
+
+    if skipped_blowouts:
+        print(f'[SKIP] Blowout games skipped: {skipped_blowouts} '
+              f'(implied prob >= {BLOWOUT_IMPLIED_PROB_THRESHOLD:.0%})')
+        print()
 
     if use_pp_lines:
         print('PRIZEPICKS MATCHING:')

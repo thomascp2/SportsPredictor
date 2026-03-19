@@ -59,6 +59,11 @@ CORE_PROPS = {
     'minutes': [28.5, 32.5],                # Minutes O28.5, O32.5
 }
 
+# Blowout filter — skip all player props when the spread is this large.
+# Games with a spread >= 13.5 pts frequently feature garbage-time minutes
+# that invalidate almost every individual stat prop.
+BLOWOUT_SPREAD_THRESHOLD = 13.5
+
 # Feature importance thresholds
 MIN_FEATURE_IMPORTANCE = 0.01  # Drop features below this in ML training
 
