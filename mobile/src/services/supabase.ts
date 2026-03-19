@@ -20,7 +20,11 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
 });
 
-// Helper: get today's date string in YYYY-MM-DD format
+// Helper: get today's date string in YYYY-MM-DD format (local time, not UTC)
 export function getTodayDate(): string {
-  return new Date().toISOString().split('T')[0];
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }

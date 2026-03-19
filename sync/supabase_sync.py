@@ -386,7 +386,7 @@ class SupabaseSync:
         offset = 0
         while True:
             r = self.client.table('daily_props').select(
-                'player_name,prop_type,line,odds_type,ai_probability,ai_prediction'
+                'id,player_name,prop_type,line,odds_type,ai_probability,ai_prediction,ai_edge'
             ).eq('sport', sport_upper).eq('game_date', game_date).range(
                 offset, offset + page_size - 1
             ).execute()
@@ -396,7 +396,7 @@ class SupabaseSync:
                 break
             offset += page_size
 
-        updated = 0
+        patches = []
         for row in all_rows:
             norm = self._normalize_name(row['player_name']).lower()
             prop = row['prop_type']
@@ -419,14 +419,9 @@ class SupabaseSync:
 
             # Determine if we need to update odds_type and/or ai_prediction
             needs_odds_update = pp_odds is not None and row['odds_type'] != pp_odds
-            # PP platform rule: goblin/demon lines only allow OVER bets.
-            # Fix ai_prediction=UNDER for any goblin/demon line regardless of odds_type change.
             needs_dir_fix = (effective_type in ('goblin', 'demon')
                              and row.get('ai_prediction') == 'UNDER')
 
-            # Recalculate edge whenever the row's stored edge doesn't match the correct
-            # break-even for its (possibly already-corrected) odds_type. This catches rows
-            # that were relabeled in a prior sync run but never had their edge recalculated.
             ai_prob = row.get('ai_probability')
             if ai_prob is not None and effective_type in BREAK_EVEN:
                 expected_edge = round((ai_prob - BREAK_EVEN[effective_type]) * 100, 2)
@@ -435,27 +430,37 @@ class SupabaseSync:
                                   abs(stored_edge - expected_edge) > 0.05)
             else:
                 needs_edge_fix = False
+                expected_edge = row.get('ai_edge')
 
             if not needs_odds_update and not needs_dir_fix and not needs_edge_fix:
-                continue  # Nothing to correct
+                continue
 
-            patch = {}
-            if needs_odds_update:
-                patch['odds_type'] = pp_odds
-            if needs_edge_fix:
-                patch['ai_edge'] = expected_edge
-            if needs_dir_fix:
-                patch['ai_prediction'] = 'OVER'
+            patches.append({
+                'id': row['id'],
+                'game_date': game_date,
+                'sport': sport_upper,
+                'player_name': row['player_name'],
+                'prop_type': prop,
+                'line': line,
+                'odds_type': pp_odds if needs_odds_update else row['odds_type'],
+                'ai_edge': expected_edge,
+                'ai_prediction': 'OVER' if needs_dir_fix else row.get('ai_prediction'),
+            })
 
+        # Update by id — grouped by (odds_type, ai_prediction) to minimize round trips
+        updated = 0
+        for patch in patches:
+            row_id = patch['id']
+            fields = {
+                'odds_type': patch['odds_type'],
+                'ai_edge': patch['ai_edge'],
+                'ai_prediction': patch['ai_prediction'],
+            }
             try:
-                self.client.table('daily_props').update(patch).eq(
-                    'game_date', game_date
-                ).eq('sport', sport_upper).eq(
-                    'player_name', row['player_name']
-                ).eq('prop_type', prop).eq('line', line).execute()
+                self.client.table('daily_props').update(fields).eq('id', row_id).execute()
                 updated += 1
             except Exception as e:
-                print(f"[SYNC ERROR] odds_type {row['player_name']}: {e}")
+                print(f"[SYNC ERROR] odds_type {patch.get('player_name')}: {e}")
 
         print(f"[SYNC] Corrected {updated} odds_type labels for {sport_upper} on {game_date}")
         return {'updated': updated, 'sport': sport_upper, 'date': game_date}

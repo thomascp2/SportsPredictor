@@ -42,6 +42,7 @@ export const usePicksStore = create<PicksState>((set, get) => ({
         .select('*')
         .eq('game_date', today)
         .eq('sport', sport)
+        .eq('is_smart_pick', true)
         .order('ai_edge', { ascending: false, nullsFirst: false });
 
       if (error) throw error;

@@ -20,6 +20,7 @@ interface PlayerCardModalProps {
   playerName: string;
   sport: string;
   propType?: string;
+  ppLine?: number;
   todayPicks?: SmartPick[];
   onClose: () => void;
   onAddToParlay?: (pick: SmartPick) => void;
@@ -31,6 +32,7 @@ export function PlayerCardModal({
   playerName,
   sport,
   propType,
+  ppLine,
   todayPicks = [],
   onClose,
   onAddToParlay,
@@ -50,7 +52,7 @@ export function PlayerCardModal({
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchPlayerHistory(playerName, sport);
+      const data = await fetchPlayerHistory(playerName, sport, ppLine);
       setHistory(data);
     } catch (err) {
       setError('Failed to load player history');

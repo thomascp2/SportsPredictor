@@ -1,14 +1,6 @@
-import React, { useCallback } from 'react';
-import { Pressable, Text, StyleSheet, ViewStyle } from 'react-native';
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withSpring,
-  interpolateColor,
-} from 'react-native-reanimated';
+import React, { useCallback, useRef } from 'react';
+import { Pressable, Text, StyleSheet, ViewStyle, Animated } from 'react-native';
 import * as Haptics from 'expo-haptics';
-
-const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 interface PickButtonProps {
   type: 'OVER' | 'UNDER';
@@ -42,67 +34,60 @@ const COLORS = {
 };
 
 export function PickButton({ type, selected, disabled, result, onPress, style }: PickButtonProps) {
-  const scale = useSharedValue(1);
-  const pressed = useSharedValue(0);
+  const scale = useRef(new Animated.Value(1)).current;
 
   const handlePressIn = useCallback(() => {
-    scale.value = withSpring(0.92, { damping: 12, stiffness: 180 });
-    pressed.value = withSpring(1, { damping: 12, stiffness: 180 });
-  }, [scale, pressed]);
+    Animated.spring(scale, { toValue: 0.92, damping: 12, stiffness: 180, useNativeDriver: true }).start();
+  }, [scale]);
 
   const handlePressOut = useCallback(() => {
-    scale.value = withSpring(1, { damping: 12, stiffness: 180 });
-    if (!selected) {
-      pressed.value = withSpring(0, { damping: 12, stiffness: 180 });
-    }
-  }, [scale, pressed, selected]);
+    Animated.spring(scale, { toValue: 1, damping: 12, stiffness: 180, useNativeDriver: true }).start();
+  }, [scale]);
 
   const handlePress = useCallback(() => {
     if (disabled) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    scale.value = withSpring(1.05, { damping: 8, stiffness: 200 });
-    setTimeout(() => {
-      scale.value = withSpring(1, { damping: 12, stiffness: 180 });
-    }, 100);
+    Animated.sequence([
+      Animated.spring(scale, { toValue: 1.05, damping: 8, stiffness: 200, useNativeDriver: true }),
+      Animated.spring(scale, { toValue: 1, damping: 12, stiffness: 180, useNativeDriver: true }),
+    ]).start();
     onPress();
   }, [disabled, onPress, scale]);
 
-  const animatedStyle = useAnimatedStyle(() => {
-    const colors = COLORS[type];
-    const bgColor = selected
-      ? colors.selectedBg
-      : interpolateColor(pressed.value, [0, 1], [COLORS.neutral.bg, colors.bg]);
-
-    return {
-      transform: [{ scale: scale.value }],
-      backgroundColor: bgColor,
-      borderColor: selected ? colors.active : COLORS.neutral.border,
-    };
-  });
+  const colors = COLORS[type];
+  const bgColor = selected ? colors.selectedBg : COLORS.neutral.bg;
+  const borderColor = selected ? colors.active : COLORS.neutral.border;
 
   const resultOverlay = result === 'HIT' ? styles.hitGlow : result === 'MISS' ? styles.missGlow : null;
 
   return (
-    <AnimatedPressable
-      onPressIn={handlePressIn}
-      onPressOut={handlePressOut}
-      onPress={handlePress}
-      disabled={disabled}
-      style={[styles.button, animatedStyle, disabled && styles.disabled, resultOverlay, style]}
-    >
-      <Text style={[
-        styles.label,
-        selected && styles.selectedLabel,
-        disabled && styles.disabledLabel,
-      ]}>
-        {type}
-      </Text>
-      {result && (
-        <Text style={[styles.resultIcon, result === 'HIT' ? styles.hitIcon : styles.missIcon]}>
-          {result === 'HIT' ? 'V' : 'X'}
+    <Animated.View style={[{ transform: [{ scale }] }, style]}>
+      <Pressable
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        onPress={handlePress}
+        disabled={disabled}
+        style={[
+          styles.button,
+          { backgroundColor: bgColor, borderColor },
+          disabled && styles.disabled,
+          resultOverlay,
+        ]}
+      >
+        <Text style={[
+          styles.label,
+          selected && styles.selectedLabel,
+          disabled && styles.disabledLabel,
+        ]}>
+          {type}
         </Text>
-      )}
-    </AnimatedPressable>
+        {result && (
+          <Text style={[styles.resultIcon, result === 'HIT' ? styles.hitIcon : styles.missIcon]}>
+            {result === 'HIT' ? 'V' : 'X'}
+          </Text>
+        )}
+      </Pressable>
+    </Animated.View>
   );
 }
 

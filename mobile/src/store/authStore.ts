@@ -69,6 +69,7 @@ interface AuthState {
   initialized: boolean;
 
   initialize: () => Promise<void>;
+  devSignIn: () => void;
   signInWithGoogle: () => Promise<void>;
   signInWithApple: () => Promise<void>;
   signInWithDiscord: () => Promise<void>;
@@ -82,6 +83,28 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   profile: null,
   loading: false,
   initialized: false,
+
+  devSignIn: () => {
+    const mockSession = { user: { id: 'dev-user', email: 'dev@freepicks.local' } } as unknown as Session;
+    const mockProfile: Profile = {
+      id: 'dev-user',
+      username: 'devmode',
+      display_name: 'Dev Mode',
+      avatar_url: null,
+      points: 999,
+      streak: 3,
+      best_streak: 7,
+      tier: 'pro',
+      total_picks: 42,
+      total_hits: 30,
+      premium: false,
+      premium_until: null,
+      push_token: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    set({ session: mockSession, profile: mockProfile, initialized: true });
+  },
 
   initialize: async () => {
     try {
