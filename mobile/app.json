@@ -21,6 +21,9 @@
         "backgroundColor": "#121212"
       },
       "package": "com.freepicks.app"
-    }
+    },
+    "plugins": [
+      "expo-secure-store"
+    ]
   }
 }
