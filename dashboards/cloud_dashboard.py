@@ -873,6 +873,26 @@ def main():
             "Run `python mlb/scripts/run_season_projections.py` to refresh."
         )
 
+        # ── Confidence tier explanation ────────────────────────────────────────
+        with st.expander("What does the Confidence rating mean?"):
+            st.markdown("""
+**Confidence reflects how many seasons of historical data were available** to build each player's projection — not model accuracy directly.
+
+| Tier | Seasons of data | What it means |
+|------|----------------|---------------|
+| **HIGH** | 3 seasons (2023, 2024, 2025) | Most reliable. Marcel weighted avg uses all three years. Typical error range: **±10–18%** of projection. |
+| **MEDIUM** | 2 seasons | Good signal, slightly wider range. Typical error range: **±18–28%** of projection. |
+| **LOW** | 1 season only | Rookie, injury return, or recent call-up. Projection regresses heavily to league average. Error range: **±28–45%**. |
+| **VERY LOW** | No historical data | Best-guess estimate based on league average only. Treat as highly speculative. |
+
+**Example:** A HIGH confidence projection of 42 home runs has an implied range of roughly **34–50 HR** (±18%).
+A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 HR**.
+
+**Other factors baked in:** Age curve (peak at 27; power stats decline 1.5%/yr after 30), park factor (home ballpark dimensions), and regression-to-mean (volatile stats like HR/SB regress ~30% toward league average).
+
+> *Tip: Use HIGH confidence projections for sizable bets. MEDIUM is fine for smaller wagers with strong line value. LOW and VERY LOW are speculative — only play if the sportsbook line appears significantly mispriced.*
+            """)
+
         # ── Filters ───────────────────────────────────────────────────────────
         BATTER_STATS = {
             'hr':    'Home Runs',
@@ -955,6 +975,17 @@ def main():
                     'seasons_used': 'Seasons', 'age': 'Age',
                 }).drop(columns=['stat'])
 
+                # Map confidence to emoji badge so meaning is visible at a glance
+                CONF_BADGE = {
+                    'HIGH':     'HIGH (3 seasons)',
+                    'MEDIUM':   'MED (2 seasons)',
+                    'LOW':      'LOW (1 season)',
+                    'VERY LOW': 'VERY LOW',
+                }
+                display_df['Confidence'] = display_df['Confidence'].map(
+                    lambda c: CONF_BADGE.get(c, c)
+                )
+
                 sort_col = st.selectbox("Sort by", ["Projection", "Player", "Confidence"],
                                         key="sp_sort")
                 asc = sort_col == "Player"
@@ -964,7 +995,10 @@ def main():
                              hide_index=True, height=500)
 
                 total_rows = len(df_sp)
-                st.caption(f"{total_rows:,} stat projections across {n_players} players.")
+                st.caption(
+                    f"{total_rows:,} stat projections across {n_players} players. "
+                    "Confidence = seasons of historical data used (HIGH=3, MED=2, LOW=1)."
+                )
 
             with spt2:
                 st.markdown("**Enter a sportsbook line to get an instant edge calculation:**")
@@ -997,7 +1031,12 @@ def main():
                         ec1.metric("Projection", result['projection'])
                         ec2.metric("Model Prob", f"{result['probability']}%")
                         ec3.metric("Edge vs -110", f"{result['edge']:+.1f}%")
-                        ec4.metric("Confidence", result['confidence'])
+                        conf_label = {
+                            'HIGH':   'HIGH (3 seasons)',
+                            'MEDIUM': 'MEDIUM (2 seasons)',
+                            'LOW':    'LOW (1 season)',
+                        }.get(result['confidence'], result['confidence'])
+                        ec4.metric("Confidence", conf_label)
 
                         color = "#1b4332" if result['edge'] > 5 else (
                                 "#3f1515" if result['edge'] < -2 else "#2a2a2a")
@@ -1006,8 +1045,8 @@ def main():
                             f'border-radius:8px;margin-top:8px">'
                             f'<b style="font-size:16px">{result["recommendation"]}</b>'
                             f'<span style="color:#aaa;font-size:12px;margin-left:12px">'
-                            f'{result["seasons_used"]} seasons of data · '
-                            f'Age {result["age"] or "?"} · {result["team"]}</span>'
+                            f'Age {result["age"] or "?"} · {result["team"]} · '
+                            f'{result["seasons_used"]} seasons of data used</span>'
                             f'</div>',
                             unsafe_allow_html=True,
                         )
