@@ -680,20 +680,6 @@ class SmartPickSelector:
             if edge < min_edge:
                 continue
 
-            # Prop-specific edge guards for NBA props that have degraded end-of-season.
-            # pra and stocks accuracy has declined from ~80% (Nov-Jan) to ~56%/60% (Mar)
-            # due to post-trade-deadline roster changes and playoff-push lineup chaos.
-            # Require a higher bar until models are retrained on fresh data.
-            # Remove these guards after the next retraining cycle.
-            if self.sport == 'NBA':
-                PROP_MIN_EDGE_OVERRIDE = {
-                    'pra':    12.0,  # was ~80% accuracy, now 57% — require strong signal only
-                    'stocks': 10.0,  # was ~78% accuracy, now 60% — require above-average edge
-                }
-                prop_min_edge = PROP_MIN_EDGE_OVERRIDE.get(prop_type)
-                if prop_min_edge is not None and edge < prop_min_edge:
-                    continue
-
             # Line movement signal
             move_info = movements.get((pp['player_name'].lower(), prop_type), {})
             line_movement = move_info.get('line_movement', 0.0)
