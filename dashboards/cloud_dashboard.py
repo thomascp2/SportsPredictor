@@ -116,12 +116,60 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
             min_prob=min_prob,
             refresh_lines=False,  # use cached PP lines, don't re-fetch
         )
-    except Exception as e:
-        st.warning(f"Could not load picks from SQLite: {e}")
-        return pd.DataFrame()
+    except Exception:
+        picks = None
 
     if not picks:
-        return pd.DataFrame()
+        # ── Supabase fallback (Streamlit Cloud — no local SQLite) ──────────────
+        sb = get_supabase()
+        if sb is None:
+            return pd.DataFrame()
+        try:
+            r = (sb.table("daily_props")
+                   .select("player_name,team,opponent,prop_type,line,odds_type,"
+                           "ai_prediction,ai_probability,ai_edge,game_time")
+                   .eq("sport", sport)
+                   .eq("game_date", game_date)
+                   .neq("status", "cancelled")
+                   .lt("ai_probability", 0.95)
+                   .gte("ai_edge", min_edge)
+                   .gte("ai_probability", min_prob)
+                   .execute())
+            sb_rows = r.data or []
+        except Exception:
+            sb_rows = []
+        if not sb_rows:
+            return pd.DataFrame()
+        rows = []
+        for p in sb_rows:
+            if direction and p.get("ai_prediction") != direction:
+                continue
+            rows.append({
+                "player_name":    p.get("player_name", ""),
+                "team":           p.get("team", ""),
+                "opponent":       p.get("opponent", ""),
+                "prop_type":      p.get("prop_type", ""),
+                "line":           p.get("line", 0),
+                "odds_type":      p.get("odds_type", "standard"),
+                "ai_prediction":  p.get("ai_prediction", ""),
+                "ai_probability": float(p.get("ai_probability") or 0),
+                "ai_edge":        float(p.get("ai_edge") or 0),
+                "ai_tier":        "—",
+                "ai_ev_4leg":     None,
+                "game_time":      p.get("game_time"),
+                "matchup":        f"{p.get('team','')} vs {p.get('opponent','')}",
+            })
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        df["Prob"]     = (df["ai_probability"] * 100).round(1).astype(str) + "%"
+        df["Edge"]     = df["ai_edge"].round(1).apply(lambda x: f"+{x}%" if x >= 0 else f"{x}%")
+        df["EV 4-leg"] = "—"
+        df["Line"]     = df["ai_prediction"] + " " + df["line"].astype(str)
+        df["Prop"]     = df["prop_type"].str.upper().str.replace("_", " ")
+        df["Matchup"]  = df["matchup"]
+        df["Time"]     = df["game_time"].apply(_fmt_time)
+        return df
 
     rows = []
     for p in picks:
@@ -437,8 +485,40 @@ def fetch_season_projections(stat_filter: str = None,
     import sqlite3 as _sqlite3
     root = _Path(__file__).parent.parent
     db_path = root / 'mlb' / 'database' / 'mlb_predictions.db'
-    if not db_path.exists():
-        return pd.DataFrame()
+    _local_ok = db_path.exists()
+    if not _local_ok:
+        # ── Supabase fallback (Streamlit Cloud) ────────────────────────────────
+        sb = get_supabase()
+        if sb is None:
+            return pd.DataFrame()
+        try:
+            r_season = (sb.table("mlb_season_projections")
+                          .select("season").order("season", desc=True).limit(1).execute())
+            if not r_season.data:
+                return pd.DataFrame()
+            latest_season = r_season.data[0]["season"]
+            q = (sb.table("mlb_season_projections")
+                   .select("player_name,team,player_type,stat,projection,"
+                           "std_dev,confidence,seasons_used,age")
+                   .eq("season", latest_season))
+            if stat_filter and stat_filter != "All":
+                q = q.eq("stat", stat_filter)
+            if player_type and player_type != "All":
+                q = q.eq("player_type", player_type.lower())
+            if team_filter and team_filter != "All":
+                q = q.eq("team", team_filter)
+            r = q.order("projection", desc=True).execute()
+            rows = r.data or []
+        except Exception:
+            rows = []
+        if not rows:
+            return pd.DataFrame()
+        conf_order = {"HIGH": 3, "MEDIUM": 2, "LOW": 1, "VERY LOW": 0}
+        min_conf_val = conf_order.get(min_confidence, 0)
+        df = pd.DataFrame(rows)
+        df["_conf_val"] = df["confidence"].map(conf_order).fillna(0)
+        df = df[df["_conf_val"] >= min_conf_val].drop(columns=["_conf_val"])
+        return df
     try:
         conn = _sqlite3.connect(str(db_path))
         query = '''
@@ -486,8 +566,32 @@ def fetch_szln_picks(stat_filter: str = None,
     import sqlite3 as _sqlite3
     root = _Path(__file__).parent.parent
     db_path = root / 'mlb' / 'database' / 'mlb_predictions.db'
-    if not db_path.exists():
-        return pd.DataFrame()
+    _local_ok = db_path.exists()
+    if not _local_ok:
+        # ── Supabase fallback (Streamlit Cloud) ────────────────────────────────
+        sb = get_supabase()
+        if sb is None:
+            return pd.DataFrame()
+        try:
+            q = (sb.table("mlb_szln_picks")
+                   .select("player_name,team,player_type,stat,pp_stat_type,"
+                           "line,direction,probability,edge,projection,std_dev,"
+                           "confidence,model_used,recommendation,fetched_at"))
+            if stat_filter and stat_filter != "All":
+                q = q.eq("stat", stat_filter)
+            if direction_filter and direction_filter != "All":
+                q = q.eq("direction", direction_filter)
+            if player_type_filter and player_type_filter != "All":
+                q = q.eq("player_type", player_type_filter.lower())
+            if min_edge and min_edge > 0:
+                q = q.gte("edge", min_edge)
+            r = q.order("edge", desc=True).execute()
+            rows = r.data or []
+        except Exception:
+            rows = []
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows)
     try:
         conn = _sqlite3.connect(str(db_path))
         # Check table exists
@@ -549,8 +653,59 @@ def _evaluate_line(player_name: str, stat: str, line: float,
     import sqlite3 as _sqlite3, math as _math
     root = _Path(__file__).parent.parent
     db_path = root / 'mlb' / 'database' / 'mlb_predictions.db'
-    if not db_path.exists():
-        return None
+    _local_ok = db_path.exists()
+    if not _local_ok:
+        # ── Supabase fallback (Streamlit Cloud) ────────────────────────────────
+        sb = get_supabase()
+        if sb is None:
+            return None
+        try:
+            r = (sb.table("mlb_season_projections")
+                   .select("projection,std_dev,confidence,seasons_used,age,team")
+                   .ilike("player_name", f"%{player_name.strip()}%")
+                   .eq("stat", stat)
+                   .order("confidence", desc=True)
+                   .limit(1)
+                   .execute())
+            row_data = r.data[0] if r.data else None
+        except Exception:
+            row_data = None
+        if not row_data:
+            return None
+        proj     = row_data["projection"]
+        std_dev  = row_data["std_dev"] or max(proj * 0.18, 1.0)
+        conf     = row_data["confidence"]
+        seasons  = row_data["seasons_used"]
+        age      = row_data["age"]
+        team     = row_data["team"]
+        # --- shared probability calc (duplicated below for SQLite path) ---
+        z = (line - proj) / std_dev
+        def _erf(x):
+            sign = 1 if x >= 0 else -1
+            x = abs(x)
+            t = 1.0 / (1.0 + 0.3275911 * x)
+            y = 1.0 - (((((1.061405429*t - 1.453152027)*t) + 1.421413741)*t
+                          - 0.284496736)*t + 0.254829592)*t*(_math.exp(-x*x))
+            return sign * y
+        p_over = 0.5 * (1 - _erf(z / 1.4142))
+        prob = p_over if direction == "OVER" else (1 - p_over)
+        edge = round((prob - 0.524) * 100, 2)
+        if abs(edge) < 3:
+            rec = "PASS — too close to line"
+        elif prob >= 0.65:
+            rec = f"STRONG {direction}"
+        elif prob >= 0.57:
+            rec = f"LEAN {direction}"
+        else:
+            rec = "PASS — edge insufficient"
+        return {
+            "player_name": player_name, "stat": stat, "line": line,
+            "direction": direction, "projection": round(proj, 1),
+            "probability": round(prob * 100, 1),
+            "edge": edge, "recommendation": rec,
+            "confidence": conf, "seasons_used": seasons,
+            "age": age, "team": team,
+        }
     try:
         conn = _sqlite3.connect(str(db_path))
         row = conn.execute('''
@@ -604,8 +759,27 @@ def fetch_hb_picks(run_date: str = None) -> dict:
     from pathlib import Path as _Path
     import sqlite3 as _sqlite3
     db_path = _Path(__file__).parent.parent / "nhl" / "database" / "hits_blocks.db"
-    if not db_path.exists():
-        return {}
+    _local_ok = db_path.exists()
+    if not _local_ok:
+        # ── Supabase fallback (Streamlit Cloud) ────────────────────────────────
+        sb = get_supabase()
+        if sb is None:
+            return {}
+        try:
+            q = (sb.table("nhl_hits_blocks_picks")
+                   .select("run_date,generated_at,raw_output,model,"
+                           "prompt_tokens,completion_tokens,games_count"))
+            if run_date:
+                q = q.eq("run_date", run_date)
+            else:
+                q = q.order("run_date", desc=True).limit(1)
+            r = q.execute()
+            row_data = r.data[0] if r.data else None
+        except Exception:
+            row_data = None
+        if not row_data:
+            return {}
+        return row_data
     try:
         conn = _sqlite3.connect(str(db_path))
         exists = conn.execute(
@@ -642,8 +816,21 @@ def fetch_hb_history(n: int = 14) -> list:
     from pathlib import Path as _Path
     import sqlite3 as _sqlite3
     db_path = _Path(__file__).parent.parent / "nhl" / "database" / "hits_blocks.db"
-    if not db_path.exists():
-        return []
+    _local_ok = db_path.exists()
+    if not _local_ok:
+        # ── Supabase fallback (Streamlit Cloud) ────────────────────────────────
+        sb = get_supabase()
+        if sb is None:
+            return []
+        try:
+            r = (sb.table("nhl_hits_blocks_picks")
+                   .select("run_date")
+                   .order("run_date", desc=True)
+                   .limit(n)
+                   .execute())
+            return [row["run_date"] for row in (r.data or [])]
+        except Exception:
+            return []
     try:
         conn = _sqlite3.connect(str(db_path))
         rows = conn.execute(
