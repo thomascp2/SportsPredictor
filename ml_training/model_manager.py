@@ -41,6 +41,9 @@ class ModelMetadata:
     is_calibrated: bool
     calibration_method: str  # 'isotonic' or 'sigmoid'
 
+    # Training window (0 = all history)
+    training_window_days: int = 90
+
     # Feature importance (top 10)
     top_features: Dict[str, float] = field(default_factory=dict)
 

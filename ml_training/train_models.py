@@ -82,6 +82,12 @@ class MLConfig:
     # Minimum data requirements
     min_samples: int = 3000
     min_positive_rate: float = 0.15  # At least 15% of one class
+
+    # Rolling training window — only train on recent data to avoid
+    # stale pre-deadline patterns diluting post-deadline signals.
+    # 0 = use all history (legacy behaviour).
+    # Recommended: 90 for most props, 60 for volatile combos (pra, stocks).
+    training_window_days: int = 90
     
     # Train/Val/Test split
     test_size: float = 0.15
@@ -134,25 +140,41 @@ class DataLoader:
         else:  # NBA
             self.db_path = 'nba/database/nba_predictions.db'
     
-    def load_training_data(self, prop_type: str, line: float) -> pd.DataFrame:
+    def load_training_data(self, prop_type: str, line: float,
+                           training_window_days: int = 0) -> pd.DataFrame:
         """
-        Load predictions with outcomes for a specific prop/line
-        
+        Load predictions with outcomes for a specific prop/line.
+
         Args:
             prop_type: 'points', 'shots', 'rebounds', etc.
             line: The betting line (e.g., 0.5, 2.5, 15.5)
-            
+            training_window_days: If > 0, restrict to the most recent N calendar
+                days.  Keeps the model focused on current roster/skill levels
+                rather than patterns from months ago.
+
         Returns:
             DataFrame with features and target
         """
         conn = sqlite3.connect(self.db_path)
-        
+
         if self.sport == 'NHL':
             df = self._load_nhl_data(conn, prop_type, line)
         else:
             df = self._load_nba_data(conn, prop_type, line)
-        
+
         conn.close()
+
+        # ── Rolling window filter ────────────────────────────────────────────
+        if training_window_days > 0 and len(df) > 0 and 'game_date' in df.columns:
+            from datetime import date, timedelta
+            cutoff = (date.today() - timedelta(days=training_window_days)).isoformat()
+            before = len(df)
+            df = df[df['game_date'] >= cutoff].copy()
+            after = len(df)
+            if before != after:
+                print(f"  [Window] {training_window_days}d cutoff ({cutoff}): "
+                      f"{before:,} -> {after:,} samples kept")
+
         return df
     
     def _load_nhl_data(self, conn, prop_type: str, line: float) -> pd.DataFrame:
@@ -607,7 +629,8 @@ def save_trained_model(
     test_metrics: Dict,
     baseline_metrics: Dict,
     samples: int,
-    importance_df: pd.DataFrame
+    importance_df: pd.DataFrame,
+    training_window_days: int = 90,
 ) -> Optional[str]:
     """
     Save trained model to registry.
@@ -658,6 +681,7 @@ def save_trained_model(
         improvement_over_baseline=test_metrics['accuracy'] - baseline_metrics['accuracy'],
         is_calibrated=trainer.config.calibrate_probabilities,
         calibration_method=trainer.config.calibration_method,
+        training_window_days=training_window_days,
         top_features=top_features
     )
 
@@ -707,10 +731,24 @@ def train_model(
     print(f"ML TRAINING: {sport.upper()} - {prop_type} O{line}")
     print("="*70)
     
-    # Load data
+    # Load data (apply rolling window from config)
     loader = DataLoader(sport, db_path)
-    df = loader.load_training_data(prop_type, line)
-    
+    effective_window = config.training_window_days
+    df = loader.load_training_data(prop_type, line,
+                                   training_window_days=effective_window)
+
+    # Auto-extend window if initial cut yields too few samples.
+    # Tries up to 2 extensions (+30d each) before giving up.
+    for _extension in range(1, 3):
+        if len(df) >= config.min_samples or effective_window == 0:
+            break
+        extended_window = effective_window + 30 * _extension
+        print(f"  [Window] {effective_window}d window: {len(df):,} samples "
+              f"< {config.min_samples:,} min. Extending to {extended_window}d...")
+        df = loader.load_training_data(prop_type, line,
+                                       training_window_days=extended_window)
+        effective_window = extended_window  # track for metadata
+
     if len(df) < config.min_samples:
         print(f"\n[WARN] Insufficient data: {len(df)} samples (need {config.min_samples})")
         return {'status': 'insufficient_data', 'samples': len(df)}
@@ -796,7 +834,8 @@ def train_model(
             test_metrics=test_metrics,
             baseline_metrics=baseline_metrics,
             samples=len(df),
-            importance_df=importance_df
+            importance_df=importance_df,
+            training_window_days=effective_window,
         )
 
     return {
@@ -829,9 +868,28 @@ if __name__ == '__main__':
     parser.add_argument('--line', type=float, help='Betting line (e.g., 0.5, 2.5)')
     parser.add_argument('--all', action='store_true', help='Train all prop/line combos')
     parser.add_argument('--db', type=str, help='Custom database path')
-    
+    parser.add_argument('--window', type=int, default=None,
+                        help='Override training_window_days for all props (0 = all history)')
+
     args = parser.parse_args()
-    
+
+    # ── Prop-specific window overrides (post-deadline degraded props use shorter window)
+    # pra was most impacted by Feb-6 trade deadline.
+    #   pra  60d = 8,899 samples  ✓ (above 3k min)
+    #   stocks 60d = 1,406 samples ✗ (below 3k min) — keep stocks at 90d
+    # All other NBA props default to 90 days.  NHL is stable — 90 days default.
+    PROP_WINDOW_OVERRIDES = {
+        'pra': 60,   # 8,899 post-Jan-24 samples — strong post-deadline signal
+        # stocks: leave at default 90d (only 1,406 graded at 60d — below min_samples)
+    }
+
+    def _make_config(prop_type: str) -> MLConfig:
+        if args.window is not None:
+            # Explicit CLI override wins over everything
+            return MLConfig(training_window_days=args.window)
+        window = PROP_WINDOW_OVERRIDES.get(prop_type, 90)
+        return MLConfig(training_window_days=window)
+
     if args.all:
         # Define all prop/line combinations
         if args.sport == 'nhl':
@@ -851,12 +909,13 @@ if __name__ == '__main__':
                 ('pra', 30.5), ('pra', 35.5), ('pra', 40.5),
                 ('minutes', 28.5), ('minutes', 32.5)
             ]
-        
+
         results = []
         for prop_type, line in combos:
-            result = train_model(args.sport, prop_type, line, args.db)
+            result = train_model(args.sport, prop_type, line, args.db,
+                                 config=_make_config(prop_type))
             results.append(result)
-        
+
         # Summary
         print("\n" + "="*70)
         print("TRAINING SUMMARY")
@@ -869,9 +928,10 @@ if __name__ == '__main__':
                       f"(delta {improvement:+.4f})")
             else:
                 print(f"  {r.get('prop_type', 'unknown')}: {r['status']}")
-    
+
     elif args.prop and args.line:
-        train_model(args.sport, args.prop, args.line, args.db)
+        train_model(args.sport, args.prop, args.line, args.db,
+                    config=_make_config(args.prop))
     
     else:
         parser.print_help()
