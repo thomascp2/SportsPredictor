@@ -427,6 +427,111 @@ def fetch_pipeline_status() -> dict:
     return status
 
 
+@st.cache_data(ttl=3600)
+def fetch_season_projections(stat_filter: str = None,
+                              player_type: str = None,
+                              team_filter: str = None,
+                              min_confidence: str = 'LOW') -> pd.DataFrame:
+    """Load MLB season projections from local SQLite season_projections table."""
+    from pathlib import Path as _Path
+    import sqlite3 as _sqlite3
+    root = _Path(__file__).parent.parent
+    db_path = root / 'mlb' / 'database' / 'mlb_predictions.db'
+    if not db_path.exists():
+        return pd.DataFrame()
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        query = '''
+            SELECT player_name, team, player_type, stat, projection,
+                   std_dev, confidence, seasons_used, age
+            FROM season_projections
+            WHERE season = (SELECT MAX(season) FROM season_projections)
+        '''
+        params = []
+        if stat_filter and stat_filter != 'All':
+            query += ' AND stat = ?'
+            params.append(stat_filter)
+        if player_type and player_type != 'All':
+            query += ' AND player_type = ?'
+            params.append(player_type.lower())
+        if team_filter and team_filter != 'All':
+            query += ' AND team = ?'
+            params.append(team_filter)
+        conf_order = {'HIGH': 3, 'MEDIUM': 2, 'LOW': 1, 'VERY LOW': 0}
+        min_conf_val = conf_order.get(min_confidence, 0)
+        query += ' ORDER BY projection DESC'
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows, columns=[
+            'player_name', 'team', 'player_type', 'stat',
+            'projection', 'std_dev', 'confidence', 'seasons_used', 'age'
+        ])
+        # Filter by confidence
+        df['_conf_val'] = df['confidence'].map(conf_order).fillna(0)
+        df = df[df['_conf_val'] >= min_conf_val].drop(columns=['_conf_val'])
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+
+
+def _evaluate_line(player_name: str, stat: str, line: float,
+                   direction: str) -> Optional[dict]:
+    """Evaluate a single sportsbook line against our season projection."""
+    from pathlib import Path as _Path
+    import sqlite3 as _sqlite3, math as _math
+    root = _Path(__file__).parent.parent
+    db_path = root / 'mlb' / 'database' / 'mlb_predictions.db'
+    if not db_path.exists():
+        return None
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        row = conn.execute('''
+            SELECT projection, std_dev, confidence, seasons_used, age, team
+            FROM season_projections
+            WHERE lower(player_name) LIKE lower(?)
+              AND stat = ?
+              AND season = (SELECT MAX(season) FROM season_projections)
+            ORDER BY confidence DESC LIMIT 1
+        ''', (f'%{player_name.strip()}%', stat)).fetchone()
+        conn.close()
+        if not row:
+            return None
+        proj, std_dev, conf, seasons, age, team = row
+        std_dev = std_dev or max(proj * 0.18, 1.0)
+        # Normal CDF: P(X > line)
+        z = (line - proj) / std_dev
+        def erf(x):
+            sign = 1 if x >= 0 else -1
+            x = abs(x)
+            t = 1.0 / (1.0 + 0.3275911 * x)
+            y = 1.0 - (((((1.061405429*t - 1.453152027)*t) + 1.421413741)*t
+                          - 0.284496736)*t + 0.254829592)*t*(_math.exp(-x*x))
+            return sign * y
+        p_over = 0.5 * (1 - erf(z / 1.4142))
+        prob = p_over if direction == 'OVER' else (1 - p_over)
+        edge = round((prob - 0.524) * 100, 2)
+        if abs(edge) < 3:
+            rec = 'PASS — too close to line'
+        elif prob >= 0.65:
+            rec = f'STRONG {direction}'
+        elif prob >= 0.57:
+            rec = f'LEAN {direction}'
+        else:
+            rec = 'PASS — edge insufficient'
+        return {
+            'player_name': player_name, 'stat': stat, 'line': line,
+            'direction': direction, 'projection': round(proj, 1),
+            'probability': round(prob * 100, 1),
+            'edge': edge, 'recommendation': rec,
+            'confidence': conf, 'seasons_used': seasons,
+            'age': age, 'team': team,
+        }
+    except Exception:
+        return None
+
+
 # ── Main app ──────────────────────────────────────────────────────────────────
 def main():
     st.title("FreePicks Dashboard")
@@ -439,7 +544,7 @@ def main():
         return
 
     # ── Top-level tabs ────────────────────────────────────────────────────────
-    tab_picks, tab_perf, tab_system = st.tabs(["Today's Picks", "Performance", "System"])
+    tab_picks, tab_perf, tab_season, tab_system = st.tabs(["Today's Picks", "Performance", "MLB Season Props", "System"])
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TAB 1 — TODAY'S PICKS
@@ -759,7 +864,196 @@ def main():
             st.info(f"No graded results for {ps} between {perf_start} and {perf_end}.")
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 3 — SYSTEM HEALTH
+    # TAB 3 — MLB SEASON PROPS
+    # ═══════════════════════════════════════════════════════════════════════════
+    with tab_season:
+        st.subheader("MLB Season Props — 2026 Projections")
+        st.caption(
+            "Marcel projections (3-year weighted avg + age curve + park factors). "
+            "Run `python mlb/scripts/run_season_projections.py` to refresh."
+        )
+
+        # ── Filters ───────────────────────────────────────────────────────────
+        BATTER_STATS = {
+            'hr':    'Home Runs',
+            'k':     'Strikeouts (B)',
+            'tb':    'Total Bases',
+            'rbi':   'RBIs',
+            'runs':  'Runs Scored',
+            'hits':  'Hits',
+            'sb':    'Stolen Bases',
+        }
+        PITCHER_STATS = {
+            'k_total':       'Strikeouts (P)',
+            'bb_total':      'Walks (P)',
+            'hits_allowed':  'Hits Allowed',
+            'er_total':      'Earned Runs',
+        }
+        ALL_STATS = {**BATTER_STATS, **PITCHER_STATS}
+        STAT_LABELS = {v: k for k, v in ALL_STATS.items()}
+        stat_options = ['All'] + list(ALL_STATS.values())
+
+        sf1, sf2, sf3, sf4 = st.columns([2, 1, 1, 1])
+        with sf1:
+            stat_sel_label = st.selectbox("Stat", stat_options,
+                                          key="sp_stat", label_visibility="visible")
+            stat_sel = STAT_LABELS.get(stat_sel_label) if stat_sel_label != 'All' else None
+        with sf2:
+            ptype_sel = st.selectbox("Player type", ["All", "Batters", "Pitchers"],
+                                     key="sp_ptype")
+            ptype_map = {"Batters": "batter", "Pitchers": "pitcher", "All": None}
+            ptype_filter = ptype_map[ptype_sel]
+        with sf3:
+            conf_sel = st.selectbox("Min confidence", ["All", "MEDIUM+", "HIGH only"],
+                                    key="sp_conf")
+            conf_map = {"All": "VERY LOW", "MEDIUM+": "MEDIUM", "HIGH only": "HIGH"}
+            conf_filter = conf_map[conf_sel]
+        with sf4:
+            if st.button("Refresh projections", use_container_width=True, key="sp_refresh"):
+                st.cache_data.clear()
+                st.rerun()
+
+        df_sp = fetch_season_projections(
+            stat_filter=stat_sel,
+            player_type=ptype_filter,
+            team_filter=None,
+            min_confidence=conf_filter,
+        )
+
+        if df_sp.empty:
+            st.warning(
+                "No season projections found. "
+                "Run: `cd mlb && python scripts/run_season_projections.py`"
+            )
+        else:
+            # ── Summary metrics ───────────────────────────────────────────────
+            n_players  = df_sp['player_name'].nunique()
+            n_pitchers = df_sp[df_sp['player_type'] == 'pitcher']['player_name'].nunique()
+            n_batters  = df_sp[df_sp['player_type'] == 'batter']['player_name'].nunique()
+            n_high     = df_sp[df_sp['confidence'] == 'HIGH']['player_name'].nunique()
+
+            sm1, sm2, sm3, sm4 = st.columns(4)
+            sm1.metric("Players", n_players)
+            sm2.metric("Batters", n_batters)
+            sm3.metric("Pitchers", n_pitchers)
+            sm4.metric("HIGH confidence", n_high)
+
+            st.divider()
+
+            # ── Inner tabs ────────────────────────────────────────────────────
+            spt1, spt2 = st.tabs(["Rankings", "Line Evaluator"])
+
+            with spt1:
+                # Display table
+                display_df = df_sp[['player_name', 'team', 'player_type', 'stat',
+                                    'projection', 'confidence', 'seasons_used', 'age']].copy()
+                display_df['stat_label'] = display_df['stat'].map(ALL_STATS).fillna(display_df['stat'])
+                display_df = display_df.rename(columns={
+                    'player_name': 'Player', 'team': 'Team',
+                    'player_type': 'Type', 'stat_label': 'Stat',
+                    'projection': 'Projection', 'confidence': 'Confidence',
+                    'seasons_used': 'Seasons', 'age': 'Age',
+                }).drop(columns=['stat'])
+
+                sort_col = st.selectbox("Sort by", ["Projection", "Player", "Confidence"],
+                                        key="sp_sort")
+                asc = sort_col == "Player"
+                display_df = display_df.sort_values(sort_col, ascending=asc)
+
+                st.dataframe(display_df, use_container_width=True,
+                             hide_index=True, height=500)
+
+                total_rows = len(df_sp)
+                st.caption(f"{total_rows:,} stat projections across {n_players} players.")
+
+            with spt2:
+                st.markdown("**Enter a sportsbook line to get an instant edge calculation:**")
+                st.caption("Works for any player in the projections table above.")
+
+                le1, le2, le3, le4, le5 = st.columns([3, 2, 2, 1, 1])
+                with le1:
+                    le_player = st.text_input("Player name", key="le_player",
+                                              placeholder="e.g. Aaron Judge")
+                with le2:
+                    le_stat_label = st.selectbox("Stat", list(ALL_STATS.values()),
+                                                 key="le_stat")
+                    le_stat = STAT_LABELS.get(le_stat_label, le_stat_label)
+                with le3:
+                    le_line = st.number_input("Sportsbook line", value=30.0,
+                                              min_value=0.5, step=0.5, key="le_line")
+                with le4:
+                    le_dir = st.selectbox("Dir", ["OVER", "UNDER"], key="le_dir")
+                with le5:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    evaluate = st.button("Evaluate", use_container_width=True, key="le_eval")
+
+                if evaluate and le_player:
+                    result = _evaluate_line(le_player, le_stat, le_line, le_dir)
+                    if result is None:
+                        st.warning(f"No projection found for '{le_player}' / {le_stat_label}. "
+                                   "Check spelling or run the projections batch.")
+                    else:
+                        ec1, ec2, ec3, ec4 = st.columns(4)
+                        ec1.metric("Projection", result['projection'])
+                        ec2.metric("Model Prob", f"{result['probability']}%")
+                        ec3.metric("Edge vs -110", f"{result['edge']:+.1f}%")
+                        ec4.metric("Confidence", result['confidence'])
+
+                        color = "#1b4332" if result['edge'] > 5 else (
+                                "#3f1515" if result['edge'] < -2 else "#2a2a2a")
+                        st.markdown(
+                            f'<div style="background:{color};padding:12px 18px;'
+                            f'border-radius:8px;margin-top:8px">'
+                            f'<b style="font-size:16px">{result["recommendation"]}</b>'
+                            f'<span style="color:#aaa;font-size:12px;margin-left:12px">'
+                            f'{result["seasons_used"]} seasons of data · '
+                            f'Age {result["age"] or "?"} · {result["team"]}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                # Quick multi-eval: paste multiple lines
+                st.divider()
+                st.markdown("**Bulk evaluate — paste multiple lines:**")
+                st.caption('One per line: `Player Name, stat_key, line, OVER/UNDER`  '
+                           '(e.g. `Aaron Judge, hr, 42.5, OVER`)')
+
+                bulk_input = st.text_area("Lines to evaluate", height=150,
+                                          key="bulk_lines",
+                                          placeholder="Aaron Judge, hr, 42.5, OVER\n"
+                                                      "Gerrit Cole, k_total, 195.5, OVER\n"
+                                                      "Ronald Acuna Jr, sb, 55.5, OVER")
+                if st.button("Evaluate all", key="bulk_eval") and bulk_input.strip():
+                    bulk_results = []
+                    for line_str in bulk_input.strip().split('\n'):
+                        parts = [p.strip() for p in line_str.split(',')]
+                        if len(parts) < 4:
+                            continue
+                        pname_, stat_, line_, dir_ = parts[0], parts[1], parts[2], parts[3].upper()
+                        try:
+                            r = _evaluate_line(pname_, stat_, float(line_), dir_)
+                            if r:
+                                bulk_results.append(r)
+                        except Exception:
+                            pass
+
+                    if bulk_results:
+                        bulk_df = pd.DataFrame(bulk_results)[[
+                            'player_name', 'stat', 'line', 'direction',
+                            'projection', 'probability', 'edge', 'recommendation', 'confidence'
+                        ]].rename(columns={
+                            'player_name': 'Player', 'stat': 'Stat',
+                            'line': 'Line', 'direction': 'Dir',
+                            'projection': 'Proj', 'probability': 'Prob%',
+                            'edge': 'Edge%', 'recommendation': 'Rec',
+                            'confidence': 'Conf',
+                        }).sort_values('Edge%', ascending=False)
+                        st.dataframe(bulk_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.warning("No matching projections found. Check player names and stat keys.")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 4 — SYSTEM HEALTH
     # ═══════════════════════════════════════════════════════════════════════════
     with tab_system:
         st.subheader("Pipeline Status")
