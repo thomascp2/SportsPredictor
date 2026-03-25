@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Sports Prediction Project Orchestrator (NHL & NBA)
-===================================================
+Sports Prediction Project Orchestrator (NHL, NBA & MLB)
+========================================================
 
-Master controller for managing both NHL and NBA prediction systems.
+Master controller for managing NHL, NBA, and MLB prediction systems.
 Runs continuously (or via scheduler) and manages all operations.
 
 MISSION: Build prediction juggernauts for both NHL and NBA through systematic
@@ -78,6 +78,14 @@ try:
 except ImportError:
     NBA_SCHEDULE_AVAILABLE = False
 
+# Optional: MLB schedule check (game-day awareness)
+try:
+    sys.path.insert(0, str(Path(__file__).parent / "mlb" / "scripts"))
+    from mlb_config import mlb_has_games
+    MLB_SCHEDULE_AVAILABLE = True
+except ImportError:
+    MLB_SCHEDULE_AVAILABLE = False
+
 # Optional: ML Training integration
 try:
     sys.path.insert(0, str(Path(__file__).parent / "ml_training"))
@@ -121,8 +129,10 @@ class SportConfig:
             self._init_nhl()
         elif self.sport == "NBA":
             self._init_nba()
+        elif self.sport == "MLB":
+            self._init_mlb()
         else:
-            raise ValueError(f"Unknown sport: {sport}. Use 'nhl' or 'nba'")
+            raise ValueError(f"Unknown sport: {sport}. Use 'nhl', 'nba', or 'mlb'")
 
     def _init_nhl(self):
         """Initialize NHL-specific configuration"""
@@ -235,6 +245,71 @@ class SportConfig:
         # Replace with your 'nba' channel webhook URL
         self.discord_picks_webhook = os.getenv('NBA_DISCORD_WEBHOOK',
             "https://discord.com/api/webhooks/YOUR_NBA_CHANNEL_WEBHOOK_HERE")
+
+    def _init_mlb(self):
+        """Initialize MLB-specific configuration"""
+        self.project_root = self.root / "mlb"
+        self.db_path = self.project_root / "database" / "mlb_predictions.db"
+
+        # Scripts
+        self.prediction_script = "scripts/generate_predictions_daily.py"
+        self.grading_script = "scripts/auto_grade_daily.py"
+        self.schedule_script = "scripts/fetch_game_schedule.py"
+
+        # Timing (CST)
+        # West coast night games finish ~midnight CST; grade at 8am to be safe
+        self.grading_time = "08:00"      # 8 AM - grade yesterday's games
+        self.retrain_time = "08:30"      # 8:30 AM Sunday - weekly ML retrain
+        self.prizepicks_time = "08:30"   # 8:30 AM - fetch PrizePicks lines
+        self.prediction_time = "12:00"   # Noon - lineups post by ~10am CST for most games
+        self.pp_sync_time = "15:00"      # 3 PM - refresh lines for evening games
+        self.top_picks_time = "16:00"    # 4 PM - post Discord picks
+
+        # ML Training Goals (after 1 full MLB season of data collection)
+        self.ml_training_target_per_prop = 7500
+        self.ml_training_start_date = "2027-03-01"
+
+        # Prop types and lines (30 combos total from CORE_PROPS)
+        self.prop_lines = {
+            'strikeouts':        [3.5, 4.5, 5.5, 6.5, 7.5],
+            'outs_recorded':     [12.5, 15.5, 17.5],
+            'pitcher_walks':     [1.5, 2.5],
+            'hits_allowed':      [3.5, 5.5],
+            'earned_runs':       [0.5, 1.5, 2.5],
+            'hits':              [0.5, 1.5],
+            'total_bases':       [1.5, 2.5],
+            'home_runs':         [0.5],
+            'rbis':              [0.5, 1.5],
+            'runs':              [0.5],
+            'stolen_bases':      [0.5],
+            'walks':             [0.5],
+            'batter_strikeouts': [0.5, 1.5],
+            'hrr':               [1.5, 2.5, 3.5],
+        }
+        self.total_prop_combos = sum(len(lines) for lines in self.prop_lines.values())  # 30
+
+        # Data Quality Thresholds
+        # MLB allows more missing data: TBD starters, unposted lineups are common
+        self.min_feature_completeness = 0.90
+        self.min_probability_variety = 40
+        self.min_opponent_feature_rate = 0.85
+        self.opponent_feature_lookback_days = 14
+        self.min_daily_predictions = 100   # ~30 pitchers + batters on partial slate
+        self.max_daily_predictions = 500
+
+        # Performance Thresholds
+        self.target_under_accuracy = 0.60
+        self.target_over_accuracy = 0.55
+
+        # API Health Check URL
+        self.api_health_url = "https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameType=R"
+
+        # Display
+        self.emoji = "[MLB]"
+        self.full_name = "MLB Baseball"
+
+        # Discord webhook for MLB channel
+        self.discord_picks_webhook = os.getenv('MLB_DISCORD_WEBHOOK', '')
 
 
 class GlobalConfig:
@@ -408,6 +483,21 @@ class SportsOrchestrator:
                         details={'skipped_schedule': True, 'game_count': 0},
                         errors=[],
                         warnings=["No games scheduled - intentional skip"]
+                    )
+
+            # MLB: skip entire pipeline when outside regular season
+            if self.config.sport == "MLB" and MLB_SCHEDULE_AVAILABLE:
+                if not mlb_has_games(target_date):
+                    print(f"[SKIP] No MLB games on {target_date} - outside regular season")
+                    print()
+                    return PipelineResult(
+                        success=True,
+                        timestamp=datetime.now().isoformat(),
+                        sport=self.config.sport,
+                        operation="prediction",
+                        details={'skipped_schedule': True, 'game_count': 0},
+                        errors=[],
+                        warnings=["Outside MLB regular season - intentional skip"]
                     )
 
             step = 1
@@ -1969,6 +2059,13 @@ class SportsOrchestrator:
                 print(f"\n{self.config.emoji} [SKIP] No NBA games on {target_date} - skipping PrizePicks ingestion")
                 return {'success': True, 'skipped_schedule': True, 'game_count': 0}
 
+        # MLB: skip ingestion when outside regular season
+        if self.config.sport == "MLB" and MLB_SCHEDULE_AVAILABLE:
+            target_date = datetime.now().strftime('%Y-%m-%d')
+            if not mlb_has_games(target_date):
+                print(f"\n{self.config.emoji} [SKIP] Outside MLB season on {target_date} - skipping PrizePicks ingestion")
+                return {'success': True, 'skipped_schedule': True, 'game_count': 0}
+
         print(f"\n{self.config.emoji} PRIZEPICKS LINE INGESTION")
         print("=" * 60)
 
@@ -2661,7 +2758,7 @@ def print_banner():
     print()
     print("=" * 70)
     print("  SPORTS PREDICTION ORCHESTRATOR")
-    print("  NHL & NBA Prediction System Manager")
+    print("  NHL, NBA & MLB Prediction System Manager")
     print("=" * 70)
     print()
 
@@ -2767,9 +2864,9 @@ Examples:
     )
     parser.add_argument(
         '--sport',
-        choices=['nhl', 'nba', 'all'],
+        choices=['nhl', 'nba', 'mlb', 'all'],
         required=True,
-        help='Sport to manage (nhl, nba, or all)'
+        help='Sport to manage (nhl, nba, mlb, or all)'
     )
     parser.add_argument(
         '--mode',
@@ -2789,7 +2886,7 @@ Examples:
     print_banner()
 
     # Determine which sports to run
-    sports = ['nhl', 'nba'] if args.sport == 'all' else [args.sport]
+    sports = ['nhl', 'nba', 'mlb'] if args.sport == 'all' else [args.sport]
 
     # Special handling for continuous mode with multiple sports
     if args.mode == 'continuous' and len(sports) > 1:

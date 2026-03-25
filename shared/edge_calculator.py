@@ -7,8 +7,9 @@ and rank picks by favorability.
 
 Key Concepts:
 - Edge = Our Probability - Break-Even Probability
-- For PrizePicks standard picks (no juice): Break-even ~50%
-- For goblin/demon picks: Break-even varies by payout
+- For PrizePicks standard picks: Break-even ~54.5% per leg (6-pick Power Play at 37.5x)
+- Goblin picks: Break-even ~70.7% per leg (payout gutted to ~2x — harder to profit despite easier line)
+- Demon picks: Break-even ~44.7% per leg (payout boosted to ~5x+ — easier to profit despite harder line)
 
 Usage:
     python edge_calculator.py --sport nhl --date 2026-01-16
@@ -75,11 +76,22 @@ class EdgeCalculator:
         score = edge * confidence_weight * availability_bonus
     """
 
-    # Break-even probabilities for different pick types
+    # Break-even probabilities for different pick types.
+    #
+    # Derived from PrizePicks payout structure:
+    #   Standard 6-pick Power Play pays 37.5x → p^6 = 1/37.5 → p ≈ 54.5% per leg
+    #   Goblin in 2-pick entry reduces payout to ~2x → p^2 = 1/2 → p ≈ 70.7% per leg
+    #   (Goblins are HARDER to profit from — easier line, but payout gutted)
+    #   Demon in 2-pick entry raises payout to ~5x → p^2 = 1/5 → p ≈ 44.7% per leg
+    #   (Demons are EASIER to profit from — harder line, but payout is much higher)
+    #
+    # Payout reference: standard=3x (2-pick), 5x (3-pick), 10x (4-pick), 20x (5-pick), 37.5x (6-pick)
+    #                   goblin ≈ 1.4x (2 goblins) / 2x (1 goblin)
+    #                   demon  ≈ 5x+ (1 demon) / 10x+ (2 demons)
     BREAK_EVEN = {
-        'standard': 0.50,  # Standard picks (no juice)
-        'goblin': 0.545,   # Goblin picks (need ~54.5% to break even)
-        'demon': 0.60,     # Demon picks (higher variance)
+        'standard': 0.545,  # ~54.5% per leg (6-pick Power Play reference at 37.5x)
+        'goblin': 0.707,    # ~70.7% per leg (2x payout when 1 goblin in 2-pick entry)
+        'demon': 0.447,     # ~44.7% per leg (5x payout when 1 demon in 2-pick entry)
     }
 
     # Confidence tier weights
@@ -554,7 +566,7 @@ class DailyPicksReport:
         lines.append("  LEGEND:")
         lines.append("  [PP] = Available on PrizePicks")
         lines.append("  [FAV] = PrizePicks line favorable for our prediction")
-        lines.append("  Edge = Our Probability - 50% (break-even)")
+        lines.append("  Edge = Our Probability - Break-Even% (standard=54.5%, goblin=70.7%, demon=44.7%)")
         lines.append("  Score = Edge * Confidence * Availability * Line Favorability")
         lines.append("=" * 80)
 
