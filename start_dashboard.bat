@@ -10,8 +10,7 @@ SET SUPABASE_SERVICE_ROLE_KEY=***REMOVED***
 :: Option A (active): ngrok static domain — never changes, bookmark this!
 ::   Setup: ngrok.com → free account → Domains → claim one free static domain
 ::   Then: ngrok config add-authtoken YOUR_TOKEN
-SET NGROK_DOMAIN=PASTE_YOUR_NGROK_DOMAIN_HERE
-:: e.g.  SET NGROK_DOMAIN=freepicks.ngrok-free.app
+SET NGROK_DOMAIN=benita-wedgelike-healingly.ngrok-free.dev
 
 :: Option B (fallback): Cloudflare quick tunnel — random URL every restart
 ::   Uncomment the cloudflared line in TUNNEL_LOOP and comment out ngrok if preferred
@@ -31,11 +30,11 @@ start "FreePicks Streamlit" cmd /c "streamlit run dashboards/cloud_dashboard.py 
 timeout /t 6 /nobreak >nul
 
 echo [INFO] Starting ngrok tunnel (permanent URL)...
-echo [INFO] Share this with users: https://%NGROK_DOMAIN%
+echo [INFO] Permanent URL (bookmark this): https://%NGROK_DOMAIN%
 echo.
 
 :TUNNEL_LOOP
-ngrok http 8502 --domain=%NGROK_DOMAIN%
+"%LOCALAPPDATA%\Microsoft\WindowsApps\ngrok.exe" http 8502 --domain=%NGROK_DOMAIN%
 echo.
 echo [WARN] Tunnel dropped. Restarting in 10 seconds...
 timeout /t 10 /nobreak
