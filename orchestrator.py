@@ -321,6 +321,9 @@ class SportConfig:
         # Discord webhook for MLB channel
         self.discord_picks_webhook = os.getenv('MLB_DISCORD_WEBHOOK', '')
 
+        # SZLN ML refresh (weekly — lines change slowly)
+        self.szln_refresh_time = "09:00"   # 9 AM Monday
+
 
 class GlobalConfig:
     """Global configuration shared across sports"""
@@ -2658,6 +2661,12 @@ class SportsOrchestrator:
             self.run_weekly_ml_retrain
         )
 
+        # Weekly SZLN ML refresh (MLB only — season-long lines change slowly)
+        if self.config.sport == "MLB" and hasattr(self.config, 'szln_refresh_time'):
+            schedule.every().monday.at(self.config.szln_refresh_time).do(
+                self.run_szln_ml_refresh
+            )
+
         print(f"{self.config.emoji} Scheduled {self.config.sport} tasks:")
         print(f"   Grading: Daily at {self.config.grading_time}")
         if PRIZEPICKS_AVAILABLE:
@@ -2666,6 +2675,8 @@ class SportsOrchestrator:
         print(f"   Top 20 picks: Daily at {self.config.top_picks_time}")
         print(f"   Health checks: Every {self.global_config.HEALTH_CHECK_INTERVAL_MINUTES} minutes")
         print(f"   ML retrain: Sundays at {self.config.retrain_time} (500+ new preds required)")
+        if self.config.sport == "MLB" and hasattr(self.config, 'szln_refresh_time'):
+            print(f"   SZLN ML refresh: Mondays at {self.config.szln_refresh_time}")
         print()
 
         return True
@@ -2697,12 +2708,47 @@ class SportsOrchestrator:
             print(f"\n{self.config.emoji} {self.config.sport} orchestrator stopped by user")
             self._save_state()
 
+    def run_szln_ml_refresh(self) -> Dict:
+        """
+        Refresh MLB Season-Long (SZLN) ML predictions.
+
+        Only meaningful for MLB — fetches live PrizePicks SZLN lines and runs
+        the career-stat ML model to produce OVER/UNDER probabilities. Results
+        are saved to the season_prop_ml_picks table and surfaced in the dashboard.
+
+        Scheduled: weekly (Monday 9am) for MLB only.
+        Can also be triggered manually via --operation szln.
+        """
+        if self.config.sport != "MLB":
+            print(f"[SZLN] SZLN ML refresh is MLB-only — skipping for {self.config.sport}")
+            return {'success': True, 'skipped': True, 'reason': 'non-mlb sport'}
+
+        print(f"\n[SZLN] Starting MLB SZLN ML refresh...")
+        try:
+            scripts_dir = self.root / "mlb" / "scripts"
+            sys.path.insert(0, str(scripts_dir))
+            from season_props_ml import run_szln_predictions
+            result = run_szln_predictions()
+            n_picks = result.get('saved', 0)
+            n_lines = result.get('lines_fetched', 0)
+            print(f"[SZLN] Complete — {n_lines} lines fetched, {n_picks} picks saved")
+            return {'success': True, 'picks_saved': n_picks, 'lines_fetched': n_lines}
+        except ImportError as e:
+            print(f"[SZLN] season_props_ml.py not available: {e}")
+            return {'success': False, 'error': str(e)}
+        except Exception as e:
+            import traceback as _tb
+            print(f"[SZLN ERROR] {e}")
+            self._log_error(_tb.format_exc(), "SZLN_ERROR")
+            return {'success': False, 'error': str(e)}
+
     def run_once(self, operation: str = 'all'):
         """
         Run specific operation once (for testing/manual execution)
 
         Args:
-            operation: 'prediction', 'grading', 'health', 'prizepicks', 'ml-check', 'ml-train', or 'all'
+            operation: 'prediction', 'grading', 'health', 'prizepicks',
+                       'ml-check', 'ml-train', 'pp-sync', 'szln', or 'all'
         """
         if operation in ['prizepicks', 'all']:
             print("\n" + "="*80)
@@ -2759,6 +2805,14 @@ class SportsOrchestrator:
             print("="*80)
             result = self.run_pp_sync()
             print(f"\nResult: {'SUCCESS' if result.get('success') else 'FAILED'}")
+
+        if operation in ['szln', 'all']:
+            if self.config.sport == "MLB":
+                print("\n" + "="*80)
+                print(f"{self.config.emoji} RUNNING: MLB SZLN Season-Long ML Predictions")
+                print("="*80)
+                result = self.run_szln_ml_refresh()
+                print(f"\nResult: {'SUCCESS' if result.get('success') else 'FAILED'}")
 
 
 # ============================================================================
