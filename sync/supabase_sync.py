@@ -357,7 +357,8 @@ class SupabaseSync:
         print(f"[SYNC] Syncing {sport_upper} odds_type labels from PP for {game_date}...")
 
         if sport_upper == 'NHL':
-            props = ('shots', 'points', 'goals', 'assists', 'pp_points')
+            props = ('shots', 'points', 'goals', 'assists', 'pp_points',
+                     'hits', 'blocked_shots')
         elif sport_upper == 'MLB':
             props = ('strikeouts', 'outs_recorded', 'pitcher_walks', 'hits_allowed',
                      'earned_runs', 'hits', 'total_bases', 'home_runs', 'rbis',
