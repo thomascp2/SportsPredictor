@@ -459,6 +459,35 @@ CREATE TABLE IF NOT EXISTS season_projections (
 
 CREATE INDEX IF NOT EXISTS idx_season_proj_player ON season_projections(player_name, season);
 CREATE INDEX IF NOT EXISTS idx_season_proj_stat ON season_projections(stat, season);
+
+CREATE TABLE IF NOT EXISTS season_prop_ml_picks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    player_name TEXT NOT NULL,
+    player_id INTEGER,
+    team TEXT,
+    player_type TEXT NOT NULL,
+    stat TEXT NOT NULL,
+    pp_stat_type TEXT,
+    line REAL NOT NULL,
+    odds_type TEXT,
+    direction TEXT NOT NULL,
+    probability REAL NOT NULL,
+    edge REAL,
+    projection REAL,
+    std_dev REAL,
+    confidence TEXT,
+    model_used TEXT,
+    key_factors TEXT,
+    recommendation TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(season, player_name, stat, fetched_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_szln_picks_player ON season_prop_ml_picks(player_name, season);
+CREATE INDEX IF NOT EXISTS idx_szln_picks_stat ON season_prop_ml_picks(stat, season);
+CREATE INDEX IF NOT EXISTS idx_szln_picks_edge ON season_prop_ml_picks(edge, season);
 """
 
 
