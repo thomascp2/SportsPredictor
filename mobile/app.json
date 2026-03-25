@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "FreePicks",
+    "slug": "freepicks",
+    "version": "2.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "freepicks",
+    "splash": {
+      "backgroundColor": "#121212"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.freepicks.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#121212"
+      },
+      "package": "com.freepicks.app"
+    },
+    "plugins": [
+      "expo-secure-store"
+    ]
+  }
+}
