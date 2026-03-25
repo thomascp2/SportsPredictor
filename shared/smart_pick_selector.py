@@ -340,6 +340,8 @@ class SmartPickSelector:
         # Database paths
         if sport.lower() == 'nhl':
             self.pred_db_path = self.root / 'nhl' / 'database' / 'nhl_predictions_v2.db'
+        elif sport.lower() == 'mlb':
+            self.pred_db_path = self.root / 'mlb' / 'database' / 'mlb_predictions.db'
         else:
             self.pred_db_path = self.root / 'nba' / 'database' / 'nba_predictions.db'
 
@@ -812,8 +814,8 @@ class SmartPickSelector:
         conn = sqlite3.connect(self.pred_db_path)
         conn.row_factory = sqlite3.Row
 
-        # Different query based on sport (NHL vs NBA have different schemas)
-        if self.sport == 'NHL':
+        # Different query based on sport (NHL/MLB use features_json; NBA uses f_* columns)
+        if self.sport in ('NHL', 'MLB'):
             rows = conn.execute('''
                 SELECT player_name, team, opponent, prop_type, line,
                        prediction, probability, features_json
@@ -834,8 +836,8 @@ class SmartPickSelector:
         for row in rows:
             pred = dict(row)
 
-            if self.sport == 'NHL':
-                # NHL: Extract parameters from features_json
+            if self.sport in ('NHL', 'MLB'):
+                # NHL/MLB: Extract parameters from features_json
                 try:
                     features = json.loads(row['features_json'])
                     # For points (Poisson) — try legacy key then canonical
@@ -972,7 +974,7 @@ class SmartPickSelector:
         lines = []
 
         # Header (Windows-safe, no emojis in code - Discord will render them)
-        sport_label = "[NBA]" if self.sport == "NBA" else "[NHL]"
+        sport_label = {"NBA": "[NBA]", "NHL": "[NHL]", "MLB": "[MLB]"}.get(self.sport, f"[{self.sport}]")
         lines.append(f"```")
         lines.append(f"{sport_label} SMART PICKS - {game_date}")
         lines.append(f"{'='*50}")

@@ -372,7 +372,7 @@ def get_ml_model_info() -> dict:
     from pathlib import Path as _Path
     root = _Path(__file__).parent.parent
     info = {}
-    for sport in ["nba", "nhl"]:
+    for sport in ["nba", "nhl", "mlb"]:
         registry = root / "ml_training" / "model_registry" / sport
         if not registry.exists():
             info[sport.upper()] = {"count": 0, "last_trained": "—", "avg_accuracy": None}
@@ -407,7 +407,7 @@ def fetch_pipeline_status() -> dict:
     if sb is None:
         return {}
     status = {}
-    for sport in ["NBA", "NHL"]:
+    for sport in ["NBA", "NHL", "MLB"]:
         r = (sb.table("daily_props")
                .select("game_date,status", count="exact")
                .eq("sport", sport)
@@ -448,7 +448,7 @@ def main():
         # Filters row (compact for mobile)
         c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
         with c1:
-            sport = st.selectbox("Sport", ["NBA", "NHL"], label_visibility="collapsed")
+            sport = st.selectbox("Sport", ["NBA", "NHL", "MLB"], label_visibility="collapsed")
         with c2:
             game_date = st.date_input("Date", value=date.today(),
                                       label_visibility="collapsed").isoformat()
@@ -584,7 +584,7 @@ def main():
     with tab_perf:
         pc1, pc2 = st.columns([1, 2])
         with pc1:
-            ps = st.selectbox("Sport", ["NBA", "NHL"], key="perf_sport")
+            ps = st.selectbox("Sport", ["NBA", "NHL", "MLB"], key="perf_sport")
         with pc2:
             # Date range slider — goes back to Nov 2024 (first data)
             earliest = date(2024, 11, 1)
@@ -791,7 +791,7 @@ def main():
         st.subheader("Cloud-Synced Totals")
         st.caption("Counts reflect data synced to Supabase. Historical predictions "
                    "pre-dating the sync layer live in local SQLite only.")
-        for sport_name in ["NBA", "NHL"]:
+        for sport_name in ["NBA", "NHL", "MLB"]:
             r = (sb.table("daily_props")
                    .select("id", count="exact")
                    .eq("sport", sport_name)
@@ -808,15 +808,16 @@ def main():
         st.divider()
         st.subheader("ML Models")
         ml_info = get_ml_model_info()
-        for sport_name in ["NBA", "NHL"]:
+        for sport_name in ["NBA", "NHL", "MLB"]:
             info = ml_info.get(sport_name, {})
             mc1, mc2, mc3 = st.columns(3)
             mc1.metric(f"{sport_name} Models", info.get("count", 0))
             mc2.metric("Last Retrained", info.get("last_trained", "—"))
             avg = info.get("avg_accuracy")
             mc3.metric("Avg Accuracy", f"{avg*100:.1f}%" if avg else "—")
-        st.caption("Models auto-retrain every Sunday at 2 AM CST (NHL) / 2:30 AM (NBA) "
-                   "when 500+ new predictions have accumulated since the last train.")
+        st.caption("Models auto-retrain every Sunday at 2 AM CST (NHL) / 2:30 AM (NBA) / 8:30 AM (MLB) "
+                   "when 500+ new predictions have accumulated since the last train. "
+                   "MLB ML training target: 7,500 per prop/line combo (targets 2027 season).")
 
         st.divider()
         st.caption("Dashboard reads from Supabase. Data syncs after each "

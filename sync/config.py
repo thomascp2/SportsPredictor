@@ -33,6 +33,7 @@ GAME_HOURS_END = 2             # Stop polling at 2am ET (next day)
 # Database paths (match orchestrator)
 NHL_DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'nhl', 'database', 'nhl_predictions_v2.db')
 NBA_DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'nba', 'database', 'nba_predictions.db')
+MLB_DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'mlb', 'database', 'mlb_predictions.db')
 
 # Tier mapping
 TIER_ORDER = ['T1-ELITE', 'T2-STRONG', 'T3-GOOD', 'T4-LEAN', 'T5-FADE']
