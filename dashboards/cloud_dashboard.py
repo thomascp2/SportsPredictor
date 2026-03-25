@@ -476,6 +476,72 @@ def fetch_season_projections(stat_filter: str = None,
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=1800)
+def fetch_szln_picks(stat_filter: str = None,
+                     direction_filter: str = None,
+                     min_edge: float = 0.0,
+                     player_type_filter: str = None) -> pd.DataFrame:
+    """Load ML SZLN picks from season_prop_ml_picks table."""
+    from pathlib import Path as _Path
+    import sqlite3 as _sqlite3
+    root = _Path(__file__).parent.parent
+    db_path = root / 'mlb' / 'database' / 'mlb_predictions.db'
+    if not db_path.exists():
+        return pd.DataFrame()
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        # Check table exists
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='season_prop_ml_picks'"
+        ).fetchone()
+        if not exists:
+            conn.close()
+            return pd.DataFrame()
+
+        # Pull the single latest batch (max fetched_at) for current season
+        latest_fetch = conn.execute(
+            "SELECT MAX(fetched_at) FROM season_prop_ml_picks "
+            "WHERE season = (SELECT MAX(season) FROM season_prop_ml_picks)"
+        ).fetchone()[0]
+        if not latest_fetch:
+            conn.close()
+            return pd.DataFrame()
+
+        query = '''
+            SELECT player_name, team, player_type, stat, pp_stat_type,
+                   line, direction, probability, edge, projection, std_dev,
+                   confidence, model_used, recommendation, fetched_at
+            FROM season_prop_ml_picks
+            WHERE fetched_at = ?
+        '''
+        params = [latest_fetch]
+        if stat_filter and stat_filter != 'All':
+            query += ' AND stat = ?'
+            params.append(stat_filter)
+        if direction_filter and direction_filter != 'All':
+            query += ' AND direction = ?'
+            params.append(direction_filter)
+        if player_type_filter and player_type_filter != 'All':
+            query += ' AND player_type = ?'
+            params.append(player_type_filter.lower())
+        if min_edge and min_edge > 0:
+            query += ' AND edge >= ?'
+            params.append(min_edge)
+        query += ' ORDER BY edge DESC'
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows, columns=[
+            'player_name', 'team', 'player_type', 'stat', 'pp_stat_type',
+            'line', 'direction', 'probability', 'edge', 'projection', 'std_dev',
+            'confidence', 'model_used', 'recommendation', 'fetched_at',
+        ])
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 def _evaluate_line(player_name: str, stat: str, line: float,
                    direction: str) -> Optional[dict]:
     """Evaluate a single sportsbook line against our season projection."""
@@ -961,7 +1027,7 @@ A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 
             st.divider()
 
             # ── Inner tabs ────────────────────────────────────────────────────
-            spt1, spt2 = st.tabs(["Rankings", "Line Evaluator"])
+            spt1, spt2, spt3 = st.tabs(["Rankings", "Line Evaluator", "PrizePicks SZLN ML"])
 
             with spt1:
                 # Display table
@@ -1090,6 +1156,138 @@ A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 
                         st.dataframe(bulk_df, use_container_width=True, hide_index=True)
                     else:
                         st.warning("No matching projections found. Check player names and stat keys.")
+
+            # ─────────────────────────────────────────────────────────────────
+            with spt3:
+                st.markdown("### PrizePicks SZLN — ML Predictions")
+                st.caption(
+                    "ML model compares our career-stat projections against live PrizePicks "
+                    "season-long lines and returns calibrated OVER/UNDER probabilities. "
+                    "Run `python mlb/scripts/season_props_ml.py` to refresh picks."
+                )
+
+                # ── Controls row ──────────────────────────────────────────────
+                pp_c1, pp_c2, pp_c3, pp_c4, pp_c5 = st.columns([2, 1, 1, 1, 1])
+                SZLN_STAT_LABELS = {
+                    'All':           'All',
+                    'k_total':       'Strikeouts (P)',
+                    'bb_total':      'Walks (P)',
+                    'hits_allowed':  'Hits Allowed (P)',
+                    'er_total':      'Earned Runs (P)',
+                    'outs_recorded': 'Outs Recorded (P)',
+                    'hr':    'Home Runs',
+                    'sb':    'Stolen Bases',
+                    'hits':  'Hits',
+                    'tb':    'Total Bases',
+                    'rbi':   'RBIs',
+                    'runs':  'Runs Scored',
+                    'k':     'Strikeouts (B)',
+                    'walks': 'Walks (B)',
+                    'hrr':   'H+R+RBI',
+                }
+                SZLN_LABEL_TO_STAT = {v: k for k, v in SZLN_STAT_LABELS.items() if k != 'All'}
+
+                with pp_c1:
+                    pp_stat_label = st.selectbox(
+                        "Stat", list(SZLN_STAT_LABELS.values()), key="pp_stat"
+                    )
+                    pp_stat_filter = SZLN_LABEL_TO_STAT.get(pp_stat_label)
+
+                with pp_c2:
+                    pp_dir = st.selectbox("Direction", ["All", "OVER", "UNDER"], key="pp_dir")
+                    pp_dir_filter = None if pp_dir == "All" else pp_dir
+
+                with pp_c3:
+                    pp_ptype = st.selectbox("Type", ["All", "Batters", "Pitchers"], key="pp_ptype2")
+                    pp_ptype_filter = {"Batters": "batter", "Pitchers": "pitcher"}.get(pp_ptype)
+
+                with pp_c4:
+                    pp_min_edge = st.number_input(
+                        "Min edge %", value=3.0, min_value=0.0, step=1.0, key="pp_min_edge"
+                    )
+
+                with pp_c5:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("Refresh", use_container_width=True, key="pp_refresh"):
+                        st.cache_data.clear()
+                        st.rerun()
+
+                df_szln = fetch_szln_picks(
+                    stat_filter=pp_stat_filter,
+                    direction_filter=pp_dir_filter,
+                    min_edge=pp_min_edge,
+                    player_type_filter=pp_ptype_filter,
+                )
+
+                if df_szln.empty:
+                    st.info(
+                        "No ML SZLN picks found. "
+                        "Run: `cd mlb && python scripts/season_props_ml.py` to fetch lines and generate predictions.\n\n"
+                        "First-time setup: `python scripts/season_props_ml.py --train` to build models."
+                    )
+                else:
+                    # ── Summary metrics ───────────────────────────────────────
+                    n_picks  = len(df_szln)
+                    n_over   = (df_szln['direction'] == 'OVER').sum()
+                    n_under  = (df_szln['direction'] == 'UNDER').sum()
+                    avg_edge = df_szln['edge'].mean()
+
+                    pm1, pm2, pm3, pm4 = st.columns(4)
+                    pm1.metric("Total Picks", n_picks)
+                    pm2.metric("OVER picks",  n_over)
+                    pm3.metric("UNDER picks", n_under)
+                    pm4.metric("Avg Edge vs -110", f"{avg_edge:+.1f}%")
+
+                    st.divider()
+
+                    # ── Direction breakdown tabs ───────────────────────────────
+                    EDGE_COLOR = {True: "#1b4332", False: "#2a2a2a"}  # green if big edge
+
+                    disp = df_szln[[
+                        'player_name', 'team', 'player_type', 'stat',
+                        'line', 'direction', 'probability', 'edge',
+                        'projection', 'confidence', 'model_used', 'recommendation',
+                    ]].copy()
+
+                    disp['stat_label'] = disp['stat'].map(SZLN_STAT_LABELS).fillna(disp['stat'])
+                    disp['probability'] = disp['probability'].round(1).astype(str) + '%'
+                    disp['edge']        = disp['edge'].apply(lambda x: f"{x:+.1f}%")
+                    disp['projection']  = disp['projection'].round(1)
+
+                    # Direction emoji
+                    disp['direction'] = disp['direction'].map(
+                        lambda d: f"OVER" if d == 'OVER' else f"UNDER"
+                    )
+
+                    disp = disp.rename(columns={
+                        'player_name': 'Player', 'team': 'Team',
+                        'player_type': 'Type', 'stat_label': 'Stat',
+                        'line': 'PP Line', 'direction': 'Dir',
+                        'probability': 'Prob', 'edge': 'Edge',
+                        'projection': 'Our Proj', 'confidence': 'Conf',
+                        'model_used': 'Model', 'recommendation': 'Rec',
+                    }).drop(columns=['stat'])
+
+                    st.dataframe(disp, use_container_width=True, hide_index=True, height=480)
+
+                    # ── Legend ────────────────────────────────────────────────
+                    with st.expander("Column guide"):
+                        st.markdown("""
+| Column | Meaning |
+|--------|---------|
+| **PP Line** | The PrizePicks season-long prop line |
+| **Dir** | Our ML model's recommended direction (OVER or UNDER) |
+| **Prob** | Calibrated probability the actual total lands on our side |
+| **Edge** | Prob − 52.4% (break-even at -110). Positive = profitable long-run |
+| **Our Proj** | Marcel + ML model's season-total projection |
+| **Conf** | Data quality: HIGH = 3+ seasons, MED = 2, LOW = 1 |
+| **Model** | `ml` = Gradient Boosting model trained on career data; `stat` = statistical fallback |
+                        """)
+
+                    # Fetch timestamp
+                    if 'fetched_at' in df_szln.columns:
+                        latest = df_szln['fetched_at'].max()
+                        st.caption(f"Lines fetched: {latest[:19] if latest else 'unknown'}")
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TAB 4 — SYSTEM HEALTH
