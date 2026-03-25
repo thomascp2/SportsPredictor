@@ -1,24 +1,33 @@
 """
-NHL Daily Hits & Blocked Shots Picks
-=====================================
-Calls the Claude API with tonight's game slate and generates 8 high-probability
-hits/blocks plays for PrizePicks Flex. Completely standalone — no dependency on
-the main NHL prediction pipeline.
+NHL Daily Hits & Blocked Shots Picks — Grok Edition
+=====================================================
+Calls the xAI Grok API (which has live web search) with tonight's NHL
+schedule and real Vegas odds injected as context, then generates 8
+floor-based hits/blocks plays for PrizePicks Flex.
 
-Storage: nhl/database/hits_blocks.db  (separate from nhl_predictions_v2.db)
+Completely standalone — no dependency on the main NHL prediction pipeline.
+Storage: nhl/database/hits_blocks.db
+
+Setup:
+    pip install requests          # only dependency (usually already installed)
+
+    # Required:
+    export XAI_API_KEY="xai-..."
+
+    # Optional but strongly recommended (500 free req/month):
+    export ODDS_API_KEY="..."     # from https://the-odds-api.com  (free tier)
+
+    # Optional:
+    export NHL_HITS_BLOCKS_WEBHOOK="https://discord.com/api/webhooks/..."
+    export GROK_HB_MODEL="grok-2-1212"   # default
 
 Usage:
     cd nhl
     python scripts/daily_hits_blocks.py              # run for today
     python scripts/daily_hits_blocks.py --date 2026-03-26
-    python scripts/daily_hits_blocks.py --discord    # also post to Discord
-    python scripts/daily_hits_blocks.py --force      # regenerate even if already run
+    python scripts/daily_hits_blocks.py --discord    # run + post to Discord
+    python scripts/daily_hits_blocks.py --force      # regenerate even if run today
     python scripts/daily_hits_blocks.py --show       # print latest saved picks
-
-Environment variables:
-    ANTHROPIC_API_KEY          (required)
-    NHL_HITS_BLOCKS_WEBHOOK    Discord webhook URL for this channel
-    CLAUDE_HB_MODEL            Override Claude model (default: claude-3-5-sonnet-20241022)
 """
 
 import sys
@@ -37,15 +46,16 @@ _SCRIPTS_DIR = Path(__file__).parent
 _NHL_ROOT    = _SCRIPTS_DIR.parent
 DB_PATH      = str(_NHL_ROOT / "database" / "hits_blocks.db")
 
-# ── Claude ────────────────────────────────────────────────────────────────────
-try:
-    from anthropic import Anthropic
-    CLAUDE_AVAILABLE = True
-except ImportError:
-    CLAUDE_AVAILABLE = False
+# ── xAI / Grok ────────────────────────────────────────────────────────────────
+GROK_API_URL  = "https://api.x.ai/v1/chat/completions"
+GROK_MODEL    = os.getenv("GROK_HB_MODEL", "grok-2-1212")
+MAX_TOKENS    = 2048
 
-CLAUDE_MODEL   = os.getenv("CLAUDE_HB_MODEL", "claude-3-5-sonnet-20241022")
-MAX_TOKENS     = 2048
+# ── The Odds API (optional — real-time Vegas lines) ───────────────────────────
+ODDS_API_KEY    = os.getenv("ODDS_API_KEY", "")
+ODDS_API_URL    = ("https://api.the-odds-api.com/v4/sports/icehockey_nhl/odds/"
+                   "?apiKey={key}&regions=us&markets=h2h,spreads,totals"
+                   "&oddsFormat=american&dateFormat=iso")
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 DISCORD_WEBHOOK = os.getenv(
@@ -56,14 +66,38 @@ DISCORD_WEBHOOK = os.getenv(
 # ── NHL schedule API ──────────────────────────────────────────────────────────
 NHL_SCHEDULE_API = "https://api-web.nhle.com/v1/schedule/{date}"
 
+# NHL full name → abbreviation (for matching Odds API team names)
+_TEAM_NAME_TO_ABBR = {
+    "anaheim ducks": "ANA", "boston bruins": "BOS", "buffalo sabres": "BUF",
+    "calgary flames": "CGY", "carolina hurricanes": "CAR",
+    "chicago blackhawks": "CHI", "colorado avalanche": "COL",
+    "columbus blue jackets": "CBJ", "dallas stars": "DAL",
+    "detroit red wings": "DET", "edmonton oilers": "EDM",
+    "florida panthers": "FLA", "los angeles kings": "LAK",
+    "minnesota wild": "MIN", "montreal canadiens": "MTL",
+    "montreal canadiens": "MTL", "nashville predators": "NSH",
+    "new jersey devils": "NJD", "new york islanders": "NYI",
+    "new york rangers": "NYR", "ottawa senators": "OTT",
+    "philadelphia flyers": "PHI", "pittsburgh penguins": "PIT",
+    "san jose sharks": "SJS", "seattle kraken": "SEA",
+    "st. louis blues": "STL", "tampa bay lightning": "TBL",
+    "toronto maple leafs": "TOR", "utah hockey club": "UTA",
+    "utah hc": "UTA", "vancouver canucks": "VAN",
+    "vegas golden knights": "VGK", "washington capitals": "WSH",
+    "winnipeg jets": "WPG",
+}
+
+def _abbr(full_name: str) -> str:
+    return _TEAM_NAME_TO_ABBR.get(full_name.lower().strip(), full_name[:3].upper())
+
 
 # ============================================================================
-# PROMPT
+# PROMPT TEMPLATE
 # ============================================================================
 
 PROMPT = """Today is {date}. Run the NHL daily hits & blocked shots task for tonight's NHL slates.
 
-Tonight's scheduled games:
+Tonight's scheduled games{odds_note}:
 {games_context}
 
 Requirements (follow exactly every time):
@@ -71,9 +105,9 @@ Requirements (follow exactly every time):
 - Give me exactly 8 highest-probability plays (players + exact line, e.g. "Over 2.5 Blocked Shots" or "Over 3.5 Hits").
 - Only players with locked-in 20-23+ min TOI roles (top-pair D, heavy-minute shutdown forwards, etc.).
 - Justify each with: season avg + recent form (last 5-10 games), opposing team's style (high-shot-volume for blocks or physical/forecheck-heavy for hits), and expected game flow.
-- CRITICAL: Only include games with zero blowout risk - favorites no heavier than -170 ML (ideally lighter), moderate puck lines, totals in the 5.5-6.5 range. No early-hook scripts or lopsided games. Exclude any game that fails this filter.
-- Cover tonight's games only. If fewer than 8 qualifying legs, repeat strong ones or note it - but aim for 8 distinct.
-- All players must be confirmed good-to-go (no rest, injury, or scratch flags - use your best knowledge of current roster status).
+- CRITICAL: Pull current Vegas moneyline, puck line, and O/U totals. ONLY include games with zero blowout risk — favorites no heavier than -170 ML (ideally lighter), moderate puck lines, totals in the 5.5-6.5 range. No early-hook scripts or lopsided games. Exclude any game that fails this filter.
+- Cover tonight's games only. If fewer than 8 qualifying legs, repeat strong ones or note it — but aim for 8 distinct.
+- All players must be confirmed good-to-go (no rest, injury, or scratch flags — verify latest news).
 - Format exactly like this:
 
   1. **Player Name Over X.5 Category** (Team @ Opponent)
@@ -90,20 +124,17 @@ End with exactly: "These are the sharpest floor-based hits/blocks legs on the bo
 
 Additional rules:
 - Never add extra commentary outside the format.
-- Use your knowledge of this NHL season's stats, player roles, and team playing styles.
-- Note: Vegas lines are estimates based on your training data - always verify current lines before placing bets.
+- Use real, up-to-date stats and lines (search current sources for season/recent averages, TOI, Vegas odds, injury news, and game previews).
 - Prioritize defensemen for blocks and physical/energy forwards for hits.
 - Keep justifications concise but data-driven.
 - If no games qualify under the zero-blowout rule, state that clearly and suggest alternatives only if needed.
 """
-
 
 # ============================================================================
 # DATABASE
 # ============================================================================
 
 def _ensure_db():
-    """Create the hits_blocks.db and table if they don't exist."""
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
@@ -116,23 +147,30 @@ def _ensure_db():
             prompt_tokens     INTEGER DEFAULT 0,
             completion_tokens INTEGER DEFAULT 0,
             games_count       INTEGER DEFAULT 0,
+            odds_source       TEXT DEFAULT 'grok_search',
             UNIQUE(run_date)
         )
     """)
+    # Add odds_source column if upgrading from older schema
+    try:
+        conn.execute("ALTER TABLE daily_picks ADD COLUMN odds_source TEXT DEFAULT 'grok_search'")
+        conn.commit()
+    except Exception:
+        pass   # column already exists
     conn.commit()
     conn.close()
 
 
-def _save(run_date, output, model, prompt_tok, comp_tok, games_count):
+def _save(run_date, output, model, prompt_tok, comp_tok, games_count, odds_source):
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         INSERT OR REPLACE INTO daily_picks
         (run_date, generated_at, raw_output, model,
-         prompt_tokens, completion_tokens, games_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+         prompt_tokens, completion_tokens, games_count, odds_source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         run_date, datetime.now().isoformat(), output, model,
-        prompt_tok, comp_tok, games_count,
+        prompt_tok, comp_tok, games_count, odds_source,
     ))
     conn.commit()
     conn.close()
@@ -145,68 +183,234 @@ def load_picks(run_date: str = None) -> dict:
     if run_date:
         row = conn.execute(
             "SELECT run_date, generated_at, raw_output, model, "
-            "prompt_tokens, completion_tokens, games_count "
-            "FROM daily_picks WHERE run_date = ?",
-            (run_date,)
+            "prompt_tokens, completion_tokens, games_count, odds_source "
+            "FROM daily_picks WHERE run_date = ?", (run_date,)
         ).fetchone()
     else:
         row = conn.execute(
             "SELECT run_date, generated_at, raw_output, model, "
-            "prompt_tokens, completion_tokens, games_count "
+            "prompt_tokens, completion_tokens, games_count, odds_source "
             "FROM daily_picks ORDER BY run_date DESC LIMIT 1"
         ).fetchone()
     conn.close()
     if not row:
         return {}
     keys = ["run_date", "generated_at", "raw_output", "model",
-            "prompt_tokens", "completion_tokens", "games_count"]
+            "prompt_tokens", "completion_tokens", "games_count", "odds_source"]
     return dict(zip(keys, row))
 
 
-def load_recent(n: int = 7) -> list:
-    """Return the n most recent pick records (metadata only, no raw_output)."""
+def load_recent(n: int = 14) -> list:
+    """Return the n most recent dates that have picks saved."""
     _ensure_db()
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
-        "SELECT run_date, generated_at, model, games_count "
-        "FROM daily_picks ORDER BY run_date DESC LIMIT ?",
-        (n,)
+        "SELECT run_date FROM daily_picks ORDER BY run_date DESC LIMIT ?", (n,)
     ).fetchall()
     conn.close()
-    return [dict(zip(["run_date", "generated_at", "model", "games_count"], r))
-            for r in rows]
+    return [r[0] for r in rows]
 
 
 # ============================================================================
-# SCHEDULE FETCH
+# NHL SCHEDULE FETCH
 # ============================================================================
 
-def _fetch_games(target_date: str) -> tuple:
+def _fetch_schedule(target_date: str) -> list:
     """
-    Fetch tonight's NHL games.
-    Returns (context_string, games_count).
+    Return list of dicts: {away_abbr, home_abbr, away_full, home_full, start_utc, venue}
     """
     try:
         url = NHL_SCHEDULE_API.format(date=target_date)
         req = urllib.request.urlopen(url, timeout=10)
         data = json.loads(req.read())
-
-        lines = []
+        games = []
         for day_block in data.get("gameWeek", []):
             if day_block.get("date") == target_date:
                 for g in day_block.get("games", []):
-                    away  = g.get("awayTeam", {}).get("abbrev", "???")
-                    home  = g.get("homeTeam", {}).get("abbrev", "???")
-                    start = g.get("startTimeUTC", "")[:16]   # "2026-03-25T23:00"
-                    venue = g.get("venue", {}).get("default", "")
-                    lines.append(f"  - {away} @ {home}  |  {start} UTC  |  {venue}")
+                    away_team = g.get("awayTeam", {})
+                    home_team = g.get("homeTeam", {})
+                    games.append({
+                        "away_abbr":  away_team.get("abbrev", "???"),
+                        "home_abbr":  home_team.get("abbrev", "???"),
+                        "away_full":  away_team.get("name", {}).get("default",
+                                      away_team.get("abbrev", "")),
+                        "home_full":  home_team.get("name", {}).get("default",
+                                      home_team.get("abbrev", "")),
+                        "start_utc":  g.get("startTimeUTC", "")[:16],
+                        "venue":      g.get("venue", {}).get("default", ""),
+                    })
+        return games
+    except Exception as e:
+        print(f"[H+B] Schedule fetch warning: {e}")
+        return []
 
-        if not lines:
-            return "  No games found in NHL schedule API for this date.", 0
-        return "\n".join(lines), len(lines)
+
+# ============================================================================
+# ODDS API FETCH (optional)
+# ============================================================================
+
+def _fetch_odds() -> dict:
+    """
+    Fetch real-time NHL odds from The Odds API.
+    Returns dict keyed by (away_abbr, home_abbr) -> formatted odds string.
+    Free tier: 500 req/month  |  sign up at https://the-odds-api.com
+    """
+    if not ODDS_API_KEY:
+        return {}
+    try:
+        url = ODDS_API_URL.format(key=ODDS_API_KEY)
+        req = urllib.request.urlopen(url, timeout=15)
+        games_raw = json.loads(req.read())
+
+        odds_by_matchup = {}
+        for game in games_raw:
+            away_full  = game.get("away_team", "")
+            home_full  = game.get("home_team", "")
+            away_abbr  = _abbr(away_full)
+            home_abbr  = _abbr(home_full)
+
+            # Parse bookmaker markets (use first available US book)
+            ml_away = ml_home = pl_away = pl_home = ou_total = None
+            ou_over_price = ou_under_price = None
+
+            for bm in game.get("bookmakers", []):
+                for market in bm.get("markets", []):
+                    key = market.get("key")
+                    outcomes = {o["name"]: o for o in market.get("outcomes", [])}
+
+                    if key == "h2h" and ml_away is None:
+                        ml_away = outcomes.get(away_full, {}).get("price")
+                        ml_home = outcomes.get(home_full, {}).get("price")
+
+                    elif key == "spreads" and pl_away is None:
+                        for o in market.get("outcomes", []):
+                            pt = o.get("point", 0)
+                            pr = o.get("price")
+                            nm = o.get("name", "")
+                            if nm == away_full and pt > 0:
+                                pl_away = (pt, pr)   # away gets + spread
+                            elif nm == home_full and pt < 0:
+                                pl_home = (abs(pt), pr)
+
+                    elif key == "totals" and ou_total is None:
+                        for o in market.get("outcomes", []):
+                            nm  = o.get("name", "")
+                            pt  = o.get("point")
+                            pr  = o.get("price")
+                            if nm == "Over":
+                                ou_total = pt
+                                ou_over_price = pr
+                            elif nm == "Under":
+                                ou_under_price = pr
+
+                # Stop after first bookmaker that gave us data
+                if ml_away and pl_away and ou_total:
+                    break
+
+            # Format the line string
+            parts = []
+            if ml_away is not None and ml_home is not None:
+                def fmt_ml(p):
+                    return f"+{p}" if p > 0 else str(p)
+                parts.append(
+                    f"ML: {away_abbr} {fmt_ml(ml_away)} / {home_abbr} {fmt_ml(ml_home)}"
+                )
+            if pl_away is not None and pl_home is not None:
+                def fmt_pl(side_abbr, pt, pr):
+                    sign = "+" if pr > 0 else ""
+                    return f"{side_abbr} +{pt} ({sign}{pr})"
+                parts.append(
+                    f"PL: {fmt_pl(away_abbr, pl_away[0], pl_away[1])} / "
+                    f"{fmt_pl(home_abbr, pl_home[0], pl_home[1])}"
+                )
+            if ou_total is not None:
+                def fmt_price(p):
+                    return f"+{p}" if p > 0 else str(p)
+                ou_str = f"O/U: {ou_total}"
+                if ou_over_price and ou_under_price:
+                    ou_str += (f" (Ov {fmt_price(ou_over_price)} / "
+                               f"Un {fmt_price(ou_under_price)})")
+                parts.append(ou_str)
+
+            if parts:
+                odds_by_matchup[(away_abbr, home_abbr)] = " | ".join(parts)
+
+        return odds_by_matchup
 
     except Exception as e:
-        return f"  [Schedule fetch failed: {e}]", 0
+        print(f"[H+B] Odds API warning: {e}")
+        return {}
+
+
+# ============================================================================
+# BUILD GAME CONTEXT STRING
+# ============================================================================
+
+def _build_game_context(games: list, odds: dict) -> tuple:
+    """
+    Returns (context_string, games_count, odds_source_label).
+    """
+    if not games:
+        return "  No NHL games found for tonight.", 0, "none"
+
+    lines = []
+    for g in games:
+        away = g["away_abbr"]
+        home = g["home_abbr"]
+        start = g["start_utc"]
+
+        line = f"  - {away} @ {home}"
+        if g.get("venue"):
+            line += f"  ({g['venue']})"
+        if start:
+            line += f"  |  {start} UTC"
+
+        # Attach real odds if available
+        matchup_odds = odds.get((away, home)) or odds.get((home, away))
+        if matchup_odds:
+            line += f"\n      {matchup_odds}"
+
+        lines.append(line)
+
+    odds_source = "the-odds-api.com (real-time)" if odds else "grok_live_search"
+    return "\n".join(lines), len(games), odds_source
+
+
+# ============================================================================
+# GROK API CALL
+# ============================================================================
+
+def _call_grok(prompt: str, api_key: str) -> dict:
+    """
+    POST to xAI Grok API (OpenAI-compatible endpoint).
+    Returns {"output": str, "prompt_tokens": int, "completion_tokens": int}
+    """
+    payload = json.dumps({
+        "model": GROK_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7,
+        "max_tokens": MAX_TOKENS,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        GROK_API_URL,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type":  "application/json",
+        },
+        method="POST",
+    )
+    resp = urllib.request.urlopen(req, timeout=120)
+    data = json.loads(resp.read())
+
+    content = data["choices"][0]["message"]["content"]
+    usage   = data.get("usage", {})
+    return {
+        "output":            content,
+        "prompt_tokens":     usage.get("prompt_tokens", 0),
+        "completion_tokens": usage.get("completion_tokens", 0),
+    }
 
 
 # ============================================================================
@@ -214,9 +418,8 @@ def _fetch_games(target_date: str) -> tuple:
 # ============================================================================
 
 def _post_discord(text: str, run_date: str, webhook: str) -> bool:
-    """Post picks to Discord, splitting at 1900 chars to respect 2000-char limit."""
     if not webhook:
-        print("[Discord] No webhook URL set (NHL_HITS_BLOCKS_WEBHOOK)")
+        print("[Discord] No webhook set (NHL_HITS_BLOCKS_WEBHOOK)")
         return False
 
     header = f"**NHL Hits & Blocks - {run_date}**\n\n"
@@ -224,7 +427,7 @@ def _post_discord(text: str, run_date: str, webhook: str) -> bool:
     chunks = []
     MAX    = 1900
 
-    # Try to split on double newline so plays stay intact
+    # Split cleanly on double-newline (keeps each play together)
     parts   = full.split("\n\n")
     current = ""
     for part in parts:
@@ -249,7 +452,7 @@ def _post_discord(text: str, run_date: str, webhook: str) -> bool:
             )
             urllib.request.urlopen(req, timeout=10)
             if i < len(chunks) - 1:
-                time.sleep(0.6)     # avoid Discord rate limit
+                time.sleep(0.6)
         except Exception as e:
             print(f"[Discord] Error on chunk {i+1}: {e}")
             success = False
@@ -265,22 +468,24 @@ def run(target_date: str = None,
         post_discord: bool = False,
         force: bool = False) -> dict:
     """
-    Generate NHL hits/blocks picks for target_date via Claude API.
+    Generate NHL hits/blocks picks for target_date via Grok API.
 
     Args:
         target_date:  YYYY-MM-DD (defaults to today)
-        post_discord: post output to Discord webhook
+        post_discord: post output to Discord webhook after generating
         force:        overwrite existing picks for this date
 
     Returns dict with keys: success, run_date, output, [error]
     """
-    if not CLAUDE_AVAILABLE:
-        return {"success": False,
-                "error": "anthropic package not installed. Run: pip install anthropic"}
-
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    api_key = os.getenv("XAI_API_KEY", "").strip()
     if not api_key:
-        return {"success": False, "error": "ANTHROPIC_API_KEY environment variable not set"}
+        return {
+            "success": False,
+            "error": (
+                "XAI_API_KEY environment variable not set. "
+                "Get a key at https://console.x.ai"
+            )
+        }
 
     run_date = target_date or date.today().isoformat()
     _ensure_db()
@@ -295,51 +500,72 @@ def run(target_date: str = None,
                 "output": existing["raw_output"], "skipped": True,
             }
 
-    # Fetch schedule context
+    # ── Step 1: Fetch NHL schedule ────────────────────────────────────────────
     print(f"[H+B] Fetching NHL schedule for {run_date}...")
-    games_context, games_count = _fetch_games(run_date)
-    print(f"[H+B] {games_count} game(s) found")
+    games = _fetch_schedule(run_date)
+    print(f"[H+B] {len(games)} game(s) tonight")
 
-    if games_count == 0:
+    if not games:
         msg = f"No NHL games scheduled for {run_date}."
         print(f"[H+B] {msg}")
         return {"success": True, "run_date": run_date, "output": msg, "no_games": True}
 
-    # Build prompt
-    prompt = PROMPT.format(date=run_date, games_context=games_context)
+    # ── Step 2: Fetch real odds (optional) ───────────────────────────────────
+    odds = {}
+    if ODDS_API_KEY:
+        print("[H+B] Fetching real-time odds from The Odds API...")
+        odds = _fetch_odds()
+        print(f"[H+B] Got odds for {len(odds)} matchup(s)")
+    else:
+        print("[H+B] ODDS_API_KEY not set — Grok will search for lines itself")
 
-    # Call Claude
-    print(f"[H+B] Calling Claude API ({CLAUDE_MODEL})...")
-    client = Anthropic(api_key=api_key)
+    # ── Step 3: Build game context ────────────────────────────────────────────
+    games_context, games_count, odds_source = _build_game_context(games, odds)
+
+    if odds:
+        odds_note = " (real-time Vegas lines included)"
+    else:
+        odds_note = " (Grok will search for current lines)"
+
+    # ── Step 4: Build prompt & call Grok ─────────────────────────────────────
+    prompt = PROMPT.format(
+        date=run_date,
+        games_context=games_context,
+        odds_note=odds_note,
+    )
+
+    print(f"[H+B] Calling Grok API ({GROK_MODEL})...")
     try:
-        resp = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=MAX_TOKENS,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        output        = resp.content[0].text
-        prompt_tok    = resp.usage.input_tokens
-        comp_tok      = resp.usage.output_tokens
-        print(f"[H+B] {len(output)} chars | {prompt_tok} prompt + {comp_tok} completion tokens")
+        result = _call_grok(prompt, api_key)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        return {"success": False, "run_date": run_date,
+                "error": f"Grok API HTTP {e.code}: {body[:300]}"}
     except Exception as e:
         return {"success": False, "run_date": run_date, "error": str(e)}
 
-    # Persist
-    _save(run_date, output, CLAUDE_MODEL, prompt_tok, comp_tok, games_count)
-    print(f"[H+B] Saved to DB ({DB_PATH})")
+    output   = result["output"]
+    p_tokens = result["prompt_tokens"]
+    c_tokens = result["completion_tokens"]
+    print(f"[H+B] {len(output)} chars | {p_tokens}p + {c_tokens}c tokens")
 
-    # Discord
+    # ── Step 5: Persist ───────────────────────────────────────────────────────
+    _save(run_date, output, GROK_MODEL, p_tokens, c_tokens, games_count, odds_source)
+    print(f"[H+B] Saved to {DB_PATH}")
+
+    # ── Step 6: Discord ───────────────────────────────────────────────────────
     if post_discord:
         ok = _post_discord(output, run_date, DISCORD_WEBHOOK)
-        print(f"[H+B] Discord post: {'OK' if ok else 'FAILED'}")
+        print(f"[H+B] Discord: {'OK' if ok else 'FAILED'}")
 
     return {
         "success": True,
         "run_date": run_date,
         "output": output,
-        "prompt_tokens": prompt_tok,
-        "completion_tokens": comp_tok,
+        "prompt_tokens": p_tokens,
+        "completion_tokens": c_tokens,
         "games_count": games_count,
+        "odds_source": odds_source,
     }
 
 
@@ -349,7 +575,7 @@ def run(target_date: str = None,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Generate NHL daily hits & blocked shots picks via Claude API"
+        description="Generate NHL daily hits & blocked shots picks via Grok API"
     )
     parser.add_argument("--date",    default=None,
                         help="Target date YYYY-MM-DD (default: today)")
@@ -364,10 +590,11 @@ if __name__ == "__main__":
     if args.show:
         picks = load_picks()
         if picks:
+            odds_src = picks.get("odds_source", "unknown")
             print(f"\n{'='*70}")
             print(f"NHL Hits & Blocks — {picks['run_date']}  "
                   f"(generated {picks['generated_at'][:16]})")
-            print(f"Model: {picks['model']}  |  "
+            print(f"Model: {picks['model']}  |  Odds: {odds_src}  |  "
                   f"Tokens: {picks['prompt_tokens']}p + {picks['completion_tokens']}c")
             print(f"{'='*70}\n")
             print(picks["raw_output"])
@@ -385,7 +612,7 @@ if __name__ == "__main__":
         if result.get("skipped"):
             print("(Cached — pass --force to regenerate)")
         elif result.get("no_games"):
-            print("No games tonight.")
+            print("No NHL games tonight.")
         else:
             print(f"\n{'='*70}\n")
             print(result.get("output", ""))
