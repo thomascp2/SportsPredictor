@@ -48,6 +48,33 @@ SEASON = "2026"
 DATA_COLLECTION_START = "2026-03-27"  # Opening Day 2026 (approximate)
 
 # ============================================================================
+# ML TRAINING SETTINGS
+# ============================================================================
+# These mirror the logic in ml_training/train_models.py and are referenced
+# by the orchestrator's ML readiness checks.
+
+# Year-1 lower threshold — a full MLB season produces ~1,500-2,500 predictions
+# per prop/line combo (vs 5,000+ for NBA/NHL).  Bump to 3,000 after Year 2.
+ML_TRAINING_MIN_SAMPLES = 500
+
+# Weekly retrain trigger — how many new graded predictions needed to justify
+# a full retrain.  Lower than NBA/NHL because baseball seasons are shorter.
+ML_TRAINING_MIN_NEW_PREDICTIONS = 250
+
+# Milestone target for "fully trained" status reporting in the dashboard.
+# 7,500 per combo (~3 seasons) matches NBA/NHL targets for comparison.
+ML_TRAINING_TARGET_PER_PROP = 7500
+
+# Trade deadline is July 31 each season.  Once 60+ days of post-deadline data
+# exist, the training window auto-tightens to 90 days (same approach that fixed
+# NBA accuracy after the Feb 6 trade deadline).
+# Before/within 60d of deadline: window=0 (use all data for maximum signal).
+ML_TRADE_DEADLINE_MONTH = 7
+ML_TRADE_DEADLINE_DAY = 31
+ML_POST_DEADLINE_TIGHTEN_DAYS = 60   # days after deadline before tightening
+ML_POST_DEADLINE_WINDOW_DAYS = 90    # window size once tightening kicks in
+
+# ============================================================================
 # PROPS & LINES (30 total prop/line combos)
 # ============================================================================
 

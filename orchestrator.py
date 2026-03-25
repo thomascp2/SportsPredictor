@@ -154,6 +154,7 @@ class SportConfig:
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 30, 2026)
         self.ml_training_target_per_prop = 7500
+        self.ml_training_min_new_preds = 500   # Weekly retrain trigger (new predictions since last train)
         self.ml_training_start_date = "2026-01-30"
 
         # Prop types and lines (11 combos total — hits/blocks added Mar 8, 2026)
@@ -208,6 +209,7 @@ class SportConfig:
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 27, 2026)
         self.ml_training_target_per_prop = 7500
+        self.ml_training_min_new_preds = 500   # Weekly retrain trigger (new predictions since last train)
         self.ml_training_start_date = "2026-01-27"
 
         # Prop types and lines (14 combos total from CORE_PROPS)
@@ -265,8 +267,16 @@ class SportConfig:
         self.pp_sync_time = "15:00"      # 3 PM - refresh lines for evening games
         self.top_picks_time = "16:00"    # 4 PM - post Discord picks
 
-        # ML Training Goals (after 1 full MLB season of data collection)
-        self.ml_training_target_per_prop = 7500
+        # ML Training Goals — sourced from mlb_config.py for single source of truth
+        from mlb.scripts.mlb_config import (
+            ML_TRAINING_TARGET_PER_PROP   as _MLB_TARGET,
+            ML_TRAINING_MIN_SAMPLES       as _MLB_MIN_SAMPLES,
+            ML_TRAINING_MIN_NEW_PREDICTIONS as _MLB_MIN_NEW,
+        )
+        self.ml_training_target_per_prop    = _MLB_TARGET       # 7,500
+        self.ml_training_min_samples        = _MLB_MIN_SAMPLES  # 500 (Year 1)
+        self.ml_training_min_new_preds      = _MLB_MIN_NEW      # 250 (shorter season)
+        # First full season ends Oct 2026; first model training eligible early 2027
         self.ml_training_start_date = "2027-03-01"
 
         # Prop types and lines (30 combos total from CORE_PROPS)
@@ -2441,10 +2451,12 @@ class SportsOrchestrator:
     def run_weekly_ml_retrain(self):
         """
         Weekly ML retrain — runs every Sunday before grading.
-        Skips if fewer than 500 new predictions exist since the last train.
+        Skips if fewer than MIN_NEW new predictions exist since the last train.
+        Threshold is sport-specific (MLB has fewer games per season than NBA/NHL).
         Sends a snug Discord notification with per-model accuracy deltas.
         """
-        MIN_NEW = 500
+        # Use sport-specific threshold if configured, otherwise fall back to 500
+        MIN_NEW = getattr(self.config, 'ml_training_min_new_preds', 500)
         sport = self.config.sport
         emoji = self.config.emoji
 
