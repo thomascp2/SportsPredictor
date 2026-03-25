@@ -2746,6 +2746,14 @@ class SportsOrchestrator:
             else:
                 n_tok = result.get("prompt_tokens", 0) + result.get("completion_tokens", 0)
                 print(f"[H+B] Picks saved ({n_tok} tokens used)")
+                # Push to Supabase so Streamlit Cloud dashboard sees the new picks
+                try:
+                    sys.path.insert(0, str(self.root / "shared"))
+                    from supabase_local_sync import sync_hits_blocks
+                    sr = sync_hits_blocks(verbose=False)
+                    print(f"[H+B] Supabase sync: {sr.get('synced', 0)} rows synced")
+                except Exception as _se:
+                    print(f"[H+B] Supabase sync skipped: {_se}")
             return result
         except ImportError as e:
             print(f"[H+B] daily_hits_blocks.py not available: {e}")
@@ -2780,6 +2788,16 @@ class SportsOrchestrator:
             n_picks = result.get('saved', 0)
             n_lines = result.get('lines_fetched', 0)
             print(f"[SZLN] Complete — {n_lines} lines fetched, {n_picks} picks saved")
+            # Push to Supabase so Streamlit Cloud dashboard sees updated SZLN picks
+            try:
+                sys.path.insert(0, str(self.root / "shared"))
+                from supabase_local_sync import sync_szln_picks, sync_season_projections
+                r1 = sync_szln_picks(verbose=False)
+                r2 = sync_season_projections(verbose=False)
+                print(f"[SZLN] Supabase sync: {r1.get('synced', 0)} SZLN picks, "
+                      f"{r2.get('synced', 0)} season projections synced")
+            except Exception as _se:
+                print(f"[SZLN] Supabase sync skipped: {_se}")
             return {'success': True, 'picks_saved': n_picks, 'lines_fetched': n_lines}
         except ImportError as e:
             print(f"[SZLN] season_props_ml.py not available: {e}")
