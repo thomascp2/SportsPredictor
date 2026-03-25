@@ -132,11 +132,13 @@ class DataLoader:
     
     def __init__(self, sport: str, db_path: str = None):
         self.sport = sport.upper()
-        
+
         if db_path:
             self.db_path = db_path
         elif self.sport == 'NHL':
             self.db_path = 'nhl/database/nhl_predictions_v2.db'
+        elif self.sport == 'MLB':
+            self.db_path = 'mlb/database/mlb_predictions.db'
         else:  # NBA
             self.db_path = 'nba/database/nba_predictions.db'
     
@@ -155,10 +157,18 @@ class DataLoader:
         Returns:
             DataFrame with features and target
         """
+        import os
+        if not os.path.exists(self.db_path):
+            print(f"  [DataLoader] Database not found: {self.db_path}")
+            print(f"  [DataLoader] {self.sport} season may not have started yet — returning empty DataFrame")
+            return pd.DataFrame()
+
         conn = sqlite3.connect(self.db_path)
 
         if self.sport == 'NHL':
             df = self._load_nhl_data(conn, prop_type, line)
+        elif self.sport == 'MLB':
+            df = self._load_mlb_data(conn, prop_type, line)
         else:
             df = self._load_nba_data(conn, prop_type, line)
 
@@ -227,9 +237,65 @@ class DataLoader:
         
         # Drop JSON column
         df = df.drop(columns=['features_json'])
-        
+
         return df
-    
+
+    def _load_mlb_data(self, conn, prop_type: str, line: float) -> pd.DataFrame:
+        """
+        Load MLB data.
+
+        Storage layout:
+          - Features stored as JSON blob (same as NHL)
+          - Outcome derived from actual_value > line (same pattern as NBA)
+          - prediction_outcomes uses 'actual_value' column (not 'actual_stat_value')
+        """
+        query = """
+            SELECT
+                p.id,
+                p.game_date,
+                p.player_name,
+                p.team,
+                p.opponent,
+                p.player_type,
+                p.prediction  AS model_prediction,
+                p.probability AS model_probability,
+                p.features_json,
+                o.actual_value AS actual_stat_value,
+                o.outcome,
+                -- Derive actual outcome from raw value so the model trains on
+                -- truth, not on whether our statistical model called it correctly.
+                CASE WHEN o.actual_value > p.line THEN 'OVER' ELSE 'UNDER' END AS actual_outcome,
+                CASE WHEN o.actual_value > p.line THEN 1 ELSE 0 END AS target
+            FROM predictions p
+            INNER JOIN prediction_outcomes o ON p.id = o.prediction_id
+            WHERE p.prop_type = ? AND p.line = ?
+            ORDER BY p.game_date
+        """
+        df = pd.read_sql_query(query, conn, params=(prop_type, line))
+
+        if len(df) == 0:
+            return df
+
+        # Parse JSON features (identical logic to NHL loader)
+        features_list = []
+        for idx, row in df.iterrows():
+            if row['features_json']:
+                try:
+                    features = json.loads(row['features_json'])
+                    features['_idx'] = idx
+                    features_list.append(features)
+                except Exception:
+                    pass
+
+        if not features_list:
+            return pd.DataFrame()
+
+        features_df = pd.DataFrame(features_list).set_index('_idx')
+        df = df.join(features_df)
+        df = df.drop(columns=['features_json'])
+
+        return df
+
     def _load_nba_data(self, conn, prop_type: str, line: float) -> pd.DataFrame:
         """Load NBA data (features stored as columns)"""
         
@@ -863,51 +929,118 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='ML Training Pipeline for Sports Predictions'
     )
-    parser.add_argument('--sport', choices=['nhl', 'nba'], required=True)
-    parser.add_argument('--prop', type=str, help='Prop type (points, shots, rebounds, etc.)')
+    parser.add_argument('--sport', choices=['nhl', 'nba', 'mlb'], required=True)
+    parser.add_argument('--prop', type=str, help='Prop type (points, shots, strikeouts, etc.)')
     parser.add_argument('--line', type=float, help='Betting line (e.g., 0.5, 2.5)')
-    parser.add_argument('--all', action='store_true', help='Train all prop/line combos')
+    parser.add_argument('--all', action='store_true', help='Train all prop/line combos for sport')
     parser.add_argument('--db', type=str, help='Custom database path')
     parser.add_argument('--window', type=int, default=None,
                         help='Override training_window_days for all props (0 = all history)')
 
     args = parser.parse_args()
 
-    # ── Prop-specific window overrides (post-deadline degraded props use shorter window)
-    # pra was most impacted by Feb-6 trade deadline.
-    #   pra  60d = 8,899 samples  ✓ (above 3k min)
-    #   stocks 60d = 1,406 samples ✗ (below 3k min) — keep stocks at 90d
-    # All other NBA props default to 90 days.  NHL is stable — 90 days default.
-    PROP_WINDOW_OVERRIDES = {
-        'pra': 60,   # 8,899 post-Jan-24 samples — strong post-deadline signal
-        # stocks: leave at default 90d (only 1,406 graded at 60d — below min_samples)
+    # ── Sport-specific training window configuration ──────────────────────────
+    #
+    # The rolling window focuses the model on recent patterns and prevents
+    # stale pre-structural-break data from diluting post-break signal.
+    #
+    # NBA:  90-day default.  'pra' uses 60d — most impacted by Feb-6 trade
+    #       deadline (post-deadline accuracy dropped from 80% to 57%).
+    #       'stocks' stays at 90d (only 1,406 graded samples at 60d).
+    #
+    # NHL:  90-day default.  Stable throughout season — no major structural
+    #       breaks identified to date.
+    #
+    # MLB:  Season starts March 25, 2026.  Year-1 strategy:
+    #       - Use ALL available data (window=0) until July 31 trade deadline.
+    #       - Auto-tighten to 90d once 60+ days of post-deadline data exist.
+    #       - min_samples lowered to 500 (a full MLB season produces only
+    #         ~1,500-2,500 predictions per prop/line combo, far less than NBA).
+    #       This mirrors exactly how NBA handled the Feb-6 deadline.
+
+    NBA_PROP_WINDOW_OVERRIDES = {
+        'pra': 60,  # Tightest window — trade-deadline sensitivity confirmed
+        # 'stocks' stays at 90d default (60d = 1,406 samples < 3,000 min)
     }
 
+    def _mlb_window() -> int:
+        """Auto-select MLB window based on calendar position relative to trade deadline."""
+        from datetime import date
+        today = date.today()
+        trade_deadline = date(today.year, 7, 31)
+        days_post_deadline = (today - trade_deadline).days
+        # Once we have 60+ days of post-deadline data, focus on current rosters
+        if days_post_deadline >= 60:
+            print(f"  [MLB Window] Post-deadline mode: 90d window "
+                  f"({days_post_deadline}d since July 31 deadline)")
+            return 90
+        # Early season or within 60d of deadline: maximize signal with all data
+        if days_post_deadline >= 0:
+            print(f"  [MLB Window] Near-deadline: using all data "
+                  f"({days_post_deadline}d since July 31 deadline, need 60d)")
+        else:
+            print(f"  [MLB Window] Pre-deadline: using all data "
+                  f"({-days_post_deadline}d until July 31 deadline)")
+        return 0
+
     def _make_config(prop_type: str) -> MLConfig:
+        """Return the right MLConfig for the sport/prop combination."""
         if args.window is not None:
-            # Explicit CLI override wins over everything
+            # Explicit --window flag overrides everything
             return MLConfig(training_window_days=args.window)
-        window = PROP_WINDOW_OVERRIDES.get(prop_type, 90)
-        return MLConfig(training_window_days=window)
+
+        if args.sport == 'mlb':
+            return MLConfig(
+                training_window_days=_mlb_window(),
+                # Lower bar for Year 1 — baseball has fewer games per player per season
+                min_samples=500,
+            )
+
+        if args.sport == 'nba':
+            window = NBA_PROP_WINDOW_OVERRIDES.get(prop_type, 90)
+            return MLConfig(training_window_days=window)
+
+        # NHL — 90-day default, stable season
+        return MLConfig(training_window_days=90)
 
     if args.all:
-        # Define all prop/line combinations
+        # ── Full prop/line combo lists per sport ──────────────────────────────
         if args.sport == 'nhl':
             combos = [
                 ('points', 0.5), ('points', 1.5),
                 ('shots', 1.5), ('shots', 2.5), ('shots', 3.5),
-                # New lower-variance props — will train once 3k+ graded predictions exist
+                # Newer props — train once 3k+ graded predictions accumulate
                 ('hits', 0.5), ('hits', 1.5), ('hits', 2.5), ('hits', 3.5),
                 ('blocked_shots', 0.5), ('blocked_shots', 1.5),
             ]
-        else:  # nba
+        elif args.sport == 'nba':
             combos = [
                 ('points', 15.5), ('points', 20.5), ('points', 25.5),
                 ('rebounds', 7.5), ('rebounds', 10.5),
                 ('assists', 5.5), ('assists', 7.5),
                 ('threes', 2.5), ('stocks', 2.5),
                 ('pra', 30.5), ('pra', 35.5), ('pra', 40.5),
-                ('minutes', 28.5), ('minutes', 32.5)
+                ('minutes', 28.5), ('minutes', 32.5),
+            ]
+        else:  # mlb — 30 prop/line combos matching mlb_config.py CORE_PROPS
+            combos = [
+                # Pitcher props (13 combos)
+                ('strikeouts', 3.5), ('strikeouts', 4.5), ('strikeouts', 5.5),
+                ('strikeouts', 6.5), ('strikeouts', 7.5),
+                ('outs_recorded', 12.5), ('outs_recorded', 15.5), ('outs_recorded', 17.5),
+                ('pitcher_walks', 1.5), ('pitcher_walks', 2.5),
+                ('hits_allowed', 3.5), ('hits_allowed', 5.5),
+                ('earned_runs', 0.5), ('earned_runs', 1.5), ('earned_runs', 2.5),
+                # Batter props (17 combos)
+                ('hits', 0.5), ('hits', 1.5),
+                ('total_bases', 1.5), ('total_bases', 2.5),
+                ('home_runs', 0.5),
+                ('rbis', 0.5), ('rbis', 1.5),
+                ('runs', 0.5),
+                ('stolen_bases', 0.5),
+                ('walks', 0.5),
+                ('batter_strikeouts', 0.5), ('batter_strikeouts', 1.5),
+                ('hrr', 1.5), ('hrr', 2.5), ('hrr', 3.5),
             ]
 
         results = []
@@ -932,7 +1065,11 @@ if __name__ == '__main__':
     elif args.prop and args.line:
         train_model(args.sport, args.prop, args.line, args.db,
                     config=_make_config(args.prop))
-    
+
     else:
         parser.print_help()
-        print("\nExample: python ml_training_pipeline.py --sport nhl --prop points --line 0.5")
+        print("\nExamples:")
+        print("  python train_models.py --sport nhl --all")
+        print("  python train_models.py --sport nba --prop pra --line 35.5")
+        print("  python train_models.py --sport mlb --all")
+        print("  python train_models.py --sport mlb --prop strikeouts --line 5.5")
