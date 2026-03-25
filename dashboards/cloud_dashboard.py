@@ -598,6 +598,63 @@ def _evaluate_line(player_name: str, stat: str, line: float,
         return None
 
 
+@st.cache_data(ttl=900)
+def fetch_hb_picks(run_date: str = None) -> dict:
+    """Load NHL hits/blocks picks from hits_blocks.db for the given date (or latest)."""
+    from pathlib import Path as _Path
+    import sqlite3 as _sqlite3
+    db_path = _Path(__file__).parent.parent / "nhl" / "database" / "hits_blocks.db"
+    if not db_path.exists():
+        return {}
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='daily_picks'"
+        ).fetchone()
+        if not exists:
+            conn.close()
+            return {}
+        if run_date:
+            row = conn.execute(
+                "SELECT run_date, generated_at, raw_output, model, "
+                "prompt_tokens, completion_tokens, games_count "
+                "FROM daily_picks WHERE run_date = ?", (run_date,)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT run_date, generated_at, raw_output, model, "
+                "prompt_tokens, completion_tokens, games_count "
+                "FROM daily_picks ORDER BY run_date DESC LIMIT 1"
+            ).fetchone()
+        conn.close()
+        if not row:
+            return {}
+        keys = ["run_date", "generated_at", "raw_output", "model",
+                "prompt_tokens", "completion_tokens", "games_count"]
+        return dict(zip(keys, row))
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=900)
+def fetch_hb_history(n: int = 14) -> list:
+    """Return recent dates that have picks saved."""
+    from pathlib import Path as _Path
+    import sqlite3 as _sqlite3
+    db_path = _Path(__file__).parent.parent / "nhl" / "database" / "hits_blocks.db"
+    if not db_path.exists():
+        return []
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "SELECT run_date FROM daily_picks ORDER BY run_date DESC LIMIT ?", (n,)
+        ).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except Exception:
+        return []
+
+
 # ── Main app ──────────────────────────────────────────────────────────────────
 def main():
     st.title("FreePicks Dashboard")
@@ -610,7 +667,9 @@ def main():
         return
 
     # ── Top-level tabs ────────────────────────────────────────────────────────
-    tab_picks, tab_perf, tab_season, tab_system = st.tabs(["Today's Picks", "Performance", "MLB Season Props", "System"])
+    tab_picks, tab_perf, tab_season, tab_hb, tab_system = st.tabs(
+        ["Today's Picks", "Performance", "MLB Season Props", "NHL Hits & Blocks", "System"]
+    )
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TAB 1 — TODAY'S PICKS
@@ -1290,7 +1349,82 @@ A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 
                         st.caption(f"Lines fetched: {latest[:19] if latest else 'unknown'}")
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 4 — SYSTEM HEALTH
+    # TAB 4 — NHL HITS & BLOCKS
+    # ═══════════════════════════════════════════════════════════════════════════
+    with tab_hb:
+        st.subheader("NHL Daily Hits & Blocked Shots")
+        st.caption(
+            "8 highest-probability floor plays generated daily by Claude. "
+            "Only locked-in TOI roles, zero-blowout games, and PrizePicks Flex eligible. "
+            "Runs automatically each day at 11 AM CST after lineups post."
+        )
+
+        # ── Date selector + refresh ────────────────────────────────────────────
+        hb_dates = fetch_hb_history(14)
+        hb_c1, hb_c2 = st.columns([3, 1])
+
+        with hb_c1:
+            if hb_dates:
+                date_choice = st.selectbox(
+                    "View picks for date",
+                    options=hb_dates,
+                    index=0,
+                    key="hb_date_sel",
+                )
+            else:
+                date_choice = None
+                st.info(
+                    "No picks saved yet. "
+                    "Run: `cd nhl && python scripts/daily_hits_blocks.py`\n\n"
+                    "Requires `ANTHROPIC_API_KEY` environment variable."
+                )
+
+        with hb_c2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Refresh", use_container_width=True, key="hb_refresh"):
+                st.cache_data.clear()
+                st.rerun()
+
+        if date_choice:
+            picks = fetch_hb_picks(date_choice)
+            if not picks:
+                st.warning(f"No picks found for {date_choice}.")
+            else:
+                # ── Metadata strip ─────────────────────────────────────────────
+                gen_time = picks.get("generated_at", "")[:16]
+                model    = picks.get("model", "unknown")
+                p_tok    = picks.get("prompt_tokens", 0)
+                c_tok    = picks.get("completion_tokens", 0)
+                n_games  = picks.get("games_count", "?")
+                st.caption(
+                    f"Generated {gen_time} CST  |  "
+                    f"{n_games} games tonight  |  "
+                    f"Model: {model}  |  "
+                    f"Tokens: {p_tok:,}p + {c_tok:,}c"
+                )
+                st.divider()
+
+                # ── Rendered picks ─────────────────────────────────────────────
+                raw = picks.get("raw_output", "")
+                if raw:
+                    st.markdown(raw)
+                else:
+                    st.info("No output saved for this date.")
+
+                st.divider()
+
+                # ── Copy-friendly expander ─────────────────────────────────────
+                with st.expander("Raw text (copy to Discord/Notes)"):
+                    st.text_area(
+                        "Raw output",
+                        value=raw,
+                        height=400,
+                        key="hb_raw_text",
+                        label_visibility="collapsed",
+                    )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 5 — SYSTEM HEALTH
     # ═══════════════════════════════════════════════════════════════════════════
     with tab_system:
         st.subheader("Pipeline Status")

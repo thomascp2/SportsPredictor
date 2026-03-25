@@ -151,6 +151,7 @@ class SportConfig:
         self.prediction_time = "04:00"   # 4 AM - generate today's predictions
         self.pp_sync_time = "13:00"      # 1 PM - afternoon PP re-sync (full slate posted by now, refresh smart picks)
         self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord (after afternoon sync)
+        self.hits_blocks_time = "11:00"  # 11 AM - Claude-generated hits/blocks picks (after lineups post)
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 30, 2026)
         self.ml_training_target_per_prop = 7500
@@ -2661,6 +2662,12 @@ class SportsOrchestrator:
             self.run_weekly_ml_retrain
         )
 
+        # Daily NHL hits & blocks picks (NHL only — standalone Claude API call)
+        if self.config.sport == "NHL" and hasattr(self.config, 'hits_blocks_time'):
+            schedule.every().day.at(self.config.hits_blocks_time).do(
+                self.run_nhl_hits_blocks
+            )
+
         # Weekly SZLN ML refresh (MLB only — season-long lines change slowly)
         if self.config.sport == "MLB" and hasattr(self.config, 'szln_refresh_time'):
             schedule.every().monday.at(self.config.szln_refresh_time).do(
@@ -2675,6 +2682,8 @@ class SportsOrchestrator:
         print(f"   Top 20 picks: Daily at {self.config.top_picks_time}")
         print(f"   Health checks: Every {self.global_config.HEALTH_CHECK_INTERVAL_MINUTES} minutes")
         print(f"   ML retrain: Sundays at {self.config.retrain_time} (500+ new preds required)")
+        if self.config.sport == "NHL" and hasattr(self.config, 'hits_blocks_time'):
+            print(f"   Hits & Blocks: Daily at {self.config.hits_blocks_time} (Claude API)")
         if self.config.sport == "MLB" and hasattr(self.config, 'szln_refresh_time'):
             print(f"   SZLN ML refresh: Mondays at {self.config.szln_refresh_time}")
         print()
@@ -2707,6 +2716,45 @@ class SportsOrchestrator:
         except KeyboardInterrupt:
             print(f"\n{self.config.emoji} {self.config.sport} orchestrator stopped by user")
             self._save_state()
+
+    def run_nhl_hits_blocks(self) -> Dict:
+        """
+        Generate NHL daily hits & blocked shots picks via Claude API.
+
+        Standalone — no dependency on the main NHL prediction pipeline.
+        Runs at 11am CST (after lineups post) for NHL only.
+        Output saved to nhl/database/hits_blocks.db and surfaced in dashboard.
+        """
+        if self.config.sport != "NHL":
+            return {"success": True, "skipped": True, "reason": "non-nhl sport"}
+
+        print(f"\n[H+B] Generating NHL hits & blocks picks via Claude...")
+        try:
+            scripts_dir = self.root / "nhl" / "scripts"
+            sys.path.insert(0, str(scripts_dir))
+            from daily_hits_blocks import run as hb_run
+
+            # Post to Discord if webhook is configured
+            post_discord = bool(os.getenv("NHL_HITS_BLOCKS_WEBHOOK") or
+                                os.getenv("DISCORD_WEBHOOK_URL"))
+
+            result = hb_run(post_discord=post_discord)
+            if result.get("no_games"):
+                print("[H+B] No NHL games tonight — skipped")
+            elif result.get("skipped"):
+                print("[H+B] Already ran today — skipped (use --force to override)")
+            else:
+                n_tok = result.get("prompt_tokens", 0) + result.get("completion_tokens", 0)
+                print(f"[H+B] Picks saved ({n_tok} tokens used)")
+            return result
+        except ImportError as e:
+            print(f"[H+B] daily_hits_blocks.py not available: {e}")
+            return {"success": False, "error": str(e)}
+        except Exception as e:
+            import traceback as _tb
+            print(f"[H+B ERROR] {e}")
+            self._log_error(_tb.format_exc(), "HITS_BLOCKS_ERROR")
+            return {"success": False, "error": str(e)}
 
     def run_szln_ml_refresh(self) -> Dict:
         """
@@ -2805,6 +2853,14 @@ class SportsOrchestrator:
             print("="*80)
             result = self.run_pp_sync()
             print(f"\nResult: {'SUCCESS' if result.get('success') else 'FAILED'}")
+
+        if operation in ['hits-blocks']:
+            if self.config.sport == "NHL":
+                print("\n" + "="*80)
+                print(f"{self.config.emoji} RUNNING: NHL Hits & Blocks Picks (Claude API)")
+                print("="*80)
+                result = self.run_nhl_hits_blocks()
+                print(f"\nResult: {'SUCCESS' if result.get('success') else 'FAILED'}")
 
         if operation in ['szln', 'all']:
             if self.config.sport == "MLB":
