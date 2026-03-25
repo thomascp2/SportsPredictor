@@ -1391,15 +1391,20 @@ A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 
                 st.warning(f"No picks found for {date_choice}.")
             else:
                 # ── Metadata strip ─────────────────────────────────────────────
-                gen_time = picks.get("generated_at", "")[:16]
-                model    = picks.get("model", "unknown")
-                p_tok    = picks.get("prompt_tokens", 0)
-                c_tok    = picks.get("completion_tokens", 0)
-                n_games  = picks.get("games_count", "?")
+                gen_time   = picks.get("generated_at", "")[:16]
+                model      = picks.get("model", "unknown")
+                p_tok      = picks.get("prompt_tokens", 0)
+                c_tok      = picks.get("completion_tokens", 0)
+                n_games    = picks.get("games_count", "?")
+                odds_src   = picks.get("odds_source", "grok_search")
+                odds_label = ("Real-time (The Odds API)"
+                              if "odds-api" in odds_src
+                              else "Grok live search")
                 st.caption(
-                    f"Generated {gen_time} CST  |  "
-                    f"{n_games} games tonight  |  "
+                    f"Generated {gen_time}  |  "
+                    f"{n_games} games  |  "
                     f"Model: {model}  |  "
+                    f"Lines: {odds_label}  |  "
                     f"Tokens: {p_tok:,}p + {c_tok:,}c"
                 )
                 st.divider()
