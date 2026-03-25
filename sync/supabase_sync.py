@@ -35,7 +35,7 @@ except ImportError:
 
 from sync.config import (
     SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
-    NHL_DB_PATH, NBA_DB_PATH, SYNC_BATCH_SIZE
+    NHL_DB_PATH, NBA_DB_PATH, MLB_DB_PATH, SYNC_BATCH_SIZE
 )
 
 
@@ -52,6 +52,7 @@ class SupabaseSync:
         self.db_paths = {
             'nhl': os.path.normpath(NHL_DB_PATH),
             'nba': os.path.normpath(NBA_DB_PATH),
+            'mlb': os.path.normpath(MLB_DB_PATH),
         }
 
     def sync_predictions(self, sport: str, game_date: Optional[str] = None) -> Dict:
@@ -76,7 +77,7 @@ class SupabaseSync:
         conn.row_factory = sqlite3.Row
 
         # Query predictions - different schemas per sport
-        if sport.lower() == 'nhl':
+        if sport.lower() in ('nhl', 'mlb'):
             rows = conn.execute('''
                 SELECT player_name, team, opponent, prop_type, line,
                        prediction, probability, features_json
@@ -84,6 +85,7 @@ class SupabaseSync:
                 WHERE game_date = ?
             ''', (game_date,)).fetchall()
         else:
+            # NBA has f_l10_avg, f_l10_std as columns
             rows = conn.execute('''
                 SELECT player_name, team, opponent, prop_type, line,
                        prediction, probability,
@@ -126,8 +128,8 @@ class SupabaseSync:
             # Directional confidence: depends on how each sport stores probability.
             # NBA stores P(OVER) for every prediction regardless of direction,
             #   so UNDER confidence = 1 - P(OVER).
-            # NHL stores P(predicted direction), so confidence = probability as-is.
-            if sport.lower() == 'nhl':
+            # NHL and MLB store P(predicted direction), so confidence = probability as-is.
+            if sport.lower() in ('nhl', 'mlb'):
                 confidence = probability
             else:
                 confidence = probability if prediction_dir == 'OVER' else (1.0 - probability)
@@ -224,6 +226,7 @@ class SupabaseSync:
             prediction_col = 'predicted_outcome'
             actual_val_col = 'actual_stat_value'
         else:
+            # NBA and MLB both use 'prediction' / 'actual_value'
             prediction_col = 'prediction'
             actual_val_col = 'actual_value'
 
@@ -355,6 +358,10 @@ class SupabaseSync:
 
         if sport_upper == 'NHL':
             props = ('shots', 'points', 'goals', 'assists', 'pp_points')
+        elif sport_upper == 'MLB':
+            props = ('strikeouts', 'outs_recorded', 'pitcher_walks', 'hits_allowed',
+                     'earned_runs', 'hits', 'total_bases', 'home_runs', 'rbis',
+                     'runs', 'stolen_bases', 'walks', 'batter_strikeouts', 'hrr')
         else:
             props = ('points', 'rebounds', 'assists', 'threes', 'pra',
                      'pts_rebs', 'pts_asts', 'rebs_asts', 'steals',
