@@ -48,7 +48,7 @@ DB_PATH      = str(_NHL_ROOT / "database" / "hits_blocks.db")
 
 # ── xAI / Grok ────────────────────────────────────────────────────────────────
 GROK_API_URL  = "https://api.x.ai/v1/chat/completions"
-GROK_MODEL    = os.getenv("GROK_HB_MODEL", "grok-2-1212")
+GROK_MODEL    = os.getenv("GROK_HB_MODEL", "grok-3")
 MAX_TOKENS    = 2048
 
 # ── The Odds API (optional — real-time Vegas lines) ───────────────────────────
@@ -221,8 +221,12 @@ def _fetch_schedule(target_date: str) -> list:
     """
     try:
         url = NHL_SCHEDULE_API.format(date=target_date)
-        req = urllib.request.urlopen(url, timeout=10)
-        data = json.loads(req.read())
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; FreePicks/1.0)"},
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read())
         games = []
         for day_block in data.get("gameWeek", []):
             if day_block.get("date") == target_date:
@@ -337,6 +341,11 @@ def _fetch_odds() -> dict:
 
         return odds_by_matchup
 
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:200]
+        print(f"[H+B] Odds API HTTP {e.code}: {body}")
+        print("[H+B] Continuing without pre-fetched odds — Grok will search for lines")
+        return {}
     except Exception as e:
         print(f"[H+B] Odds API warning: {e}")
         return {}
@@ -398,6 +407,7 @@ def _call_grok(prompt: str, api_key: str) -> dict:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type":  "application/json",
+            "User-Agent":    "FreePicks/1.0",
         },
         method="POST",
     )
@@ -447,7 +457,10 @@ def _post_discord(text: str, run_date: str, webhook: str) -> bool:
             req = urllib.request.Request(
                 webhook,
                 data=payload,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent":   "FreePicks/1.0",
+                },
                 method="POST",
             )
             urllib.request.urlopen(req, timeout=10)
