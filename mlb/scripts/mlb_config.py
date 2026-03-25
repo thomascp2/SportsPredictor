@@ -411,6 +411,27 @@ CREATE INDEX IF NOT EXISTS idx_outcomes_date ON prediction_outcomes(game_date);
 CREATE INDEX IF NOT EXISTS idx_logs_player ON player_game_logs(player_name, game_date);
 CREATE INDEX IF NOT EXISTS idx_logs_team ON player_game_logs(team, game_date);
 CREATE INDEX IF NOT EXISTS idx_context_date ON game_context(game_date);
+
+CREATE TABLE IF NOT EXISTS season_projections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season TEXT NOT NULL,
+    player_name TEXT NOT NULL,
+    player_id INTEGER,
+    team TEXT,
+    player_type TEXT NOT NULL,
+    stat TEXT NOT NULL,
+    projection REAL NOT NULL,
+    std_dev REAL,
+    confidence TEXT,
+    seasons_used INTEGER,
+    age INTEGER,
+    method TEXT DEFAULT 'marcel',
+    created_at TEXT NOT NULL,
+    UNIQUE(season, player_name, player_type, stat)
+);
+
+CREATE INDEX IF NOT EXISTS idx_season_proj_player ON season_projections(player_name, season);
+CREATE INDEX IF NOT EXISTS idx_season_proj_stat ON season_projections(stat, season);
 """
 
 
