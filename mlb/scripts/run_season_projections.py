@@ -77,15 +77,26 @@ def fetch_all_active_players(season: str) -> List[Dict]:
         except Exception:
             continue
 
+        current_year = int(season)
         for entry in roster:
-            person   = entry.get('person', {})
-            pid      = person.get('id')
-            name     = person.get('fullName', '')
-            pos_code = entry.get('position', {}).get('abbreviation', 'OF')
+            person     = entry.get('person', {})
+            pid        = person.get('id')
+            name       = person.get('fullName', '')
+            pos_code   = entry.get('position', {}).get('abbreviation', 'OF')
+            birth_date = person.get('birthDate', '')
 
             if not pid or pid in seen_ids:
                 continue
             seen_ids.add(pid)
+
+            # Calculate age from birth date already provided by the hydrated roster
+            if birth_date:
+                try:
+                    age = current_year - int(birth_date[:4])
+                except (ValueError, TypeError):
+                    age = None
+            else:
+                age = None
 
             player_type = 'pitcher' if pos_code in PITCHER_POSITIONS else 'batter'
             all_players.append({
@@ -94,6 +105,7 @@ def fetch_all_active_players(season: str) -> List[Dict]:
                 'team':        team_abbr,
                 'position':    pos_code,
                 'player_type': player_type,
+                'age':         age,
             })
 
     print(f"[Batch] Found {len(all_players)} active players "
@@ -196,11 +208,14 @@ def run_batch(season: str = SEASON, force: bool = False,
                 std_factor = STD_FACTORS.get(stat, 0.18)
                 std_dev = round(max(projection * std_factor, 1.0), 1)
 
+                # Age: prefer roster value (already fetched, reliable) over
+                # the stats-API-derived value inside the projection dict.
+                row_age = player.get('age') or proj.get('age')
                 rows.append((
                     season, pname, pid, team, ptype,
                     stat, round(projection, 1), std_dev,
                     proj['confidence'], proj['seasons_used'],
-                    proj.get('age'), proj['method'], now,
+                    row_age, proj['method'], now,
                 ))
 
             if rows:

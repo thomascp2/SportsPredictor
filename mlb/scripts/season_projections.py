@@ -616,6 +616,15 @@ class SeasonProjector:
                     ip = 0
                 if ip < 20:
                     continue
+                # Try to get birth date from the people array in this response
+                pit_age = None
+                try:
+                    person_data = data.get('people', [{}])[0]
+                    bd = person_data.get('birthDate', '')
+                    if bd:
+                        pit_age = yr - int(bd[:4])
+                except Exception:
+                    pass
                 seasons.append({
                     'season': yr,
                     'ip':     round(ip, 1),
@@ -625,7 +634,7 @@ class SeasonProjector:
                     'er':     s.get('earnedRuns', 0),
                     'era':    float(s.get('era', 4.5) or 4.5),
                     'whip':   float(s.get('whip', 1.3) or 1.3),
-                    'age':    None,
+                    'age':    pit_age,
                 })
 
             seasons.sort(key=lambda x: x['season'], reverse=True)
