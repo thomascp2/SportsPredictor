@@ -2805,10 +2805,8 @@ class SportsOrchestrator:
     def run_game_prediction_pipeline(self) -> Dict:
         """
         Generate full-game predictions (moneyline, spread, total).
-        Runs daily after team stats update. Uses Elo + team stats as features.
-
-        NOTE: This is a placeholder — will be fully implemented in Phase 4
-        when generate_game_predictions.py scripts are built per sport.
+        Runs daily after team stats update. Uses Elo + team stats + ML models.
+        Scripts: {sport}/scripts/generate_game_predictions.py
         """
         sport = self.config.sport.lower()
         print(f"\n[GAME PRED] {self.config.sport} game prediction pipeline...")
@@ -2816,9 +2814,8 @@ class SportsOrchestrator:
         try:
             script_path = self.config.project_root / "scripts" / "generate_game_predictions.py"
             if not script_path.exists():
-                print(f"[GAME PRED] Script not yet built: {script_path}")
-                print(f"[GAME PRED] Phase 4 — team stats + Elo collection continues in background")
-                return {"success": True, "skipped": True, "reason": "script not yet built"}
+                print(f"[GAME PRED] Script not found: {script_path}")
+                return {"success": False, "error": "script not found"}
 
             result = subprocess.run(
                 [sys.executable, str(script_path)],
@@ -2839,10 +2836,8 @@ class SportsOrchestrator:
 
     def run_game_grading(self) -> Dict:
         """
-        Grade yesterday's full-game predictions.
-
-        NOTE: This is a placeholder — will be fully implemented in Phase 4
-        when grade_game_predictions.py scripts are built per sport.
+        Grade yesterday's full-game predictions against final scores.
+        Scripts: {sport}/scripts/grade_game_predictions.py
         """
         sport = self.config.sport.lower()
         print(f"\n[GAME GRADE] {self.config.sport} game grading pipeline...")
@@ -2850,8 +2845,8 @@ class SportsOrchestrator:
         try:
             script_path = self.config.project_root / "scripts" / "grade_game_predictions.py"
             if not script_path.exists():
-                print(f"[GAME GRADE] Script not yet built: {script_path}")
-                return {"success": True, "skipped": True, "reason": "script not yet built"}
+                print(f"[GAME GRADE] Script not found: {script_path}")
+                return {"success": False, "error": "script not found"}
 
             result = subprocess.run(
                 [sys.executable, str(script_path)],
