@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(MLB_DIR, "features"))
 
 from mlb_config import DB_PATH
 from game_prediction_engine import GamePredictionEngine
+from game_discord_notifications import send_game_predictions_alert
 
 try:
     from game_features import MLBGameFeatureExtractor
@@ -216,6 +217,13 @@ def main():
         print(f"\n  --- SHARP Plays ---")
         for detail in results["sharp_details"]:
             print(f"    * {detail}")
+
+    # Send Discord notification
+    try:
+        send_game_predictions_alert("mlb", results)
+        print(f"  [DISCORD] Notification sent")
+    except Exception as e:
+        print(f"  [DISCORD] Failed: {e}")
 
     print(f"\n  Done!")
 

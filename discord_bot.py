@@ -9,6 +9,8 @@ Commands:
   !status          - Show system status
   !picks nba       - Get today's NBA smart picks
   !picks nba 2026-02-10  - Get picks for specific date
+  !gamelines nba   - Get today's game line predictions (ML, spread, total)
+  !gamelines nhl 2026-03-25  - Game lines for specific date
   !parlay          - Random 4-leg parlay from today's top picks (both sports)
   !parlay nba 3    - 3-leg NBA-only parlay
   !parlay nhl 5    - 5-leg NHL-only parlay (2-6 legs supported)
@@ -436,6 +438,79 @@ async def parlay_cmd(ctx, sport: str = 'both', size: int = 4):
 
     except Exception as e:
         await ctx.send(f"```Error generating parlay: {str(e)}```")
+
+
+@bot.command(name='gamelines')
+async def cmd_gamelines(ctx, sport: str = "nba", game_date: str = None):
+    """Get today's game line predictions (moneyline, spread, total)."""
+    sport = sport.upper()
+    if sport not in ["NHL", "NBA", "MLB"]:
+        await ctx.send("Usage: `!gamelines nba` or `!gamelines nhl 2026-03-25`")
+        return
+
+    if game_date is None:
+        game_date = date.today().isoformat()
+
+    db_map = {
+        "NHL": PROJECT_ROOT / "nhl" / "database" / "nhl_predictions_v2.db",
+        "NBA": PROJECT_ROOT / "nba" / "database" / "nba_predictions.db",
+        "MLB": PROJECT_ROOT / "mlb" / "database" / "mlb_predictions.db",
+    }
+    db_path = db_map.get(sport)
+    if not db_path or not db_path.exists():
+        await ctx.send(f"Database not found for {sport}")
+        return
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute("""
+            SELECT home_team, away_team, bet_type, bet_side, line,
+                   prediction, probability, edge, confidence_tier
+            FROM game_predictions
+            WHERE game_date = ?
+            ORDER BY
+                CASE confidence_tier WHEN 'SHARP' THEN 1 WHEN 'LEAN' THEN 2 ELSE 3 END,
+                edge DESC
+        """, (game_date,)).fetchall()
+        conn.close()
+    except Exception as e:
+        await ctx.send(f"Error fetching game lines: {e}")
+        return
+
+    if not rows:
+        await ctx.send(f"No game predictions for {sport} on {game_date}")
+        return
+
+    # Build message — show SHARP and LEAN plays only
+    sharp_lines = []
+    lean_lines = []
+    for r in rows:
+        home, away, bt, side, line, pred, prob, edge, tier = r
+        if tier == "PASS":
+            continue
+        entry = f"{away} @ {home} | {bt} {side}"
+        if line:
+            entry += f" ({line:+.1f})" if bt == "spread" else f" ({line:.1f})"
+        entry += f" -> {pred} {prob*100:.0f}% edge={edge*100:+.1f}%"
+
+        if tier == "SHARP":
+            sharp_lines.append(f"[SHARP] {entry}")
+        else:
+            lean_lines.append(f"[LEAN]  {entry}")
+
+    msg_parts = [f"```", f"[{sport}] Game Lines - {game_date}", f"{'='*50}"]
+    if sharp_lines:
+        msg_parts.append("")
+        msg_parts.extend(sharp_lines[:10])
+    if lean_lines:
+        msg_parts.append("")
+        msg_parts.extend(lean_lines[:10])
+    if not sharp_lines and not lean_lines:
+        msg_parts.append("No SHARP or LEAN plays today")
+    msg_parts.append(f"\n{len(rows)} total predictions | {len(sharp_lines)} SHARP | {len(lean_lines)} LEAN")
+    msg_parts.append("```")
+
+    await ctx.send("\n".join(msg_parts))
 
 
 def main():
