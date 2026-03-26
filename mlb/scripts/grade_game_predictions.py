@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "shared"))
 
 from mlb_config import DB_PATH
 from grade_game_predictions import GamePredictionGrader
+from game_discord_notifications import send_game_grading_alert
 
 
 def fetch_final_scores(db_path: str, game_date: str) -> int:
@@ -161,6 +162,13 @@ def main():
         print(f"  Misses:   {results['misses']}")
         print(f"  Pushes:   {results['pushes']}")
         print(f"  Accuracy: {results['accuracy']}%")
+
+        # Send Discord notification
+        try:
+            send_game_grading_alert("mlb", results)
+            print(f"  [DISCORD] Grading notification sent")
+        except Exception as e:
+            print(f"  [DISCORD] Failed: {e}")
 
     # Step 3: Performance summary
     print(f"\n  Step 3: Recent performance (last 30 days)...")

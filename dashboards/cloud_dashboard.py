@@ -449,6 +449,72 @@ def get_ml_model_info() -> dict:
 
 
 @st.cache_data(ttl=300)
+def fetch_game_predictions(sport: str, game_date: str) -> pd.DataFrame:
+    """Fetch game predictions from SQLite (local) for the Game Lines tab."""
+    import sqlite3, os
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    db_map = {
+        "NHL": os.path.join(PROJECT_ROOT, "nhl", "database", "nhl_predictions_v2.db"),
+        "NBA": os.path.join(PROJECT_ROOT, "nba", "database", "nba_predictions.db"),
+        "MLB": os.path.join(PROJECT_ROOT, "mlb", "database", "mlb_predictions.db"),
+    }
+    db_path = db_map.get(sport.upper(), "")
+    if not os.path.exists(db_path):
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(db_path)
+        df = pd.read_sql_query("""
+            SELECT home_team, away_team, bet_type, bet_side, line,
+                   prediction, probability, edge, confidence_tier,
+                   odds_american, implied_probability,
+                   model_type, home_elo, away_elo, elo_diff
+            FROM game_predictions
+            WHERE game_date = ?
+            ORDER BY
+                CASE confidence_tier
+                    WHEN 'SHARP' THEN 1
+                    WHEN 'LEAN' THEN 2
+                    ELSE 3
+                END,
+                edge DESC
+        """, conn, params=(game_date,))
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def fetch_game_outcomes(sport: str, days: int = 30) -> pd.DataFrame:
+    """Fetch game prediction outcomes for performance tracking."""
+    import sqlite3, os
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    db_map = {
+        "NHL": os.path.join(PROJECT_ROOT, "nhl", "database", "nhl_predictions_v2.db"),
+        "NBA": os.path.join(PROJECT_ROOT, "nba", "database", "nba_predictions.db"),
+        "MLB": os.path.join(PROJECT_ROOT, "mlb", "database", "mlb_predictions.db"),
+    }
+    db_path = db_map.get(sport.upper(), "")
+    if not os.path.exists(db_path):
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(db_path)
+        df = pd.read_sql_query("""
+            SELECT game_date, bet_type, bet_side, confidence_tier,
+                   prediction, outcome, profit, odds_american,
+                   home_score, away_score, actual_margin, actual_total
+            FROM game_prediction_outcomes
+            WHERE graded_at >= date('now', ?)
+              AND outcome IN ('HIT', 'MISS', 'PUSH')
+            ORDER BY game_date DESC
+        """, conn, params=(f"-{days} days",))
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
 def fetch_pipeline_status() -> dict:
     """Last prediction date + count per sport from daily_props."""
     sb = get_supabase()
@@ -854,8 +920,9 @@ def main():
         return
 
     # ── Top-level tabs ────────────────────────────────────────────────────────
-    tab_picks, tab_perf, tab_season, tab_hb, tab_system = st.tabs(
-        ["Today's Picks", "Performance", "MLB Season Props", "NHL Hits & Blocks", "System"]
+    tab_picks, tab_games, tab_perf, tab_season, tab_hb, tab_system = st.tabs(
+        ["Today's Picks", "Game Lines", "Performance",
+         "MLB Season Props", "NHL Hits & Blocks", "System"]
     )
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -996,7 +1063,169 @@ def main():
                     render_line_cards(all_lines_df, df)
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 2 — PERFORMANCE
+    # TAB — GAME LINES (Moneyline, Spread, Total predictions)
+    # ═══════════════════════════════════════════════════════════════════════════
+    with tab_games:
+        gc1, gc2, gc3 = st.columns([1, 1, 1])
+        with gc1:
+            gl_sport = st.selectbox("Sport", ["NHL", "NBA", "MLB"],
+                                     key="gl_sport", label_visibility="collapsed")
+        with gc2:
+            gl_date = st.date_input("Date", value=date.today(),
+                                     key="gl_date", label_visibility="collapsed").isoformat()
+        with gc3:
+            gl_tier = st.selectbox("Tier", ["All", "SHARP", "LEAN", "PASS"],
+                                    key="gl_tier", label_visibility="collapsed")
+
+        gdf = fetch_game_predictions(gl_sport, gl_date)
+
+        if gdf.empty:
+            st.info(f"No game predictions for {gl_sport} on {gl_date}. "
+                    f"Run: `python {gl_sport.lower()}/scripts/generate_game_predictions.py {gl_date}`")
+        else:
+            # Filter by tier
+            if gl_tier != "All":
+                gdf = gdf[gdf["confidence_tier"] == gl_tier]
+
+            # Summary metrics
+            sharp_count = len(gdf[gdf["confidence_tier"] == "SHARP"]) if gl_tier == "All" else len(gdf)
+            games_count = len(gdf[["home_team", "away_team"]].drop_duplicates())
+            avg_edge = gdf["edge"].mean() * 100 if not gdf.empty else 0
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Games", games_count)
+            m2.metric("Predictions", len(gdf))
+            m3.metric("SHARP Plays", sharp_count if gl_tier == "All" else "filtered")
+            m4.metric("Avg Edge", f"{avg_edge:+.1f}%")
+
+            # Group by game for display
+            sub_ml, sub_spread, sub_total = st.tabs(
+                ["Moneyline", "Spread", "Total"]
+            )
+
+            with sub_ml:
+                ml_df = gdf[gdf["bet_type"] == "moneyline"].copy()
+                if ml_df.empty:
+                    st.caption("No moneyline predictions")
+                else:
+                    # Pivot: one row per game with home/away columns
+                    for _, row in ml_df[ml_df["bet_side"] == "home"].iterrows():
+                        away_row = ml_df[(ml_df["home_team"] == row["home_team"]) &
+                                         (ml_df["bet_side"] == "away")]
+                        tier_color = {"SHARP": ":green", "LEAN": ":orange", "PASS": ""}.get(
+                            row["confidence_tier"], "")
+
+                        matchup = f"**{row['away_team']}** @ **{row['home_team']}**"
+                        home_prob = f"{row['probability']*100:.1f}%"
+                        home_edge = f"{row['edge']*100:+.1f}%"
+                        away_prob = f"{(1-row['probability'])*100:.1f}%" if away_row.empty else \
+                            f"{away_row.iloc[0]['probability']*100:.1f}%"
+
+                        pick = row["home_team"] if row["prediction"] == "WIN" else row["away_team"]
+                        tier_badge = f" {tier_color}[{row['confidence_tier']}]" if tier_color else \
+                            f" [{row['confidence_tier']}]"
+
+                        elo_str = ""
+                        if row.get("home_elo") and row.get("away_elo"):
+                            elo_str = f" | Elo: {int(row['home_elo'])} vs {int(row['away_elo'])}"
+
+                        st.markdown(
+                            f"{matchup} | Pick: **{pick}** ({home_prob}, edge {home_edge})"
+                            f"{tier_badge}{elo_str}"
+                        )
+
+            with sub_spread:
+                sp_df = gdf[gdf["bet_type"] == "spread"].copy()
+                if sp_df.empty:
+                    st.caption("No spread predictions")
+                else:
+                    for _, row in sp_df[sp_df["bet_side"] == "home"].iterrows():
+                        line_str = f"{row['line']:+.1f}" if row["line"] else "PK"
+                        prob = f"{row['probability']*100:.1f}%"
+                        edge = f"{row['edge']*100:+.1f}%"
+                        tier_color = {"SHARP": ":green", "LEAN": ":orange"}.get(
+                            row["confidence_tier"], "")
+                        tier_badge = f" {tier_color}[{row['confidence_tier']}]" if tier_color else \
+                            f" [{row['confidence_tier']}]"
+
+                        pick_side = "Home" if row["prediction"] == "WIN" else "Away"
+                        st.markdown(
+                            f"**{row['away_team']}** @ **{row['home_team']}** "
+                            f"({line_str}) | {pick_side} covers ({prob}, edge {edge})"
+                            f"{tier_badge}"
+                        )
+
+            with sub_total:
+                tot_df = gdf[gdf["bet_type"] == "total"].copy()
+                if tot_df.empty:
+                    st.caption("No total predictions")
+                else:
+                    for _, row in tot_df[tot_df["bet_side"] == "over"].iterrows():
+                        under_row = tot_df[(tot_df["home_team"] == row["home_team"]) &
+                                            (tot_df["bet_side"] == "under")]
+                        line_str = f"{row['line']:.1f}" if row["line"] else "—"
+                        over_prob = f"{row['probability']*100:.1f}%"
+                        under_prob = f"{(1-row['probability'])*100:.1f}%" if under_row.empty else \
+                            f"{under_row.iloc[0]['probability']*100:.1f}%"
+
+                        pick = row["prediction"]
+                        edge = f"{row['edge']*100:+.1f}%"
+                        tier_color = {"SHARP": ":green", "LEAN": ":orange"}.get(
+                            row["confidence_tier"], "")
+                        tier_badge = f" {tier_color}[{row['confidence_tier']}]" if tier_color else \
+                            f" [{row['confidence_tier']}]"
+
+                        st.markdown(
+                            f"**{row['away_team']}** @ **{row['home_team']}** "
+                            f"O/U {line_str} | **{pick}** (O:{over_prob} / U:{under_prob}, "
+                            f"edge {edge}){tier_badge}"
+                        )
+
+            # Performance section (if outcomes exist)
+            st.divider()
+            st.subheader("Game Lines Performance (Last 30 Days)")
+            odf = fetch_game_outcomes(gl_sport, 30)
+            if odf.empty:
+                st.caption("No graded outcomes yet. Results appear after games complete.")
+            else:
+                hit_miss = odf[odf["outcome"].isin(["HIT", "MISS"])]
+                if not hit_miss.empty:
+                    total_bets = len(hit_miss)
+                    total_hits = len(hit_miss[hit_miss["outcome"] == "HIT"])
+                    overall_acc = total_hits / total_bets * 100
+
+                    # By bet type
+                    by_type = hit_miss.groupby("bet_type").apply(
+                        lambda x: pd.Series({
+                            "Bets": len(x),
+                            "Hits": len(x[x["outcome"] == "HIT"]),
+                            "Accuracy": f"{len(x[x['outcome']=='HIT'])/len(x)*100:.1f}%",
+                        })
+                    ).reset_index()
+                    by_type.columns = ["Bet Type", "Bets", "Hits", "Accuracy"]
+
+                    p1, p2 = st.columns([1, 2])
+                    p1.metric("Overall Accuracy", f"{overall_acc:.1f}%",
+                              delta=f"{total_hits}/{total_bets}")
+
+                    # By tier
+                    for tier in ["SHARP", "LEAN", "PASS"]:
+                        tier_df = hit_miss[hit_miss["confidence_tier"] == tier]
+                        if len(tier_df) > 0:
+                            tier_hits = len(tier_df[tier_df["outcome"] == "HIT"])
+                            tier_acc = tier_hits / len(tier_df) * 100
+                            p2.metric(f"{tier}", f"{tier_acc:.1f}%",
+                                      delta=f"{tier_hits}/{len(tier_df)}")
+
+                    st.dataframe(by_type, use_container_width=True, hide_index=True)
+
+                    # P&L if available
+                    if "profit" in odf.columns and odf["profit"].notna().any():
+                        total_profit = odf["profit"].sum()
+                        st.metric("Net P&L (flat $100)", f"${total_profit:+,.0f}")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB — PERFORMANCE
     # ═══════════════════════════════════════════════════════════════════════════
     with tab_perf:
         pc1, pc2 = st.columns([1, 2])
