@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.join(NBA_DIR, "features"))
 from nba_config import DB_PATH
 from game_prediction_engine import GamePredictionEngine
 from game_discord_notifications import send_game_predictions_alert
+from fetch_game_odds import fetch_and_save_odds, normalize_team
 
 try:
     from game_features import NBAGameFeatureExtractor
@@ -194,11 +195,20 @@ def main():
         print(f"  [SKIP] Predictions already exist for {game_date}. Use --force to overwrite.")
         return
 
+    # Step 0: Fetch real odds from ESPN and save to game_lines table
+    print(f"\n  Step 0: Fetching real sportsbook lines...")
+    odds_data = fetch_and_save_odds("nba", DB_PATH, game_date)
+
     # Fetch games
     games = fetch_todays_games(DB_PATH, game_date)
     if not games:
         print(f"  [NBA] No games found for {game_date}")
         return
+
+    # Normalize team abbreviations to match our database
+    for g in games:
+        g["home_team"] = normalize_team("nba", g["home_team"])
+        g["away_team"] = normalize_team("nba", g["away_team"])
 
     print(f"  [NBA] Found {len(games)} games")
     for g in games:
