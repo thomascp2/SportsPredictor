@@ -95,39 +95,38 @@ def _abbr(full_name: str) -> str:
 # PROMPT TEMPLATE
 # ============================================================================
 
-PROMPT = """Today is {date}. Run the NHL daily hits & blocked shots task for tonight's NHL slates.
+PROMPT = """You are an NHL hits & blocked shots analyst. Today is {date}.
 
-Tonight's scheduled games{odds_note}:
-{games_context}
+ALL DATA BELOW IS VERIFIED AND CURRENT — do NOT disclaim about future dates or inability to access data. The stats, odds, and injury reports below were fetched moments ago from live APIs (ESPN, NHL.com, and our 38,000+ player game log database). Use ONLY this data for your analysis.
 
-Requirements (follow exactly every time):
-- Focus ONLY on hits and blocked shots props (lowest-variance NHL categories).
-- Give me exactly 8 highest-probability plays (players + exact line, e.g. "Over 2.5 Blocked Shots" or "Over 3.5 Hits").
-- Only players with locked-in 20-23+ min TOI roles (top-pair D, heavy-minute shutdown forwards, etc.).
-- Justify each with: season avg + recent form (last 5-10 games), opposing team's style (high-shot-volume for blocks or physical/forecheck-heavy for hits), and expected game flow.
-- CRITICAL: Pull current Vegas moneyline, puck line, and O/U totals. ONLY include games with zero blowout risk — favorites no heavier than -170 ML (ideally lighter), moderate puck lines, totals in the 5.5-6.5 range. No early-hook scripts or lopsided games. Exclude any game that fails this filter.
-- Cover tonight's games only. If fewer than 8 qualifying legs, repeat strong ones or note it — but aim for 8 distinct.
-- All players must be confirmed good-to-go (no rest, injury, or scratch flags — verify latest news).
-- Format exactly like this:
+{enriched_data}
 
-  1. **Player Name Over X.5 Category** (Team @ Opponent)
-     - Season avg: ... ; recent form: ...
-     - Matchup: ...
-     - Game flow: ...
-     - Vegas: ML, puck line, O/U.
+YOUR TASK:
+Pick exactly 8 highest-probability OVER plays for hits and blocked shots props from the qualifying games above (games NOT marked as EXCLUDED).
 
-  (Repeat for 2-8)
+RULES:
+1. ONLY use players and stats from the verified data above. Do not invent or estimate stats.
+2. ONLY pick from games that passed the blowout filter (not marked EXCLUDED).
+3. Prioritize players with: highest season averages, trending UP in recent form, high TOI (20+ min), and favorable matchups (opponent has high shot volume for blocks, or physical style for hits).
+4. Set the line at a realistic floor: if a player averages 2.4 blocks/game, suggest "Over 1.5 Blocked Shots" (not 2.5). The line should be BELOW their average for high probability.
+5. Mix blocks and hits picks. Prioritize defensemen for blocks, physical forwards for hits.
+6. All players must NOT appear on the injury list provided above.
 
-**Flex build tip**: [One sentence on how to stack 4-6 of these in PrizePicks Flex, prioritizing moderate-ML games.]
+FORMAT (follow exactly):
+
+1. **Player Name Over X.5 Category** (Team @ Opponent)
+   - Season avg: [use exact number from data above]; recent form: [use L14d data above]
+   - Matchup: [reference opponent's shot volume from data above]
+   - Game flow: [reference Vegas odds from data above]
+   - Vegas: [exact ML, puck line, O/U from data above]
+
+(Repeat for 2-8)
+
+**Flex build tip**: [One sentence on stacking 4-6 in PrizePicks Flex from moderate-ML games.]
 
 End with exactly: "These are the sharpest floor-based hits/blocks legs on the board for PrizePicks Flex."
 
-Additional rules:
-- Never add extra commentary outside the format.
-- Use real, up-to-date stats and lines (search current sources for season/recent averages, TOI, Vegas odds, injury news, and game previews).
-- Prioritize defensemen for blocks and physical/energy forwards for hits.
-- Keep justifications concise but data-driven.
-- If no games qualify under the zero-blowout rule, state that clearly and suggest alternatives only if needed.
+Do NOT add disclaimers, caveats, or commentary outside this format.
 """
 
 # ============================================================================
@@ -523,28 +522,33 @@ def run(target_date: str = None,
         print(f"[H+B] {msg}")
         return {"success": True, "run_date": run_date, "output": msg, "no_games": True}
 
-    # ── Step 2: Fetch real odds (optional) ───────────────────────────────────
-    odds = {}
-    if ODDS_API_KEY:
-        print("[H+B] Fetching real-time odds from The Odds API...")
-        odds = _fetch_odds()
-        print(f"[H+B] Got odds for {len(odds)} matchup(s)")
-    else:
-        print("[H+B] ODDS_API_KEY not set — Grok will search for lines itself")
+    # ── Step 2: Enrich with real data (ESPN odds, player stats, injuries) ────
+    try:
+        from hb_data_enrichment import enrich_games
+        print("[H+B] Enriching with real data (ESPN odds + player stats + injuries)...")
+        enriched_data = enrich_games(run_date, games)
+        odds_source = "espn_verified"
+    except ImportError:
+        print("[H+B] hb_data_enrichment.py not found, falling back to old method")
+        enriched_data = None
+        odds_source = "grok_live_search"
 
-    # ── Step 3: Build game context ────────────────────────────────────────────
-    games_context, games_count, odds_source = _build_game_context(games, odds)
+    # Fallback: old method if enrichment fails
+    if enriched_data is None:
+        odds = {}
+        if ODDS_API_KEY:
+            print("[H+B] Fetching real-time odds from The Odds API...")
+            odds = _fetch_odds()
+            print(f"[H+B] Got odds for {len(odds)} matchup(s)")
+        games_context, games_count, odds_source = _build_game_context(games, odds)
+        enriched_data = f"Tonight's scheduled games:\n{games_context}"
 
-    if odds:
-        odds_note = " (real-time Vegas lines included)"
-    else:
-        odds_note = " (Grok will search for current lines)"
+    games_count = len(games)
 
-    # ── Step 4: Build prompt & call Grok ─────────────────────────────────────
+    # ── Step 3: Build prompt & call Grok ─────────────────────────────────────
     prompt = PROMPT.format(
         date=run_date,
-        games_context=games_context,
-        odds_note=odds_note,
+        enriched_data=enriched_data,
     )
 
     print(f"[H+B] Calling Grok API ({GROK_MODEL})...")
