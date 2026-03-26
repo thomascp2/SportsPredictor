@@ -2,16 +2,23 @@
 Game Prediction Engine — Shared prediction logic for all sports.
 
 Combines statistical baseline + ML models to generate game predictions.
-Used by each sport's generate_game_predictions.py script.
+Uses backtest-proven profitable filters to surface only actionable plays.
+
+Profitable strategies (from backtesting):
+    1. Elo vs Market Divergence (10%+ gap) — 70% NHL, 67% NBA
+    2. High Probability Moneyline (>=62%) — 86% NHL, 65% NBA
+    3. SHARP tier (edge >=5%, prob >=58%) — 70% both sports
+    4. Kelly positive filter — 60% NHL, 52% NBA
 
 Flow:
     1. Extract features for each game
-    2. Run statistical baseline → get probabilities
-    3. Run ML model (if available) → get probabilities
+    2. Run statistical baseline -> get probabilities
+    3. Run ML model (if available) -> get probabilities
     4. Blend results (60% ML / 40% statistical when ML available)
     5. Calculate edge vs odds-implied probability
-    6. Assign confidence tier (SHARP / LEAN / PASS)
-    7. Save to game_predictions table
+    6. Tag profitable signals (Elo divergence, high prob, Kelly+)
+    7. Assign confidence tier (PRIME / SHARP / LEAN / PASS)
+    8. Save to game_predictions table
 
 Usage:
     from shared.game_prediction_engine import GamePredictionEngine
@@ -36,6 +43,22 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "shared"))
 
 from game_statistical_baseline import GameStatisticalPredictor
 from game_prediction_schema import ensure_game_tables
+
+
+# ── Backtest-proven thresholds ───────────────────────────────────────────────
+
+# Elo divergence: bet when Elo disagrees with market by this much
+ELO_DIVERGENCE_THRESHOLD = 0.10  # 10%
+
+# Probability thresholds from backtest sweep
+PROB_THRESHOLDS = {
+    "prime": 0.62,    # 86% NHL, 65% NBA — best ROI
+    "sharp": 0.58,    # 70% NHL, 58% NBA — good volume+ROI balance
+    "lean":  0.53,    # Marginal edge
+}
+
+# Kelly criterion at -110: need prob > 52.38% for positive Kelly
+KELLY_BREAKEVEN = 0.5238
 
 
 class GamePredictionEngine:
@@ -89,6 +112,93 @@ class GamePredictionEngine:
                               f"(acc={meta.get('test_accuracy', 'N/A')})")
                 except Exception as e:
                     print(f"  [ML] Could not load {bet_type}: {e}")
+
+    # ── Signal Detection ─────────────────────────────────────────────────
+
+    def _detect_signals(self, features: Dict, bet_type: str, bet_side: str,
+                        final_prob: float, edge: float) -> List[str]:
+        """
+        Detect which backtest-proven profitable signals apply.
+
+        Returns list of signal tags: ['elo_divergence', 'high_prob', 'kelly_positive', ...]
+        """
+        signals = []
+
+        elo_prob = features.get("gf_elo_home_prob", 0.5)
+        implied = features.get("gf_home_implied_prob", 0.5)
+
+        # Adjust for side
+        if bet_side == "away":
+            elo_prob = 1.0 - elo_prob
+            implied = 1.0 - implied
+
+        # Signal 1: Elo vs Market Divergence
+        # Backtest: NHL 70.5% / +34.6% ROI, NBA 67.2% / +28.2% ROI
+        elo_divergence = elo_prob - implied
+        if bet_type == "moneyline" and abs(elo_divergence) >= ELO_DIVERGENCE_THRESHOLD:
+            # Only signal when Elo favors the side we're betting
+            if (bet_side == "home" and elo_divergence > 0) or \
+               (bet_side == "away" and elo_divergence > 0):
+                signals.append("elo_divergence")
+
+        # Signal 2: High Probability
+        # Backtest: >=62% -> NHL 85.7%, NBA 65.4%
+        if final_prob >= PROB_THRESHOLDS["prime"]:
+            signals.append("high_prob_prime")
+        elif final_prob >= PROB_THRESHOLDS["sharp"]:
+            signals.append("high_prob_sharp")
+
+        # Signal 3: Kelly Criterion Positive
+        # Backtest: NHL 60.1% / +14.8% ROI
+        b = 0.9091  # payout at -110
+        kelly = (b * final_prob - (1 - final_prob)) / b
+        if kelly > 0:
+            signals.append("kelly_positive")
+            if kelly > 0.05:
+                signals.append("kelly_strong")
+
+        # Signal 4: Strong Edge
+        if abs(edge) >= 0.05 and final_prob >= 0.58:
+            signals.append("sharp_edge")
+
+        # Signal 5: Rest / Fatigue advantage (only for moneyline)
+        if bet_type == "moneyline":
+            rest_adv = features.get("gf_rest_advantage", 0)
+            away_b2b = features.get("gf_away_b2b", 0)
+            home_b2b = features.get("gf_home_b2b", 0)
+
+            if bet_side == "home" and away_b2b and not home_b2b and rest_adv >= 1:
+                signals.append("fatigue_edge")
+            elif bet_side == "away" and home_b2b and not away_b2b and rest_adv <= -1:
+                signals.append("fatigue_edge")
+
+        return signals
+
+    def _assign_tier(self, signals: List[str], edge: float,
+                     prob: float) -> str:
+        """
+        Assign confidence tier based on backtest-proven signals.
+
+        PRIME:  Multiple profitable signals align (best ROI in backtest)
+        SHARP:  At least one strong profitable signal
+        LEAN:   Kelly positive but no other strong signal
+        PASS:   No profitable signal detected
+        """
+        strong_signals = {"elo_divergence", "high_prob_prime", "sharp_edge"}
+        hit_strong = strong_signals.intersection(signals)
+
+        if len(hit_strong) >= 2:
+            return "PRIME"
+        elif len(hit_strong) >= 1:
+            return "SHARP"
+        elif "high_prob_sharp" in signals or "kelly_strong" in signals:
+            return "LEAN"
+        elif "kelly_positive" in signals and prob >= 0.55:
+            return "LEAN"
+        else:
+            return "PASS"
+
+    # ── Prediction Generation ────────────────────────────────────────────
 
     def predict_game(self, game_date: str, home_team: str, away_team: str,
                      venue: str = None, **kwargs) -> List[Dict]:
@@ -174,8 +284,13 @@ class GamePredictionEngine:
                 if sp.bet_side == "under":
                     prediction = "UNDER" if final_prob > 0.5 else "OVER"
 
-            # Confidence tier
-            tier = self._tier(abs(edge), final_prob)
+            # Detect backtest-proven signals
+            signals = self._detect_signals(
+                features, sp.bet_type, sp.bet_side, final_prob, edge
+            )
+
+            # Assign tier based on signal strength
+            tier = self._assign_tier(signals, abs(edge), final_prob)
 
             # Convert American odds for storage
             odds_american = None
@@ -200,9 +315,13 @@ class GamePredictionEngine:
                 "confidence_tier": tier,
                 "odds_american": odds_american,
                 "implied_probability": round(implied, 4),
-                "model_version": f"v1_{model_type}",
+                "model_version": f"v2_{model_type}",
                 "model_type": model_type,
-                "features_json": json.dumps(features),
+                "features_json": json.dumps({
+                    **features,
+                    "_signals": signals,
+                    "_signal_count": len(signals),
+                }),
                 "home_elo": home_elo,
                 "away_elo": away_elo,
                 "elo_diff": elo_diff,
@@ -253,15 +372,10 @@ class GamePredictionEngine:
         """
         Generate and save predictions for a list of games.
 
-        Args:
-            games: List of dicts with keys: game_date, home_team, away_team,
-                   venue (optional), game_id (optional)
-
-        Returns:
-            Summary dict with counts and SHARP plays
+        Returns summary dict with counts, top plays, and signal breakdown.
         """
         all_preds = []
-        sharp_plays = []
+        actionable_plays = []  # PRIME + SHARP only
 
         for game in games:
             preds = self.predict_game(
@@ -272,30 +386,42 @@ class GamePredictionEngine:
             )
             all_preds.extend(preds)
 
-            # Track SHARP plays
             for p in preds:
-                if p["confidence_tier"] == "SHARP":
-                    sharp_plays.append(p)
+                if p["confidence_tier"] in ("PRIME", "SHARP"):
+                    actionable_plays.append(p)
 
         saved = self.save_predictions(all_preds)
+
+        # Count signal types
+        signal_counts = {}
+        for p in all_preds:
+            try:
+                feat = json.loads(p["features_json"])
+                for sig in feat.get("_signals", []):
+                    signal_counts[sig] = signal_counts.get(sig, 0) + 1
+            except Exception:
+                pass
+
+        # Tier breakdown
+        tier_counts = {}
+        for p in all_preds:
+            t = p["confidence_tier"]
+            tier_counts[t] = tier_counts.get(t, 0) + 1
 
         return {
             "total_predictions": len(all_preds),
             "saved": saved,
             "games": len(games),
-            "sharp_plays": len(sharp_plays),
+            "actionable_plays": len(actionable_plays),
+            "tier_breakdown": tier_counts,
+            "signal_counts": signal_counts,
+            "sharp_plays": len(actionable_plays),  # backward compat
             "sharp_details": [
-                f"{p['home_team']} vs {p['away_team']}: {p['bet_type']} {p['bet_side']} "
-                f"({p['prediction']}) prob={p['probability']:.1%} edge={p['edge']:+.1%}"
-                for p in sharp_plays
+                f"[{p['confidence_tier']}] {p['home_team']} vs {p['away_team']}: "
+                f"{p['bet_type']} {p['bet_side']} ({p['prediction']}) "
+                f"prob={p['probability']:.1%} edge={p['edge']:+.1%}"
+                for p in sorted(actionable_plays,
+                                key=lambda x: (0 if x["confidence_tier"] == "PRIME" else 1,
+                                               -abs(x["edge"])))
             ],
         }
-
-    @staticmethod
-    def _tier(edge: float, prob: float) -> str:
-        if edge >= 0.05 and prob >= 0.58:
-            return "SHARP"
-        elif edge >= 0.02 and prob >= 0.53:
-            return "LEAN"
-        else:
-            return "PASS"
