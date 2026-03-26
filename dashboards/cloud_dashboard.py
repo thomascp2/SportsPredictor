@@ -1074,7 +1074,7 @@ def main():
             gl_date = st.date_input("Date", value=date.today(),
                                      key="gl_date", label_visibility="collapsed").isoformat()
         with gc3:
-            gl_tier = st.selectbox("Tier", ["All", "SHARP", "LEAN", "PASS"],
+            gl_tier = st.selectbox("Tier", ["All", "PRIME", "SHARP", "LEAN", "PASS"],
                                     key="gl_tier", label_visibility="collapsed")
 
         gdf = fetch_game_predictions(gl_sport, gl_date)
@@ -1088,14 +1088,15 @@ def main():
                 gdf = gdf[gdf["confidence_tier"] == gl_tier]
 
             # Summary metrics
-            sharp_count = len(gdf[gdf["confidence_tier"] == "SHARP"]) if gl_tier == "All" else len(gdf)
+            prime_sharp = gdf[gdf["confidence_tier"].isin(["PRIME", "SHARP"])]
+            sharp_count = len(prime_sharp) if gl_tier == "All" else len(gdf)
             games_count = len(gdf[["home_team", "away_team"]].drop_duplicates())
             avg_edge = gdf["edge"].mean() * 100 if not gdf.empty else 0
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Games", games_count)
             m2.metric("Predictions", len(gdf))
-            m3.metric("SHARP Plays", sharp_count if gl_tier == "All" else "filtered")
+            m3.metric("Actionable (PRIME+SHARP)", sharp_count if gl_tier == "All" else "filtered")
             m4.metric("Avg Edge", f"{avg_edge:+.1f}%")
 
             # Group by game for display
@@ -1112,7 +1113,7 @@ def main():
                     for _, row in ml_df[ml_df["bet_side"] == "home"].iterrows():
                         away_row = ml_df[(ml_df["home_team"] == row["home_team"]) &
                                          (ml_df["bet_side"] == "away")]
-                        tier_color = {"SHARP": ":green", "LEAN": ":orange", "PASS": ""}.get(
+                        tier_color = {"PRIME": ":green", "SHARP": ":blue", "LEAN": ":orange", "PASS": ""}.get(
                             row["confidence_tier"], "")
 
                         matchup = f"**{row['away_team']}** @ **{row['home_team']}**"
@@ -1143,7 +1144,7 @@ def main():
                         line_str = f"{row['line']:+.1f}" if row["line"] else "PK"
                         prob = f"{row['probability']*100:.1f}%"
                         edge = f"{row['edge']*100:+.1f}%"
-                        tier_color = {"SHARP": ":green", "LEAN": ":orange"}.get(
+                        tier_color = {"PRIME": ":green", "SHARP": ":blue", "LEAN": ":orange"}.get(
                             row["confidence_tier"], "")
                         tier_badge = f" {tier_color}[{row['confidence_tier']}]" if tier_color else \
                             f" [{row['confidence_tier']}]"
@@ -1170,7 +1171,7 @@ def main():
 
                         pick = row["prediction"]
                         edge = f"{row['edge']*100:+.1f}%"
-                        tier_color = {"SHARP": ":green", "LEAN": ":orange"}.get(
+                        tier_color = {"PRIME": ":green", "SHARP": ":blue", "LEAN": ":orange"}.get(
                             row["confidence_tier"], "")
                         tier_badge = f" {tier_color}[{row['confidence_tier']}]" if tier_color else \
                             f" [{row['confidence_tier']}]"
@@ -1209,7 +1210,7 @@ def main():
                               delta=f"{total_hits}/{total_bets}")
 
                     # By tier
-                    for tier in ["SHARP", "LEAN", "PASS"]:
+                    for tier in ["PRIME", "SHARP", "LEAN", "PASS"]:
                         tier_df = hit_miss[hit_miss["confidence_tier"] == tier]
                         if len(tier_df) > 0:
                             tier_hits = len(tier_df[tier_df["outcome"] == "HIT"])
