@@ -284,11 +284,21 @@ class GameStatisticalPredictor:
             wind = f.get("gf_wind_effect", 0)
             predicted *= (1 + wind * 0.05)
 
-        # Adjust for pace (NBA)
+        # Adjust for pace (NBA) — very small adjustment only
+        # The predicted_total from PPG/PAPG already reflects team pace.
+        # pace_product is (home_pace * away_pace / 100), where pace ~= possessions/game.
+        # Typical range: 90-140. Only adjust for extremes.
         if self.sport == "nba":
             pace = f.get("gf_pace_product", 100)
-            if pace > 0:
-                predicted *= (pace / 100.0)
+            if pace > 0 and pace != 100:
+                # Normalize pace_product back to a sensible range
+                # Average pace_product is ~100 (100*100/100). A value of 120 means
+                # both teams are ~10% above avg (110*110/100). This is already
+                # captured in PPG/PAPG. Only apply a tiny nudge for extreme values.
+                if pace > 110:
+                    predicted *= 1.01  # High-pace game: +1%
+                elif pace < 92:
+                    predicted *= 0.99  # Low-pace game: -1%
 
         return predicted
 
