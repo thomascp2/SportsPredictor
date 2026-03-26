@@ -119,6 +119,102 @@ Each clone uses the same pipeline but swaps in different feature sets:
 6. Iterate on remaining bots based on what data is actually available
 7. Build Bot G (Ensemble) once we have 3+ bots generating predictions
 
+## Bot Arena — Competitive Learning System
+
+The bots don't just run in isolation — they **compete against each other** in a live arena.
+
+### The Concept: Persona-Based Bots That Learn
+
+Each bot develops a "persona" — a track record, strengths, weaknesses, and situational expertise that evolves over the season. Think of it like a fantasy league of prediction bots.
+
+### Architecture
+
+```
+shared/bot_arena/
+    bot_registry.py         -- Register bot personas, track records
+    arena_engine.py         -- Run all bots on same games, compare results
+    leaderboard.py          -- Rankings, streaks, head-to-head records
+    convergence_detector.py -- Flag games where 4+ bots agree (SHARP)
+```
+
+### Bot Persona Tracking (per bot)
+
+```python
+bot_profile = {
+    "name": "The Situationist",
+    "strategy": "Rest, travel, schedule spots, emotional factors",
+    "season_record": {"wins": 142, "losses": 108, "roi": +8.2},
+    "hot_streak": 7,        # Current consecutive correct picks
+    "best_sport": "NBA",    # Highest accuracy sport
+    "best_bet_type": "spread",  # ML, spread, or total
+    "best_situation": "road_b2b_underdog",  # Learned specialty
+    "worst_situation": "divisional_rivalry",
+    "confidence_calibration": 0.92,  # How well-calibrated probabilities are
+    "monthly_trend": [54.2, 57.8, 61.1, 59.3],  # Improving or declining?
+}
+```
+
+### Learning / Adaptation
+
+Each bot **adjusts its confidence** based on its own track record:
+- Bot tracks which game situations it's best/worst at
+- Over time, it learns to be MORE confident in spots where it has historically excelled
+- And LESS confident (or passes) on spots where it has historically struggled
+- This is NOT retraining the ML model — it's a meta-layer on top
+- Think: "I know I'm bad at predicting Denver home games, so I'll lower my confidence there"
+
+### Leaderboard Dashboard
+
+```
+--- BOT ARENA LEADERBOARD — 2026 Season ---
+
+Rank  Bot                  Record    Win%   ROI    Streak  Hot Sport
+ 1.   The Contrarian       156-104   60.0%  +12.4u   W5    NHL
+ 2.   The Matchup Nerd     148-112   56.9%  +8.7u    W3    NBA
+ 3.   The Quant            142-108   56.8%  +7.2u    L2    MLB
+ 4.   The Situationist     139-111   55.6%  +5.8u    W1    NBA
+ 5.   The Weather Witch    88-72     55.0%  +4.1u    W4    MLB
+ 6.   The Kitchen Sink     134-116   53.6%  +2.3u    L3    NHL
+ 7.   The Ensemble         98-62     61.3%  +15.1u   W8    ALL
+
+CONVERGENCE PLAYS (4+ bots agree): 23-9 (71.9%) +18.2u
+```
+
+### Convergence = The Real Edge
+
+When 4+ bots with DIFFERENT strategies all agree on the same side:
+- That's not noise — that's a genuine market inefficiency
+- Track "convergence plays" separately as the premium tier
+- Historical research shows multi-model agreement is the strongest signal
+
+### Seasonal Evolution
+
+- Bots start each season with prior year's learned biases
+- First 2 weeks: wider confidence intervals (small sample)
+- By Week 8: bots have enough data to specialize
+- Post-trade deadline: bots that track roster changes gain edge
+- Playoffs: different dynamics (bots may need playoff-specific adjustments)
+
+### Discord Integration
+
+```
+--- BOT ARENA UPDATE ---
+
+Today's Convergence Play (5/7 bots agree):
+  NYK -3.5 vs CHA  |  Avg confidence: 63.2%
+
+Bot picks breakdown:
+  The Quant:        NYK -3.5  (61%)
+  The Situationist: NYK -3.5  (58%)  [CHA on B2B, 3rd in 4 nights]
+  The Contrarian:   NYK -3.5  (65%)  [reverse line movement]
+  The Matchup Nerd: NYK -3.5  (67%)  [pace mismatch favors NYK]
+  The Weather Witch: PASS
+  The Kitchen Sink: NYK -3.5  (62%)
+  The Ensemble:     NYK -3.5  (64%)
+
+Season leader: The Contrarian (60.0%, +12.4u)
+```
+
 ## Notes
 
 - Don't hardcode feature weights — let ML discover them from data
@@ -126,3 +222,4 @@ Each clone uses the same pipeline but swaps in different feature sets:
 - Overfitting = tuning weights to match your small dataset too closely
 - The goal: find features the market underprices, not just replicate what Vegas already knows
 - "Be the best like no one ever was" = find the signals others aren't looking at
+- Bots compete AND collaborate — convergence is the ultimate signal
