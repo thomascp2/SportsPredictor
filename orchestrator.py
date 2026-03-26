@@ -153,6 +153,11 @@ class SportConfig:
         self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord (after afternoon sync)
         self.hits_blocks_time = "11:00"  # 11 AM - Claude-generated hits/blocks picks (after lineups post)
 
+        # Full-game prediction pipeline
+        self.team_stats_time = "02:30"      # 2:30 AM - update team stats + Elo (after games end)
+        self.game_prediction_time = "12:00"  # Noon - generate game predictions (odds settled)
+        self.game_grading_time = "03:15"     # 3:15 AM - grade yesterday's game predictions
+
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 30, 2026)
         self.ml_training_target_per_prop = 7500
         self.ml_training_min_new_preds = 500   # Weekly retrain trigger (new predictions since last train)
@@ -207,6 +212,11 @@ class SportConfig:
         self.prediction_time = "06:00"   # 6 AM - generate today's predictions
         self.pp_sync_time = "12:30"      # 12:30 PM - afternoon PP re-sync (full slate posted by now, refresh smart picks)
         self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord (after afternoon sync)
+
+        # Full-game prediction pipeline
+        self.team_stats_time = "04:30"       # 4:30 AM - update team stats + Elo (after late games)
+        self.game_prediction_time = "13:00"  # 1 PM - generate game predictions
+        self.game_grading_time = "05:15"     # 5:15 AM - grade yesterday's game predictions
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 27, 2026)
         self.ml_training_target_per_prop = 7500
@@ -267,6 +277,11 @@ class SportConfig:
         self.prediction_time = "12:00"   # Noon - lineups post by ~10am CST for most games
         self.pp_sync_time = "15:00"      # 3 PM - refresh lines for evening games
         self.top_picks_time = "16:00"    # 4 PM - post Discord picks
+
+        # Full-game prediction pipeline
+        self.team_stats_time = "07:30"       # 7:30 AM - update team stats + Elo
+        self.game_prediction_time = "12:30"  # 12:30 PM - generate game predictions (lineups posted)
+        self.game_grading_time = "08:15"     # 8:15 AM - grade yesterday's game predictions
 
         # ML Training Goals — sourced from mlb_config.py for single source of truth
         from mlb.scripts.mlb_config import (
@@ -2662,6 +2677,23 @@ class SportsOrchestrator:
             self.run_weekly_ml_retrain
         )
 
+        # Daily team stats + Elo update (all sports — runs before game predictions)
+        schedule.every().day.at(self.config.team_stats_time).do(
+            self.run_team_stats_update
+        )
+
+        # Daily game predictions (all sports — after team stats update)
+        if hasattr(self.config, 'game_prediction_time'):
+            schedule.every().day.at(self.config.game_prediction_time).do(
+                self.run_game_prediction_pipeline
+            )
+
+        # Daily game grading (all sports — grade yesterday's game predictions)
+        if hasattr(self.config, 'game_grading_time'):
+            schedule.every().day.at(self.config.game_grading_time).do(
+                self.run_game_grading
+            )
+
         # Daily NHL hits & blocks picks (NHL only — standalone Claude API call)
         if self.config.sport == "NHL" and hasattr(self.config, 'hits_blocks_time'):
             schedule.every().day.at(self.config.hits_blocks_time).do(
@@ -2681,6 +2713,11 @@ class SportsOrchestrator:
         print(f"   Predictions: Daily at {self.config.prediction_time}")
         print(f"   Top 20 picks: Daily at {self.config.top_picks_time}")
         print(f"   Health checks: Every {self.global_config.HEALTH_CHECK_INTERVAL_MINUTES} minutes")
+        print(f"   Team Stats: Daily at {self.config.team_stats_time}")
+        if hasattr(self.config, 'game_prediction_time'):
+            print(f"   Game Predictions: Daily at {self.config.game_prediction_time}")
+        if hasattr(self.config, 'game_grading_time'):
+            print(f"   Game Grading: Daily at {self.config.game_grading_time}")
         print(f"   ML retrain: Sundays at {self.config.retrain_time} (500+ new preds required)")
         if self.config.sport == "NHL" and hasattr(self.config, 'hits_blocks_time'):
             print(f"   Hits & Blocks: Daily at {self.config.hits_blocks_time} (Claude API)")
@@ -2716,6 +2753,122 @@ class SportsOrchestrator:
         except KeyboardInterrupt:
             print(f"\n{self.config.emoji} {self.config.sport} orchestrator stopped by user")
             self._save_state()
+
+    # ── Full-Game Prediction Pipeline Methods ────────────────────────────────
+
+    def run_team_stats_update(self) -> Dict:
+        """
+        Update team rolling stats and Elo ratings from game results.
+        Runs daily before game predictions. All sports.
+        """
+        sport = self.config.sport.lower()
+        print(f"\n[TEAM STATS] Updating {self.config.sport} team stats and Elo ratings...")
+
+        results = {"success": True, "team_stats": False, "elo": False}
+
+        # 1. Team stats collector
+        try:
+            sys.path.insert(0, str(self.config.project_root / "scripts"))
+            from team_stats_collector import run as ts_run
+            ts_run()
+            results["team_stats"] = True
+            print(f"[TEAM STATS] {self.config.sport} team stats updated")
+        except Exception as e:
+            print(f"[TEAM STATS] {self.config.sport} team stats failed: {e}")
+            results["success"] = False
+        finally:
+            # Clean up sys.path
+            try:
+                sys.path.remove(str(self.config.project_root / "scripts"))
+            except ValueError:
+                pass
+
+        # 2. Elo ratings update
+        try:
+            sys.path.insert(0, str(Path(__file__).parent / "shared"))
+            from elo_engine import EloEngine
+            elo = EloEngine(sport=sport)
+            elo.process_games_from_db(str(self.config.db_path))
+            elo.save()
+            results["elo"] = True
+            print(f"[ELO] {self.config.sport} Elo ratings updated ({elo.games_processed} games)")
+        except Exception as e:
+            print(f"[ELO] {self.config.sport} Elo update failed: {e}")
+        finally:
+            try:
+                sys.path.remove(str(Path(__file__).parent / "shared"))
+            except ValueError:
+                pass
+
+        return results
+
+    def run_game_prediction_pipeline(self) -> Dict:
+        """
+        Generate full-game predictions (moneyline, spread, total).
+        Runs daily after team stats update. Uses Elo + team stats as features.
+
+        NOTE: This is a placeholder — will be fully implemented in Phase 4
+        when generate_game_predictions.py scripts are built per sport.
+        """
+        sport = self.config.sport.lower()
+        print(f"\n[GAME PRED] {self.config.sport} game prediction pipeline...")
+
+        try:
+            script_path = self.config.project_root / "scripts" / "generate_game_predictions.py"
+            if not script_path.exists():
+                print(f"[GAME PRED] Script not yet built: {script_path}")
+                print(f"[GAME PRED] Phase 4 — team stats + Elo collection continues in background")
+                return {"success": True, "skipped": True, "reason": "script not yet built"}
+
+            result = subprocess.run(
+                [sys.executable, str(script_path)],
+                capture_output=True, text=True, timeout=300,
+                cwd=str(self.config.project_root)
+            )
+
+            if result.returncode == 0:
+                print(f"[GAME PRED] {self.config.sport} game predictions generated")
+                return {"success": True}
+            else:
+                print(f"[GAME PRED] Failed: {result.stderr[:500]}")
+                return {"success": False, "error": result.stderr[:500]}
+
+        except Exception as e:
+            print(f"[GAME PRED] Error: {e}")
+            return {"success": False, "error": str(e)}
+
+    def run_game_grading(self) -> Dict:
+        """
+        Grade yesterday's full-game predictions.
+
+        NOTE: This is a placeholder — will be fully implemented in Phase 4
+        when grade_game_predictions.py scripts are built per sport.
+        """
+        sport = self.config.sport.lower()
+        print(f"\n[GAME GRADE] {self.config.sport} game grading pipeline...")
+
+        try:
+            script_path = self.config.project_root / "scripts" / "grade_game_predictions.py"
+            if not script_path.exists():
+                print(f"[GAME GRADE] Script not yet built: {script_path}")
+                return {"success": True, "skipped": True, "reason": "script not yet built"}
+
+            result = subprocess.run(
+                [sys.executable, str(script_path)],
+                capture_output=True, text=True, timeout=300,
+                cwd=str(self.config.project_root)
+            )
+
+            if result.returncode == 0:
+                print(f"[GAME GRADE] {self.config.sport} game predictions graded")
+                return {"success": True}
+            else:
+                print(f"[GAME GRADE] Failed: {result.stderr[:500]}")
+                return {"success": False, "error": result.stderr[:500]}
+
+        except Exception as e:
+            print(f"[GAME GRADE] Error: {e}")
+            return {"success": False, "error": str(e)}
 
     def run_nhl_hits_blocks(self) -> Dict:
         """
@@ -2814,7 +2967,9 @@ class SportsOrchestrator:
 
         Args:
             operation: 'prediction', 'grading', 'health', 'prizepicks',
-                       'ml-check', 'ml-train', 'pp-sync', 'szln', or 'all'
+                       'ml-check', 'ml-train', 'pp-sync', 'szln',
+                       'team-stats', 'game-prediction', 'game-grading', 'game-all',
+                       'hits-blocks', or 'all'
         """
         if operation in ['prizepicks', 'all']:
             print("\n" + "="*80)
@@ -2870,6 +3025,28 @@ class SportsOrchestrator:
             print(f"{self.config.emoji} RUNNING: {self.config.sport} PP Afternoon Re-Sync")
             print("="*80)
             result = self.run_pp_sync()
+            print(f"\nResult: {'SUCCESS' if result.get('success') else 'FAILED'}")
+
+        if operation in ['team-stats', 'game-all']:
+            print("\n" + "="*80)
+            print(f"{self.config.emoji} RUNNING: {self.config.sport} Team Stats + Elo Update")
+            print("="*80)
+            result = self.run_team_stats_update()
+            print(f"\nResult: Team stats={'OK' if result.get('team_stats') else 'SKIP'}, "
+                  f"Elo={'OK' if result.get('elo') else 'SKIP'}")
+
+        if operation in ['game-prediction', 'game-all']:
+            print("\n" + "="*80)
+            print(f"{self.config.emoji} RUNNING: {self.config.sport} Game Prediction Pipeline")
+            print("="*80)
+            result = self.run_game_prediction_pipeline()
+            print(f"\nResult: {'SUCCESS' if result.get('success') else 'FAILED'}")
+
+        if operation in ['game-grading', 'game-all']:
+            print("\n" + "="*80)
+            print(f"{self.config.emoji} RUNNING: {self.config.sport} Game Grading Pipeline")
+            print("="*80)
+            result = self.run_game_grading()
             print(f"\nResult: {'SUCCESS' if result.get('success') else 'FAILED'}")
 
         if operation in ['hits-blocks']:
@@ -3016,7 +3193,10 @@ Examples:
     )
     parser.add_argument(
         '--operation',
-        choices=['prediction', 'grading', 'health', 'prizepicks', 'pp-sync', 'ml-check', 'ml-train', 'all'],
+        choices=['prediction', 'grading', 'health', 'prizepicks', 'pp-sync',
+                 'ml-check', 'ml-train', 'hits-blocks', 'szln',
+                 'team-stats', 'game-prediction', 'game-grading', 'game-all',
+                 'all'],
         default='all',
         help='Operation to run for once/test modes (default: all)'
     )
