@@ -125,20 +125,25 @@ class NBAGameFeatureExtractor:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
 
-        try:
-            self._add_team_stats(conn, features, home_team, away_team, game_date)
-            self._add_elo_features(features, home_team, away_team)
-            self._add_rest_travel(conn, features, home_team, away_team, game_date)
-            self._add_streaks(conn, features, home_team, away_team, game_date)
-            self._add_odds_features(conn, features, home_team, away_team, game_date)
-            self._add_context(features, home_team, away_team)
+        # Run each feature group independently so one failure doesn't kill the rest
+        for method_name, method in [
+            ("team_stats", lambda: self._add_team_stats(conn, features, home_team, away_team, game_date)),
+            ("elo", lambda: self._add_elo_features(features, home_team, away_team)),
+            ("rest_travel", lambda: self._add_rest_travel(conn, features, home_team, away_team, game_date)),
+            ("streaks", lambda: self._add_streaks(conn, features, home_team, away_team, game_date)),
+            ("odds", lambda: self._add_odds_features(conn, features, home_team, away_team, game_date)),
+            ("context", lambda: self._add_context(features, home_team, away_team)),
+        ]:
+            try:
+                method()
+            except Exception as e:
+                print(f"[NBA Features] {method_name} error: {e}")
 
-            # Pace product — estimated pace of THIS game
+        # Always calculate derived features from whatever loaded
+        try:
             features["gf_pace_product"] = round(
                 (features["gf_home_pace"] * features["gf_away_pace"]) / 100.0, 1
             )
-
-            # Predicted total from team stats
             home_ppg = features["gf_home_ppg"]
             away_ppg = features["gf_away_ppg"]
             home_papg = features["gf_home_papg"]
@@ -147,11 +152,10 @@ class NBAGameFeatureExtractor:
             features["gf_predicted_margin"] = round(
                 features["gf_home_point_diff"] - features["gf_away_point_diff"], 1
             )
-
         except Exception as e:
-            print(f"[NBA Features] Error: {e}")
-        finally:
-            conn.close()
+            print(f"[NBA Features] derived calc error: {e}")
+
+        conn.close()
 
         return features
 
@@ -175,8 +179,12 @@ class NBAGameFeatureExtractor:
                 features[f"gf_{prefix}_tov_pg"] = row["turnovers_per_game"] or 14.0
                 features[f"gf_{prefix}_reb_pg"] = row["rebounds_per_game"] or 44.0
 
-                if row["ft_pct"] is not None:
-                    features[f"gf_{prefix}_ft_pct"] = row["ft_pct"]
+                # ft_pct may not exist — compute from ftm/fta if available
+                try:
+                    if row["fta_per_game"] and row["fta_per_game"] > 0:
+                        features[f"gf_{prefix}_ft_pct"] = round(row["ftm_per_game"] / row["fta_per_game"], 3)
+                except (KeyError, TypeError):
+                    pass
                 if row["pace_estimate"] is not None:
                     features[f"gf_{prefix}_pace"] = row["pace_estimate"]
                 if row["off_rating_estimate"] is not None:
@@ -279,13 +287,32 @@ class NBAGameFeatureExtractor:
             features[f"gf_{prefix}_streak"] = streak
 
     def _add_odds_features(self, conn, features, home, away, game_date):
-        """Add odds from game_lines table."""
+        """Add odds from game_lines table. Handles team abbreviation variants."""
+        # Try exact match first, then try all known abbreviation variants
         row = conn.execute("""
             SELECT spread, over_under, home_moneyline, away_moneyline
             FROM game_lines
             WHERE home_team = ? AND away_team = ? AND game_date = ?
             LIMIT 1
         """, (home, away, game_date)).fetchone()
+
+        # Fallback: search by date and partial match (handles NY/NYK mismatches)
+        if not row:
+            rows = conn.execute("""
+                SELECT home_team, away_team, spread, over_under,
+                       home_moneyline, away_moneyline
+                FROM game_lines
+                WHERE game_date = ?
+            """, (game_date,)).fetchall()
+
+            # Try to match using first 2-3 chars
+            for r in rows:
+                h = r["home_team"] or ""
+                a = r["away_team"] or ""
+                if (h.startswith(home[:2]) or home.startswith(h[:2])) and \
+                   (a.startswith(away[:2]) or away.startswith(a[:2])):
+                    row = r
+                    break
 
         if row:
             if row["spread"] is not None:

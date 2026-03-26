@@ -360,28 +360,62 @@ class MLBGameFeatureExtractor:
                 pass
 
     def _add_odds_features(self, conn, features, home, away, game_date):
-        """Add odds from game_context table."""
-        try:
-            row = conn.execute("""
-                SELECT spread, game_total, home_moneyline
-                FROM game_context
-                WHERE home_team = ? AND away_team = ? AND game_date = ?
-                LIMIT 1
-            """, (home, away, game_date)).fetchone()
+        """Add odds from game_lines table (primary) or game_context (fallback)."""
+        found = False
 
-            if row:
-                if row["spread"] is not None:
-                    features["gf_spread"] = row["spread"]
-                if row["game_total"] is not None:
-                    features["gf_total_line"] = row["game_total"]
-                if row["home_moneyline"] is not None:
-                    ml = row["home_moneyline"]
-                    if ml < 0:
-                        features["gf_home_implied_prob"] = round(abs(ml) / (abs(ml) + 100), 4)
-                    else:
-                        features["gf_home_implied_prob"] = round(100 / (ml + 100), 4)
+        # Primary: game_lines table (populated by fetch_game_odds.py)
+        try:
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+
+            if "game_lines" in tables:
+                row = conn.execute("""
+                    SELECT spread, over_under, home_moneyline, home_implied_prob
+                    FROM game_lines
+                    WHERE home_team = ? AND away_team = ? AND game_date = ?
+                    LIMIT 1
+                """, (home, away, game_date)).fetchone()
+
+                if row:
+                    found = True
+                    if row["spread"] is not None:
+                        features["gf_spread"] = row["spread"]
+                    if row["over_under"] is not None:
+                        features["gf_total_line"] = row["over_under"]
+                    if row["home_implied_prob"] is not None:
+                        features["gf_home_implied_prob"] = row["home_implied_prob"]
+                    elif row["home_moneyline"] is not None:
+                        ml = row["home_moneyline"]
+                        if ml < 0:
+                            features["gf_home_implied_prob"] = round(abs(ml) / (abs(ml) + 100), 4)
+                        else:
+                            features["gf_home_implied_prob"] = round(100 / (ml + 100), 4)
         except Exception:
             pass
+
+        # Fallback: game_context table
+        if not found:
+            try:
+                row = conn.execute("""
+                    SELECT spread, game_total, home_ml
+                    FROM game_context
+                    WHERE home_team = ? AND away_team = ? AND game_date = ?
+                    LIMIT 1
+                """, (home, away, game_date)).fetchone()
+
+                if row:
+                    if row["spread"] is not None:
+                        features["gf_spread"] = row["spread"]
+                    if row["game_total"] is not None:
+                        features["gf_total_line"] = row["game_total"]
+                    if row["home_ml"] is not None:
+                        ml = row["home_ml"]
+                        if ml < 0:
+                            features["gf_home_implied_prob"] = round(abs(ml) / (abs(ml) + 100), 4)
+                        else:
+                            features["gf_home_implied_prob"] = round(100 / (ml + 100), 4)
+            except Exception:
+                pass
 
     def _add_context(self, features, home, away):
         """Add divisional matchup flag."""

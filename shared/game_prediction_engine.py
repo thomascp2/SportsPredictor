@@ -227,6 +227,10 @@ class GamePredictionEngine:
         elo_prob = features.get("gf_elo_home_prob", 0.5)
 
         for sp in stat_preds:
+            # Skip moneyline for NBA (user wants ML only for NHL/MLB)
+            if sp.bet_type == "moneyline" and self.sport == "nba":
+                continue
+
             # Check if we have an ML model for this bet type
             ml_prob = None
             model_type = "statistical"
