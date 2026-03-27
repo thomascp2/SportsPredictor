@@ -24,9 +24,8 @@ from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
 from fuzzywuzzy import fuzz
 
-# Discord webhook URL
-DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL',
-    "***REMOVED***")
+# Discord webhook URL — must be set via environment variable (never hardcode)
+DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
 
 
 @dataclass

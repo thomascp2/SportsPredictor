@@ -20,12 +20,8 @@ import urllib.request
 from datetime import datetime
 from typing import Dict, List, Optional
 
-# Discord webhook — uses env var or fallback
-DISCORD_WEBHOOK_URL = os.getenv(
-    "DISCORD_WEBHOOK_URL",
-    "https://discord.com/api/webhooks/1435509138687004672/"
-    "YSOXw9z6gtGj9wSRAABiGLa-7P2eBhFgPRoAQp1vdV5f2_5YCmy1fYkj2EQpb-XIPnBQ"
-)
+# Discord webhook — must be set via environment variable (never hardcode)
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
 SPORT_EMOJI = {"nhl": "[NHL]", "nba": "[NBA]", "mlb": "[MLB]"}
 TIER_EMOJI = {"SHARP": "[SHARP]", "LEAN": "[LEAN]", "PASS": ""}

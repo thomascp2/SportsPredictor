@@ -1,0 +1,53 @@
+@echo off
+:: FreePicks Orchestrator - Windows Startup Script
+:: ================================================================
+:: SETUP: Copy this file to start_orchestrator.bat and fill in your keys.
+::        start_orchestrator.bat is gitignored and will NOT be committed.
+:: ================================================================
+
+title FreePicks Orchestrator
+
+cd /d C:\Users\thoma\SportsPredictor
+
+:: Discord webhooks
+SET DISCORD_WEBHOOK_URL=YOUR_DISCORD_WEBHOOK_URL_HERE
+SET NHL_DISCORD_WEBHOOK=YOUR_NHL_DISCORD_WEBHOOK_HERE
+SET NBA_DISCORD_WEBHOOK=YOUR_NBA_DISCORD_WEBHOOK_HERE
+SET MLB_DISCORD_WEBHOOK=YOUR_MLB_DISCORD_WEBHOOK_HERE
+:: NHL Hits & Blocks — dedicated channel webhook
+SET NHL_HITS_BLOCKS_WEBHOOK=YOUR_HITS_BLOCKS_WEBHOOK_HERE
+
+:: Discord bot token
+SET DISCORD_BOT_TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
+
+:: AI API keys
+SET XAI_API_KEY=YOUR_XAI_API_KEY_HERE
+SET ODDS_API_KEY=YOUR_ODDS_API_KEY_HERE
+:: SET ANTHROPIC_API_KEY=YOUR_ANTHROPIC_KEY_HERE
+
+echo.
+echo =====================================================
+echo   FreePicks Orchestrator
+echo   Starting NBA + NHL + MLB in continuous mode...
+echo   Keep this window open. Close it to stop.
+echo =====================================================
+echo.
+
+:: Start Discord bot in its own window (inherits env vars set above)
+start "FreePicks Discord Bot" start_bot.bat
+
+:: Start dashboard only if not already running (avoids duplicate windows on restart)
+tasklist /FI "WINDOWTITLE eq FreePicks Dashboard" 2>NUL | find /I "cmd.exe" >NUL
+if errorlevel 1 (
+    start "FreePicks Dashboard" start_dashboard.bat
+) else (
+    echo [INFO] Dashboard already running - skipping...
+)
+
+:LOOP
+python orchestrator.py --sport all --mode continuous
+echo.
+echo [WARN] Orchestrator exited (crash or stop). Restarting in 30 seconds...
+echo        Press Ctrl+C twice to cancel restart.
+timeout /t 30 /nobreak
+goto LOOP
