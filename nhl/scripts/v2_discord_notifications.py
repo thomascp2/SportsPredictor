@@ -18,11 +18,8 @@ import os
 from datetime import datetime
 from typing import Optional
 
-# Discord webhook URL (get from Discord: Server Settings > Integrations > Webhooks)
-# DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
-
-# If not in environment, you can paste it here directly:
-DISCORD_WEBHOOK_URL = "***REMOVED***"
+# Discord webhook URL — must be set via environment variable (never hardcode)
+DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
 
 
 def send_discord_notification(
