@@ -14,6 +14,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSmartPicks } from '../hooks/useSmartPicks';
 import { useParlayStore } from '../store/parlayStore';
 import { PickCard } from '../components/picks/PickCard';
+import { PickCarousel } from '../components/picks/PickCarousel';
 import { PlayerCardModal } from '../components/picks/PlayerCardModal';
 import { SportToggle } from '../components/common/SportToggle';
 import { SmartPick, SortOption } from '../services/api';
@@ -52,6 +53,9 @@ export function SmartPicksScreen() {
   const [hideStarted, setHideStarted] = useState(true);
   const [selectedPlayer, setSelectedPlayer] = useState<SmartPick | null>(null);
   const [gameFilter, setGameFilter] = useState<GameFilter | null>(null);
+  const [viewMode, setViewMode] = useState<'list' | 'carousel'>('list');
+  const [oddsTypeFilter, setOddsTypeFilter] = useState('ALL');
+  const [minEdgeFilter, setMinEdgeFilter] = useState(0);
 
   // Handle incoming game filter from navigation
   useEffect(() => {
@@ -64,7 +68,7 @@ export function SmartPicksScreen() {
     }
   }, [route.params?.gameFilter, navigation]);
 
-  const { picks, summary, loading, error, refetch } = useSmartPicks(
+  const { picks, summary, loading, error, minutesSinceRefresh, refetch } = useSmartPicks(
     sport.toLowerCase(),
     { sortBy, hideStarted }
   );
@@ -125,8 +129,16 @@ export function SmartPicksScreen() {
       result = result.filter((p) => isStarPlayer(p.player_name, sport));
     }
 
+    if (oddsTypeFilter !== 'ALL') {
+      result = result.filter((p) => (p.pp_odds_type || 'standard').toLowerCase() === oddsTypeFilter.toLowerCase());
+    }
+
+    if (minEdgeFilter > 0) {
+      result = result.filter((p) => p.edge >= minEdgeFilter);
+    }
+
     return result;
-  }, [picks, tierFilter, predictionFilter, propTypeFilter, playerFilter, sport, gameFilter, pickMatchesGame]);
+  }, [picks, tierFilter, predictionFilter, propTypeFilter, playerFilter, sport, gameFilter, pickMatchesGame, oddsTypeFilter, minEdgeFilter]);
 
   // Group by game
   const gameGroups = useMemo(() => {
@@ -188,7 +200,20 @@ export function SmartPicksScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.title}>Smart Picks</Text>
+        <View style={styles.titleRow}>
+          <Text style={styles.title}>Smart Picks</Text>
+          {minutesSinceRefresh !== null && (
+            <TouchableOpacity onPress={refetch} style={styles.refreshBadge}>
+              <Text style={styles.refreshBadgeText}>
+                {minutesSinceRefresh === 0
+                  ? 'Just updated'
+                  : `${minutesSinceRefresh}m ago`}
+                {'  '}
+                <Text style={styles.refreshIcon}>↻</Text>
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
         {summary && (
           <View style={styles.summaryRow}>
             <Text style={styles.summaryText}>
@@ -240,6 +265,15 @@ export function SmartPicksScreen() {
             </TouchableOpacity>
           ))}
         </ScrollView>
+        {/* View mode toggle */}
+        <TouchableOpacity
+          style={[styles.viewModeBtn, viewMode === 'carousel' && styles.viewModeBtnActive]}
+          onPress={() => setViewMode(viewMode === 'list' ? 'carousel' : 'list')}
+        >
+          <Text style={[styles.viewModeBtnText, viewMode === 'carousel' && styles.viewModeBtnTextActive]}>
+            {viewMode === 'list' ? 'Cards' : 'List'}
+          </Text>
+        </TouchableOpacity>
         <TouchableOpacity
           style={styles.filterToggle}
           onPress={() => setShowFilters(!showFilters)}
@@ -376,6 +410,58 @@ export function SmartPicksScreen() {
               ))}
             </ScrollView>
           </View>
+          {/* Odds type filter */}
+          <View style={styles.filterRow}>
+            <Text style={styles.filterLabel}>Odds:</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {['ALL', 'goblin', 'standard', 'demon'].map((opt) => (
+                <TouchableOpacity
+                  key={opt}
+                  style={[
+                    styles.filterChip,
+                    oddsTypeFilter === opt && styles.filterChipActive,
+                    opt === 'goblin' && oddsTypeFilter === opt && styles.goblinChipActive,
+                    opt === 'demon' && oddsTypeFilter === opt && styles.demonChipActive,
+                  ]}
+                  onPress={() => setOddsTypeFilter(opt)}
+                >
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      oddsTypeFilter === opt && styles.filterChipTextActive,
+                    ]}
+                  >
+                    {opt.toUpperCase()}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+          {/* Min edge filter */}
+          <View style={styles.filterRow}>
+            <Text style={styles.filterLabel}>Edge:</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {[0, 5, 10, 14, 19].map((threshold) => (
+                <TouchableOpacity
+                  key={threshold}
+                  style={[
+                    styles.filterChip,
+                    minEdgeFilter === threshold && styles.filterChipActive,
+                  ]}
+                  onPress={() => setMinEdgeFilter(threshold)}
+                >
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      minEdgeFilter === threshold && styles.filterChipTextActive,
+                    ]}
+                  >
+                    {threshold === 0 ? 'ANY' : `${threshold}%+`}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
         </View>
       )}
 
@@ -398,6 +484,13 @@ export function SmartPicksScreen() {
               : 'Check back closer to game time'}
           </Text>
         </View>
+      ) : viewMode === 'carousel' ? (
+        <PickCarousel
+          picks={filteredPicks}
+          onAddToParlay={handleAddToParlay}
+          onPlayerPress={handlePlayerPress}
+          isPickInParlay={isPickInParlay}
+        />
       ) : (
         <FlatList
           data={filteredPicks}
@@ -463,10 +556,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   title: {
     color: '#fff',
     fontSize: 28,
     fontWeight: 'bold',
+  },
+  refreshBadge: {
+    backgroundColor: '#1a1a2a',
+    borderColor: '#333',
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  refreshBadgeText: {
+    color: '#666',
+    fontSize: 11,
+  },
+  refreshIcon: {
+    color: '#4CAF50',
+    fontSize: 13,
   },
   summaryRow: {
     marginTop: 4,
@@ -505,6 +619,27 @@ const styles = StyleSheet.create({
   sortButtonTextActive: {
     color: '#fff',
     fontWeight: 'bold',
+  },
+  viewModeBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#252535',
+    borderWidth: 1,
+    borderColor: '#333',
+    marginLeft: 8,
+  },
+  viewModeBtnActive: {
+    backgroundColor: '#4CAF5020',
+    borderColor: '#4CAF50',
+  },
+  viewModeBtnText: {
+    color: '#666',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  viewModeBtnTextActive: {
+    color: '#4CAF50',
   },
   filterToggle: {
     paddingHorizontal: 12,
@@ -578,6 +713,12 @@ const styles = StyleSheet.create({
   },
   starsChipActive: {
     backgroundColor: '#FFD700',
+  },
+  goblinChipActive: {
+    backgroundColor: '#2E7D32',
+  },
+  demonChipActive: {
+    backgroundColor: '#B71C1C',
   },
   filterChipText: {
     color: '#888',
