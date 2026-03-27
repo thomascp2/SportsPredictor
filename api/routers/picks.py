@@ -22,37 +22,6 @@ from api.services.cache import cache
 router = APIRouter()
 
 
-def compute_percentile_scores(picks: list) -> list:
-    """
-    Add percentile_score (0-100) to each pick.
-
-    Ranks each player's season_avg within their prop_type group so the UI
-    can show a colored bar communicating how elite this player is at this stat.
-    """
-    from collections import defaultdict
-
-    # Group picks by prop_type
-    by_prop: dict = defaultdict(list)
-    for pick in picks:
-        prop = pick.get('prop_type', 'unknown')
-        avg = pick.get('season_avg') or 0.0
-        by_prop[prop].append((avg, pick))
-
-    result = []
-    for prop, items in by_prop.items():
-        n = len(items)
-        # Sort ascending — higher season avg = higher percentile
-        sorted_items = sorted(items, key=lambda x: x[0])
-        for rank, (avg, pick) in enumerate(sorted_items):
-            if n <= 1:
-                percentile = 75.0
-            else:
-                percentile = (rank / (n - 1)) * 100.0
-            result.append({**pick, 'percentile_score': round(percentile, 1)})
-
-    return result
-
-
 def get_smart_picks(sport: str, date: str = None, min_edge: float = 5.0, min_prob: float = 0.55):
     """Fetch smart picks using SmartPickSelector."""
     try:
@@ -214,7 +183,6 @@ async def smart_picks(
         picks = cached_picks
     else:
         picks = get_smart_picks(sport, date, min_edge, min_prob)
-        picks = compute_percentile_scores(picks)
         cache.set(cache_key, picks, 300)  # Cache for 5 minutes
 
     # Enrich with game times
@@ -312,7 +280,6 @@ async def today_picks(
         picks = cached_picks
     else:
         picks = get_smart_picks(sport, date, min_edge=0, min_prob=0.5)
-        picks = compute_percentile_scores(picks)
         cache.set(cache_key, picks, 300)
 
     # Enrich with game times

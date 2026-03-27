@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.config import CORS_ORIGINS, API_VERSION, API_TITLE, API_DESCRIPTION
-from api.routers import picks, scores, parlays, performance, players, admin, prizepicks
+from api.routers import picks, scores, parlays, performance, players, admin
 
 # Create FastAPI app
 app = FastAPI(
@@ -35,7 +35,6 @@ app.include_router(parlays.router, prefix="/api/parlays", tags=["parlays"])
 app.include_router(performance.router, prefix="/api/performance", tags=["performance"])
 app.include_router(players.router, prefix="/api/players", tags=["players"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
-app.include_router(prizepicks.router, prefix="/api/prizepicks", tags=["prizepicks"])
 
 
 @app.get("/")

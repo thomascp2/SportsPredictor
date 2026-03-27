@@ -5,14 +5,12 @@ import { SmartPick } from '../services/api';
 interface ParlayState {
   picks: ParlayPick[];
   result: ParlayResult | null;
-  stakeAmount: number;
 
   // Actions
   addPick: (pick: SmartPick) => void;
   removePick: (pickId: string) => void;
   clearPicks: () => void;
   updatePickOddsType: (pickId: string, oddsType: 'goblin' | 'standard' | 'demon') => void;
-  setStakeAmount: (amount: number) => void;
 }
 
 function generatePickId(pick: SmartPick): string {
@@ -34,7 +32,6 @@ function smartPickToParlayPick(pick: SmartPick): ParlayPick {
 export const useParlayStore = create<ParlayState>((set, get) => ({
   picks: [],
   result: null,
-  stakeAmount: 10,
 
   addPick: (smartPick: SmartPick) => {
     const pick = smartPickToParlayPick(smartPick);
@@ -69,9 +66,5 @@ export const useParlayStore = create<ParlayState>((set, get) => ({
     const result = newPicks.length >= 2 ? calculateParlay(newPicks) : null;
 
     set({ picks: newPicks, result });
-  },
-
-  setStakeAmount: (amount: number) => {
-    set({ stakeAmount: Math.max(1, amount) });
   },
 }));
