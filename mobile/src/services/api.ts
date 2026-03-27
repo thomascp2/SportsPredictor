@@ -62,6 +62,8 @@ export interface SmartPick {
   movement_agrees?: boolean;        // True if our prediction direction agrees with line movement
   calibration_correction?: number;  // Historical calibration adjustment applied to probability (%)
   days_rest?: number;               // Player's days since last game (0 = back-to-back)
+  // League rank field
+  percentile_score?: number;        // 0-100: where this player's season_avg ranks among today's tracked players for this prop
 }
 
 export interface GameGroup {
@@ -459,6 +461,27 @@ export async function getSystemStatus(): Promise<any> {
 
 export async function clearCache(): Promise<AdminResponse> {
   const response = await api.post<AdminResponse>('/admin/clear-cache');
+  return response.data;
+}
+
+// PrizePicks cache status
+export interface PrizePicksStatus {
+  success: boolean;
+  cached: boolean;
+  date?: string;
+  lines_count: number;
+  last_fetched_at?: string;
+  minutes_old?: number;
+  is_stale?: boolean;
+  by_sport?: Record<string, number>;
+  by_prop_type?: Record<string, number>;
+  message?: string;
+}
+
+export async function fetchPrizePicksStatus(sport?: string): Promise<PrizePicksStatus> {
+  const response = await api.get<PrizePicksStatus>('/prizepicks/status', {
+    params: sport ? { sport } : undefined,
+  });
   return response.data;
 }
 
