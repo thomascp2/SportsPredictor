@@ -35,7 +35,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent))
 from bets_db import init_db, get_bets, add_game_bet, add_prop_bet, delete_bet, all_bets
 from live_data import (all_games, player_stats as fetch_player_stats,
-                       nba_games, nhl_games, mlb_games)
+                       nba_games, nhl_games, mlb_games, cbb_tournament_games)
 
 console = Console()
 
@@ -44,6 +44,7 @@ console = Console()
 
 SPORT_PROPS = {
     'NBA': ['points', 'rebounds', 'assists', 'steals', 'blocks', 'threes_made', 'pra', 'turnovers'],
+    'CBB': ['points', 'rebounds', 'assists', 'steals', 'blocks', 'threes_made', 'pra', 'turnovers'],
     'NHL': ['points', 'goals', 'assists', 'shots', 'hits', 'blocked_shots'],
     'MLB': ['strikeouts', 'innings_pitched', 'hits', 'home_runs', 'rbi',
             'total_bases', 'earned_runs', 'walks_allowed'],
@@ -71,7 +72,7 @@ PROP_UNIT = {
     'walks_allowed': 'BB',
 }
 
-SPORT_COLOR = {'NBA': 'orange1', 'NHL': 'cyan', 'MLB': 'green'}
+SPORT_COLOR = {'NBA': 'orange1', 'CBB': 'bright_yellow', 'NHL': 'cyan', 'MLB': 'green'}
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -204,7 +205,7 @@ def build_display(games, game_bets, prop_bets, p_stats_cache, game_date, countdo
     ))
 
     # ── Games by sport ─────────────────────────────────────────────────────
-    for sport in ('NBA', 'NHL', 'MLB'):
+    for sport in ('CBB', 'NBA', 'NHL', 'MLB'):
         sport_games = [g for g in games if g['sport'] == sport]
         if not sport_games:
             continue
@@ -226,7 +227,12 @@ def build_display(games, game_bets, prop_bets, p_stats_cache, game_date, countdo
         for g in sorted(sport_games, key=lambda x: (
                 0 if x['status'] == 'live' else 1 if x['status'] == 'scheduled' else 2)):
             status_txt = fmt_status(g)
-            matchup    = f"{g['away_team']} @ {g['home_team']}"
+            if sport == 'CBB':
+                a_seed = f"({g['away_seed']})" if g.get('away_seed') else ''
+                h_seed = f"({g['home_seed']})" if g.get('home_seed') else ''
+                matchup = f"{a_seed}{g['away_team']} @ {h_seed}{g['home_team']}"
+            else:
+                matchup = f"{g['away_team']} @ {g['home_team']}"
             if g['status'] == 'scheduled':
                 score = "--  -  --"
             else:
@@ -258,9 +264,19 @@ def build_display(games, game_bets, prop_bets, p_stats_cache, game_date, countdo
             t.add_row(status_txt, matchup, score, wager_txt)
 
         sport_bets = sum(1 for b in game_bets if b['sport'] == sport)
-        title = f"[bold {color}]{sport}[/bold {color}]  [dim]{len(sport_games)} game"
-        if len(sport_games) != 1:
-            title += 's'
+        if sport == 'CBB':
+            rounds = list(dict.fromkeys(
+                g['round_label'] for g in sport_games if g.get('round_label')
+            ))
+            round_str = f"  ·  {rounds[0]}" if len(rounds) == 1 else ("  ·  NCAA Tournament" if rounds else "  ·  NCAA Tournament")
+            title = f"[bold {color}]CBB[/bold {color}]  [dim]{len(sport_games)} game"
+            if len(sport_games) != 1:
+                title += 's'
+            title += round_str
+        else:
+            title = f"[bold {color}]{sport}[/bold {color}]  [dim]{len(sport_games)} game"
+            if len(sport_games) != 1:
+                title += 's'
         if sport_bets:
             title += f"  ·  {sport_bets} bet" + ('s' if sport_bets > 1 else '')
         title += '[/dim]'
@@ -427,11 +443,11 @@ def cmd_add(game_date):
                         '[dim]— Ctrl+C to cancel[/dim]', border_style='cyan'))
 
     bet_kind = Prompt.ask('Bet type', choices=['game', 'prop'], default='game')
-    sport    = Prompt.ask('Sport', choices=['NBA', 'NHL', 'MLB']).upper()
+    sport    = Prompt.ask('Sport', choices=['NBA', 'CBB', 'NHL', 'MLB']).upper()
 
     # Fetch games
     console.print(f'[dim]Fetching {sport} games for {game_date}...[/dim]')
-    fetchers = {'NBA': nba_games, 'NHL': nhl_games, 'MLB': mlb_games}
+    fetchers = {'NBA': nba_games, 'CBB': cbb_tournament_games, 'NHL': nhl_games, 'MLB': mlb_games}
     g_list = fetchers[sport](game_date)
 
     if not g_list:
@@ -528,6 +544,76 @@ def cmd_add(game_date):
                       f'({away} @ {home})  |  {fmt_odds(odds)}  |  ${stake:.2f} to win ${profit:.2f}')
 
 
+# ─── Batch Import ────────────────────────────────────────────────────────────
+
+def cmd_import(csv_path, game_date):
+    """Import bets from a CSV file. See scoreboard/bets_import.csv for the template."""
+    import csv as csv_module
+    path = Path(csv_path)
+    if not path.exists():
+        console.print(f'[red]File not found: {csv_path}[/red]')
+        console.print(f'[dim]Template: scoreboard/bets_import.csv[/dim]')
+        return
+
+    imported, errors = 0, []
+    with open(path, newline='', encoding='utf-8') as f:
+        reader = csv_module.DictReader(f)
+        for i, row in enumerate(reader, 1):
+            # Skip comment/blank rows
+            if not row or row.get('type', '').startswith('#'):
+                continue
+            try:
+                btype  = row.get('type', '').strip().lower()
+                sport  = row.get('sport', '').strip().upper()
+                gdate  = row.get('game_date', '').strip() or game_date
+                away   = row.get('away_team', '').strip().upper()
+                home   = row.get('home_team', '').strip().upper()
+                odds   = int(str(row.get('odds', '0')).strip().replace('+', ''))
+                stake  = float(str(row.get('stake', '0')).strip().replace('$', ''))
+
+                if not sport or not away or not home:
+                    errors.append(f'Row {i}: missing sport/away_team/home_team')
+                    continue
+
+                if btype == 'game':
+                    bet_type = row.get('bet_type', '').strip().upper()
+                    side     = row.get('side', '').strip().lower()
+                    line_s   = str(row.get('line', '')).strip()
+                    line     = float(line_s) if line_s else None
+                    if not bet_type or not side:
+                        errors.append(f'Row {i}: missing bet_type or side')
+                        continue
+                    add_game_bet(sport, gdate, away, home, bet_type, side,
+                                 odds, stake, line=line)
+                    imported += 1
+
+                elif btype == 'prop':
+                    player    = row.get('player_name', '').strip()
+                    prop_type = row.get('prop_type', '').strip().lower()
+                    side      = row.get('side', '').strip().upper()
+                    line_s    = str(row.get('line', '')).strip()
+                    line      = float(line_s) if line_s else 0.0
+                    if not player or not prop_type or not side:
+                        errors.append(f'Row {i}: missing player_name/prop_type/side')
+                        continue
+                    add_prop_bet(sport, gdate, player, prop_type, line, side,
+                                 odds, stake, away_team=away, home_team=home)
+                    imported += 1
+
+                else:
+                    errors.append(f'Row {i}: type must be "game" or "prop", got "{btype}"')
+
+            except Exception as e:
+                errors.append(f'Row {i}: {e}')
+
+    console.print(f'\n[green]Imported {imported} bet{"s" if imported != 1 else ""}[/green]'
+                  + (f'  [yellow]{len(errors)} error{"s" if len(errors)!=1 else ""}[/yellow]' if errors else ''))
+    for err in errors:
+        console.print(f'  [red]{err}[/red]')
+    if imported:
+        console.print(f'[dim]Run `python scoreboard/scoreboard.py watch` to see them live.[/dim]')
+
+
 # ─── List Bets ────────────────────────────────────────────────────────────────
 
 def cmd_list():
@@ -598,12 +684,14 @@ def main():
         epilog=__doc__
     )
     parser.add_argument('command', nargs='?', default='watch',
-                        choices=['watch', 'add', 'bets', 'delete'],
-                        help='watch (default), add, bets, delete')
+                        choices=['watch', 'add', 'bets', 'delete', 'import'],
+                        help='watch (default), add, bets, delete, import <file>')
     parser.add_argument('--date',    default=None,
                         help='Date YYYY-MM-DD (default: today)')
     parser.add_argument('--refresh', type=int, default=60,
                         help='Refresh interval seconds (default: 60)')
+    parser.add_argument('file', nargs='?', default='scoreboard/bets_import.csv',
+                        help='CSV file for import command (default: scoreboard/bets_import.csv)')
     args = parser.parse_args()
 
     init_db()
@@ -617,6 +705,8 @@ def main():
         cmd_list()
     elif args.command == 'delete':
         cmd_delete()
+    elif args.command == 'import':
+        cmd_import(args.file, game_date)
 
 
 if __name__ == '__main__':

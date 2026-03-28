@@ -134,8 +134,171 @@ def mlb_games(game_date):
         return []
 
 
+def cbb_tournament_games(game_date):
+    """Fetch NCAA Tournament games from ESPN (groups=100 = NCAA Tournament only)."""
+    try:
+        r = requests.get(
+            'https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard',
+            params={'dates': game_date.replace('-', ''), 'groups': 100, 'limit': 50},
+            timeout=10
+        )
+        if r.status_code != 200:
+            return []
+        out = []
+        for event in r.json().get('events', []):
+            comp = event.get('competitions', [{}])[0]
+            competitors = comp.get('competitors', [])
+            if len(competitors) < 2:
+                continue
+
+            home_c = next((c for c in competitors if c.get('homeAway') == 'home'), None)
+            away_c = next((c for c in competitors if c.get('homeAway') == 'away'), None)
+            if not home_c or not away_c:
+                continue
+
+            def abbr(c):
+                return (c.get('team', {}).get('abbreviation') or
+                        c.get('team', {}).get('shortDisplayName', '')[:6]).upper()
+
+            def score(c):
+                s = c.get('score')
+                try:
+                    return int(float(str(s))) if s not in (None, '', '--') else None
+                except Exception:
+                    return None
+
+            def seed(c):
+                return c.get('curatedRank', {}).get('current')
+
+            status_obj = event.get('status', {})
+            stype      = status_obj.get('type', {})
+            state      = stype.get('state', '').lower()
+            completed  = stype.get('completed', False)
+            sname      = stype.get('name', '')
+
+            if completed or state == 'post':
+                status = 'final'
+            elif state == 'in':
+                status = 'live'
+            else:
+                status = 'scheduled'
+
+            period_num = status_obj.get('period', 0)
+            clock      = status_obj.get('displayClock', '') if status == 'live' else ''
+            period = ''
+            if status == 'live':
+                if sname == 'STATUS_HALFTIME':
+                    period = 'HLF'
+                elif period_num == 1:
+                    period = '1H'
+                elif period_num == 2:
+                    period = '2H'
+                elif period_num >= 3:
+                    ot = period_num - 2
+                    period = 'OT' if ot == 1 else f'{ot}OT'
+
+            notes       = comp.get('notes', [])
+            round_label = notes[0].get('headline', '') if notes else ''
+            # Shorten e.g. "NCAA Men's Basketball Championship - South Region - Elite 8" → "Elite 8"
+            if ' - ' in round_label:
+                round_label = round_label.rsplit(' - ', 1)[-1]
+
+            start_time = comp.get('startDate', '') or event.get('date', '')
+
+            away_seed = seed(away_c)
+            home_seed = seed(home_c)
+
+            out.append({
+                'game_id':          str(event.get('id', '')),
+                'sport':            'CBB',
+                'away_team':        abbr(away_c),
+                'home_team':        abbr(home_c),
+                'away_score':       score(away_c),
+                'home_score':       score(home_c),
+                'status':           status,
+                'period':           period,
+                'clock':            clock,
+                'start_time_local': _to_local(start_time),
+                'round_label':      round_label,
+                'away_seed':        away_seed,
+                'home_seed':        home_seed,
+                'away_team_name':   away_c.get('team', {}).get('shortDisplayName', ''),
+                'home_team_name':   home_c.get('team', {}).get('shortDisplayName', ''),
+            })
+        return out
+    except Exception:
+        return []
+
+
+def cbb_player_stats(game_id):
+    """Fetch CBB player stats from ESPN summary endpoint."""
+    try:
+        r = requests.get(
+            'https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/summary',
+            params={'event': game_id}, timeout=10
+        )
+        if r.status_code != 200:
+            return {}
+        result = {}
+        for team_data in r.json().get('boxscore', {}).get('players', []):
+            stats_list = team_data.get('statistics', [])
+            if not stats_list:
+                continue
+            stat_info = stats_list[0]
+            # CBB keys: ['MIN','PTS','FG','3PT','FT','REB','AST','TO','STL','BLK',...]
+            keys = stat_info.get('names') or stat_info.get('labels') or stat_info.get('keys') or []
+
+            for ath in stat_info.get('athletes', []):
+                if ath.get('didNotPlay', False):
+                    continue
+                name = (ath.get('athlete', {}).get('displayName') or '').strip()
+                if not name:
+                    continue
+                raw = ath.get('stats', [])
+                sd = {keys[i]: raw[i] for i in range(min(len(keys), len(raw)))}
+
+                def gv(ks):
+                    for k in ks:
+                        if k in sd:
+                            try:
+                                return int(float(str(sd[k]).lstrip('+')))
+                            except Exception:
+                                pass
+                    return 0
+
+                def pm(ks):
+                    for k in ks:
+                        if k in sd:
+                            s = str(sd[k])
+                            for sep in ('-', '/'):
+                                if sep in s:
+                                    try:
+                                        return int(float(s.split(sep)[0].strip()))
+                                    except Exception:
+                                        pass
+                    return 0
+
+                pts = gv(['PTS', 'points'])
+                reb = gv(['REB', 'rebounds'])
+                ast = gv(['AST', 'assists'])
+                result[name] = {
+                    'points':      pts,
+                    'rebounds':    reb,
+                    'assists':     ast,
+                    'steals':      gv(['STL', 'steals']),
+                    'blocks':      gv(['BLK', 'blocks']),
+                    'threes_made': pm(['3PT', '3PM-3PA', '3P']),
+                    'pra':         pts + reb + ast,
+                    'turnovers':   gv(['TO', 'turnovers']),
+                }
+        return result
+    except Exception:
+        return {}
+
+
 def all_games(game_date):
     games = []
+    games.extend(cbb_tournament_games(game_date))  # NCAA Tournament first
     games.extend(nba_games(game_date))
     games.extend(nhl_games(game_date))
     games.extend(mlb_games(game_date))
@@ -235,6 +398,8 @@ def mlb_player_stats(game_id):
 def player_stats(sport, game_id):
     if sport == 'NBA':
         return nba_player_stats(game_id)
+    elif sport == 'CBB':
+        return cbb_player_stats(game_id)
     elif sport == 'NHL':
         return nhl_player_stats(game_id)
     elif sport == 'MLB':
