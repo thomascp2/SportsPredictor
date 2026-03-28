@@ -188,18 +188,17 @@ def fmt_bet_desc(bet, game):
 
 # ─── Display Builder ──────────────────────────────────────────────────────────
 
-def build_display(games, game_bets, prop_bets, p_stats_cache, game_date, countdown):
+def build_display(games, game_bets, prop_bets, p_stats_cache, game_date):
     parts = []
 
     # Header
-    now_str  = datetime.now().strftime('%I:%M:%S %p').lstrip('0')
+    now_str  = datetime.now().strftime('%I:%M %p').lstrip('0')
     date_str = datetime.strptime(game_date, '%Y-%m-%d').strftime('%A, %B %d %Y')
     live_ct  = sum(1 for g in games if g['status'] == 'live')
     live_tag  = f"  [bold green]{live_ct} LIVE[/bold green]" if live_ct else ''
     parts.append(Panel(
         f"[bold cyan]SPORTS BETTING SCOREBOARD[/bold cyan]{live_tag}  "
-        f"[dim]·  {date_str}[/dim]\n"
-        f"[dim]Last refresh: {now_str}  ·  Next in {countdown}s  ·  "
+        f"[dim]·  {date_str}  ·  updated {now_str}  ·  "
         f"Ctrl+C to exit  ·  'python scoreboard/scoreboard.py add' to add bets[/dim]",
         border_style='cyan', expand=True
     ))
@@ -416,20 +415,16 @@ def run_scoreboard(game_date, refresh_interval=60):
 
         last_fetch[0] = time.time()
 
-    def get_display(countdown):
-        return build_display(games, game_bets, prop_bets, p_stats_cache, game_date, countdown)
+    def get_display():
+        return build_display(games, game_bets, prop_bets, p_stats_cache, game_date)
 
-    with Live(get_display(0), refresh_per_second=1, console=console,
+    with Live(get_display(), refresh_per_second=0, auto_refresh=False, console=console,
               screen=False, vertical_overflow='visible') as live:
         try:
             while True:
-                elapsed   = time.time() - last_fetch[0]
-                countdown = max(0, int(refresh_interval - elapsed))
-                if countdown == 0:
-                    fetch_all()
-                    countdown = refresh_interval
-                live.update(get_display(countdown))
-                time.sleep(1)
+                fetch_all()
+                live.update(get_display(), refresh=True)
+                time.sleep(refresh_interval)
         except KeyboardInterrupt:
             pass
 
