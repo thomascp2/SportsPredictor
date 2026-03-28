@@ -53,7 +53,9 @@ SPORT_PROPS = {
 PROP_LABEL = {
     'points': 'Points',   'rebounds': 'Reb',     'assists': 'Ast',
     'steals': 'Stl',      'blocks': 'Blk',       'threes_made': '3PM',
-    'pra': 'PRA',         'turnovers': 'TO',
+    'pra': 'PRA',         'turnovers': 'TO',      'points_assists': 'Pts+Ast',
+    'points_rebounds': 'Pts+Reb', 'rebounds_assists': 'Reb+Ast',
+    'points_rebounds_assists': 'PRA', 'pts_ast': 'Pts+Ast',
     'goals': 'Goals',     'shots': 'SOG',        'hits': 'Hits',
     'blocked_shots': 'BLK',
     'strikeouts': 'K',    'innings_pitched': 'IP', 'home_runs': 'HR',
