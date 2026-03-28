@@ -1,0 +1,10 @@
+type,sport,game_date,away_team,home_team,bet_type,side,line,player_name,prop_type,odds,stake
+game,NBA,2026-03-28,BOS,LAL,ML,home,,,,-130,50
+game,NBA,2026-03-28,DEN,GSW,SPREAD,home,-5.5,,,-110,30
+game,NHL,2026-03-28,TOR,NYR,TOTAL,over,5.5,,,-110,25
+game,CBB,2026-03-28,DUKE,UNC,ML,away,,,,+105,20
+prop,NBA,2026-03-28,BOS,LAL,,OVER,25.5,LeBron James,points,-110,20
+prop,NBA,2026-03-28,BOS,LAL,,OVER,8.5,LeBron James,rebounds,-115,15
+prop,CBB,2026-03-28,DUKE,UNC,,OVER,22.5,Cooper Flagg,points,-115,15
+prop,NHL,2026-03-28,TOR,NYR,,OVER,4.5,Auston Matthews,shots,-120,25
+prop,MLB,2026-03-28,NYY,BOS,,OVER,6.5,Gerrit Cole,strikeouts,-130,30
