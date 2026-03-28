@@ -418,7 +418,7 @@ def run_scoreboard(game_date, refresh_interval=60):
     def get_display():
         return build_display(games, game_bets, prop_bets, p_stats_cache, game_date)
 
-    with Live(get_display(), refresh_per_second=0, auto_refresh=False, console=console,
+    with Live(get_display(), refresh_per_second=4, auto_refresh=False, console=console,
               screen=False, vertical_overflow='visible') as live:
         try:
             while True:
