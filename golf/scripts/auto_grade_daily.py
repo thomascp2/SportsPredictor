@@ -120,7 +120,8 @@ def run_grading(target_date: str):
             return {"graded": 0, "hits": 0, "misses": 0, "skipped": len(ungraded)}
 
         event_id = event["event_id"]
-        logger.info(f"Grading against: {event['name']} (ID: {event_id})")
+        current_round = event.get("current_round", 0)
+        logger.info(f"Grading against: {event['name']} (ID: {event_id}) | current_round={current_round}")
 
         # Fetch full leaderboard (has all rounds + cut status)
         leaderboard = api.get_leaderboard(event_id)
@@ -177,6 +178,18 @@ def run_grading(target_date: str):
                     skipped += 1
                     continue
                 actual_value = round_data["score"]
+                # Guard against partial-round scores: ESPN sets status=STATUS_IN_PROGRESS
+                # for players currently on the course and returns their live cumulative
+                # hole-by-hole total as the round score (e.g. 35 after 9 holes).
+                # Past rounds (round_num < current_round) are always final regardless
+                # of player status, so we only apply this guard to the active round.
+                player_status = entry.get("status", "")
+                if player_status == "STATUS_IN_PROGRESS" and round_num == current_round:
+                    logger.debug(
+                        f"Skipping {player_name} R{round_num}: status=STATUS_IN_PROGRESS (round still live)"
+                    )
+                    skipped += 1
+                    continue
                 outcome = grade_round_score(prediction, line, actual_value)
 
             elif prop_type == "make_cut":
@@ -237,6 +250,7 @@ def also_store_round_logs(target_date: str):
     if not leaderboard:
         return
 
+    current_round = event.get("current_round", 0)
     season = int(target_date[:4])
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -244,11 +258,15 @@ def also_store_round_logs(target_date: str):
             player_name = entry.get("player_name", "")
             if not player_name:
                 continue
+            player_status = entry.get("status", "")
             made_cut_val = 1 if entry.get("made_cut") is True else (0 if entry.get("made_cut") is False else None)
             for round_data in entry.get("rounds", []):
                 round_num = round_data.get("round")
                 score = round_data.get("score")
                 if not round_num or score is None:
+                    continue
+                # Skip the current active round for players still on the course
+                if player_status == "STATUS_IN_PROGRESS" and round_num == current_round:
                     continue
                 # Compute approximate round date (Thu=R1, Fri=R2, Sat=R3, Sun=R4)
                 from datetime import date as d_date

@@ -908,6 +908,95 @@ def fetch_hb_history(n: int = 14) -> list:
         return []
 
 
+@st.cache_data(ttl=300)
+def fetch_golf_predictions(game_date: str) -> pd.DataFrame:
+    """Load golf predictions from local SQLite for a given date."""
+    from pathlib import Path as _Path
+    import sqlite3 as _sqlite3
+    db_path = _Path(__file__).parent.parent / "golf" / "database" / "golf_predictions.db"
+    if not db_path.exists():
+        return pd.DataFrame()
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        rows = conn.execute('''
+            SELECT p.id, p.player_name, p.tournament_name, p.prop_type, p.line,
+                   p.prediction, p.probability, p.round_number,
+                   o.outcome, o.actual_value
+            FROM predictions p
+            LEFT JOIN prediction_outcomes o ON o.prediction_id = p.id
+            WHERE p.game_date = ?
+            ORDER BY p.probability DESC
+        ''', (game_date,)).fetchall()
+        conn.close()
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows, columns=[
+            'id', 'player_name', 'tournament_name', 'prop_type', 'line',
+            'prediction', 'probability', 'round_number', 'outcome', 'actual_value'
+        ])
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def fetch_golf_performance(days: int = 30) -> pd.DataFrame:
+    """Load graded golf predictions for performance analysis."""
+    from pathlib import Path as _Path
+    import sqlite3 as _sqlite3
+    from datetime import date as _date, timedelta as _td
+    db_path = _Path(__file__).parent.parent / "golf" / "database" / "golf_predictions.db"
+    if not db_path.exists():
+        return pd.DataFrame()
+    try:
+        since = (_date.today() - _td(days=days)).isoformat()
+        conn = _sqlite3.connect(str(db_path))
+        rows = conn.execute('''
+            SELECT p.game_date, p.player_name, p.tournament_name, p.prop_type, p.line,
+                   p.prediction, p.probability, p.round_number,
+                   o.outcome, o.actual_value
+            FROM predictions p
+            JOIN prediction_outcomes o ON o.prediction_id = p.id
+            WHERE p.game_date >= ?
+            ORDER BY p.game_date DESC
+        ''', (since,)).fetchall()
+        conn.close()
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows, columns=[
+            'game_date', 'player_name', 'tournament_name', 'prop_type', 'line',
+            'prediction', 'probability', 'round_number', 'outcome', 'actual_value'
+        ])
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=600)
+def fetch_golf_ml_readiness() -> dict:
+    """Return graded count per prop/line combo for ML readiness tracking."""
+    from pathlib import Path as _Path
+    import sqlite3 as _sqlite3
+    db_path = _Path(__file__).parent.parent / "golf" / "database" / "golf_predictions.db"
+    if not db_path.exists():
+        return {}
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        rows = conn.execute('''
+            SELECT p.prop_type, p.line, COUNT(*) as cnt
+            FROM prediction_outcomes o
+            JOIN predictions p ON o.prediction_id = p.id
+            GROUP BY p.prop_type, p.line
+        ''').fetchall()
+        total = conn.execute('SELECT COUNT(*) FROM predictions').fetchone()[0]
+        graded = conn.execute('SELECT COUNT(*) FROM prediction_outcomes').fetchone()[0]
+        conn.close()
+        combos = {f"{r[0]}_{r[1]}": r[2] for r in rows}
+        combos['_total_predictions'] = total
+        combos['_total_graded'] = graded
+        return combos
+    except Exception:
+        return {}
+
+
 # ── Main app ──────────────────────────────────────────────────────────────────
 def main():
     st.title("FreePicks Dashboard")
@@ -920,9 +1009,9 @@ def main():
         return
 
     # ── Top-level tabs ────────────────────────────────────────────────────────
-    tab_picks, tab_games, tab_perf, tab_season, tab_hb, tab_system = st.tabs(
+    tab_picks, tab_games, tab_perf, tab_season, tab_hb, tab_golf, tab_system = st.tabs(
         ["Today's Picks", "Game Lines", "Performance",
-         "MLB Season Props", "NHL Hits & Blocks", "System"]
+         "MLB Season Props", "NHL Hits & Blocks", "Golf", "System"]
     )
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -1844,6 +1933,264 @@ A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 
                         key="hb_raw_text",
                         label_visibility="collapsed",
                     )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB — GOLF (PGA Tour Round Score & Make Cut)
+    # ═══════════════════════════════════════════════════════════════════════════
+    with tab_golf:
+        st.subheader("PGA Tour — Round Score & Make Cut Predictions")
+        st.caption(
+            "Statistical model using player form, course history, and ranking. "
+            "Predictions generated at 10 AM CST (Thu–Sun). "
+            "Make-cut props: Rounds 1–2 only. Graded after each round completes at 8 AM CST."
+        )
+
+        # ── Controls row ──────────────────────────────────────────────────────
+        gf_c1, gf_c2, gf_c3, gf_c4, gf_c5 = st.columns([2, 1, 1, 1, 1])
+        with gf_c1:
+            gf_date = st.date_input("Date", value=date.today(),
+                                     key="gf_date",
+                                     label_visibility="collapsed").isoformat()
+        with gf_c2:
+            gf_prop = st.selectbox("Prop", ["All", "round_score", "make_cut"],
+                                    key="gf_prop", label_visibility="collapsed")
+        with gf_c3:
+            gf_dir = st.selectbox("Direction", ["Both", "OVER", "UNDER"],
+                                   key="gf_dir", label_visibility="collapsed")
+            gf_dir_val = None if gf_dir == "Both" else gf_dir
+        with gf_c4:
+            gf_min_prob = st.number_input("Min prob %", value=55, min_value=50,
+                                           max_value=90, step=1, key="gf_min_prob")
+        with gf_c5:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Refresh", use_container_width=True, key="gf_refresh"):
+                st.cache_data.clear()
+                st.rerun()
+
+        gf_raw = fetch_golf_predictions(gf_date)
+
+        if gf_raw.empty:
+            st.info(
+                f"No golf predictions for {gf_date}. "
+                "Predictions run Thu–Sun during the PGA Tour season (Jan–Sept).\n\n"
+                f"Run manually: `python orchestrator.py --sport golf --mode once --operation prediction`"
+            )
+        else:
+            # ── Tournament banner ─────────────────────────────────────────────
+            tournament = gf_raw['tournament_name'].iloc[0]
+            round_num  = int(gf_raw['round_number'].iloc[0])
+            total_preds = len(gf_raw)
+            graded_mask = gf_raw['outcome'].notna()
+            n_graded    = graded_mask.sum()
+
+            bm1, bm2, bm3, bm4 = st.columns(4)
+            bm1.metric("Tournament", tournament)
+            bm2.metric("Round", f"Round {round_num}")
+            bm3.metric("Predictions", f"{total_preds:,}")
+            if n_graded > 0:
+                n_hits = (gf_raw.loc[graded_mask, 'outcome'] == 'HIT').sum()
+                bm4.metric("Graded", f"{n_hits}/{n_graded}",
+                           delta=f"{n_hits/n_graded*100:.0f}% accuracy")
+            else:
+                bm4.metric("Graded", "Pending")
+
+            st.divider()
+
+            # Apply filters
+            gf_df = gf_raw.copy()
+            if gf_prop != "All":
+                gf_df = gf_df[gf_df['prop_type'] == gf_prop]
+            if gf_dir_val:
+                gf_df = gf_df[gf_df['prediction'] == gf_dir_val]
+            gf_df = gf_df[gf_df['probability'] >= gf_min_prob / 100]
+
+            # ── Sub-tabs ──────────────────────────────────────────────────────
+            gft1, gft2, gft3 = st.tabs(["Today's Picks", "Performance", "ML Readiness"])
+
+            with gft1:
+                if gf_df.empty:
+                    st.warning("No picks match current filters.")
+                else:
+                    gf_df['Prob'] = (gf_df['probability'] * 100).round(1).astype(str) + "%"
+                    gf_df['Prop'] = gf_df['prop_type'].str.replace("_", " ").str.title()
+                    gf_df['Pick'] = gf_df['prediction'] + " " + gf_df['line'].astype(str)
+                    gf_df['Result'] = gf_df['outcome'].fillna("—")
+                    gf_df['Actual'] = gf_df['actual_value'].apply(
+                        lambda v: str(v) if pd.notna(v) else "—"
+                    )
+
+                    # Summary
+                    sf1, sf2, sf3 = st.columns(3)
+                    sf1.metric("Showing", len(gf_df))
+                    under_ct = (gf_df['prediction'] == 'UNDER').sum()
+                    over_ct  = (gf_df['prediction'] == 'OVER').sum()
+                    sf2.metric("UNDER", under_ct)
+                    sf3.metric("OVER", over_ct)
+
+                    disp_cols = ['player_name', 'Prop', 'Pick', 'Prob', 'Result', 'Actual']
+                    col_labels = {'player_name': 'Player'}
+                    st.dataframe(
+                        gf_df[disp_cols].rename(columns=col_labels),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=500,
+                    )
+
+                    # Prop-level accordion
+                    st.divider()
+                    st.markdown("**By Prop Type**")
+                    for prop in sorted(gf_df['prop_type'].unique()):
+                        sub = gf_df[gf_df['prop_type'] == prop]
+                        graded_sub = sub[sub['Result'] != '—']
+                        acc_str = ""
+                        if not graded_sub.empty:
+                            hits = (graded_sub['Result'] == 'HIT').sum()
+                            acc_str = f"  ·  {hits}/{len(graded_sub)} graded ({hits/len(graded_sub)*100:.0f}%)"
+                        with st.expander(
+                            f"{prop.replace('_', ' ').title()}  —  {len(sub)} picks{acc_str}",
+                            expanded=False
+                        ):
+                            for line_val in sorted(sub['line'].unique()):
+                                line_sub = sub[sub['line'] == line_val]
+                                under = line_sub[line_sub['prediction'] == 'UNDER']
+                                over  = line_sub[line_sub['prediction'] == 'OVER']
+                                st.caption(
+                                    f"Line {line_val}: "
+                                    f"{len(under)} UNDER  ·  {len(over)} OVER"
+                                )
+                            st.dataframe(
+                                sub[['player_name', 'Pick', 'Prob', 'Result', 'Actual']]
+                                  .rename(columns={'player_name': 'Player'}),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+
+            with gft2:
+                perf_days = st.slider("Days back", 7, 90, 30, key="gf_perf_days")
+                gf_perf = fetch_golf_performance(perf_days)
+
+                if gf_perf.empty:
+                    st.info(
+                        "No graded predictions yet. "
+                        "Grading runs at 8 AM CST after each round completes.\n\n"
+                        f"Run manually: `python orchestrator.py --sport golf --mode once --operation grading`"
+                    )
+                else:
+                    total_g  = len(gf_perf)
+                    total_h  = (gf_perf['outcome'] == 'HIT').sum()
+                    overall  = total_h / total_g * 100
+
+                    pm1, pm2, pm3, pm4 = st.columns(4)
+                    pm1.metric("Graded", total_g)
+                    pm2.metric("Accuracy", f"{overall:.1f}%")
+                    pm3.metric("Hits", int(total_h))
+                    pm4.metric("Misses", total_g - int(total_h))
+
+                    st.divider()
+
+                    # OVER vs UNDER
+                    st.subheader("OVER vs UNDER Accuracy")
+                    dir_stats = []
+                    for direction in ['UNDER', 'OVER']:
+                        sub = gf_perf[gf_perf['prediction'] == direction]
+                        if len(sub) > 0:
+                            h = (sub['outcome'] == 'HIT').sum()
+                            dir_stats.append({
+                                'Direction': direction,
+                                'Picks': len(sub),
+                                'Hits': int(h),
+                                'Accuracy': f"{h/len(sub)*100:.1f}%",
+                            })
+                    if dir_stats:
+                        st.dataframe(pd.DataFrame(dir_stats),
+                                     use_container_width=True, hide_index=True)
+
+                    st.divider()
+
+                    # By prop + line
+                    st.subheader("Accuracy by Prop / Line")
+                    line_stats = []
+                    for prop in sorted(gf_perf['prop_type'].unique()):
+                        for line_val in sorted(gf_perf[gf_perf['prop_type'] == prop]['line'].unique()):
+                            sub = gf_perf[(gf_perf['prop_type'] == prop) & (gf_perf['line'] == line_val)]
+                            if len(sub) < 3:
+                                continue
+                            h = (sub['outcome'] == 'HIT').sum()
+                            u_sub = sub[sub['prediction'] == 'UNDER']
+                            o_sub = sub[sub['prediction'] == 'OVER']
+                            u_acc = f"{(u_sub['outcome']=='HIT').sum()/len(u_sub)*100:.0f}%" if len(u_sub) else "—"
+                            o_acc = f"{(o_sub['outcome']=='HIT').sum()/len(o_sub)*100:.0f}%" if len(o_sub) else "—"
+                            line_stats.append({
+                                'Prop': prop.replace('_', ' ').title(),
+                                'Line': line_val,
+                                'Picks': len(sub),
+                                'Accuracy': f"{h/len(sub)*100:.1f}%",
+                                'UNDER acc': u_acc,
+                                'OVER acc': o_acc,
+                            })
+                    if line_stats:
+                        st.dataframe(pd.DataFrame(line_stats),
+                                     use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("Not enough data yet (need 3+ graded per combo).")
+
+                    st.divider()
+
+                    # By tournament
+                    st.subheader("By Tournament")
+                    tourn_stats = []
+                    for t in gf_perf['tournament_name'].unique():
+                        sub = gf_perf[gf_perf['tournament_name'] == t]
+                        h = (sub['outcome'] == 'HIT').sum()
+                        tourn_stats.append({
+                            'Tournament': t,
+                            'Graded': len(sub),
+                            'Hits': int(h),
+                            'Accuracy': f"{h/len(sub)*100:.1f}%",
+                        })
+                    if tourn_stats:
+                        st.dataframe(
+                            pd.DataFrame(tourn_stats).sort_values('Accuracy', ascending=False),
+                            use_container_width=True, hide_index=True,
+                        )
+
+            with gft3:
+                st.subheader("ML Readiness — Progress to 7,500 Graded per Combo")
+                st.caption(
+                    "Golf ML training requires 7,500 graded predictions per prop/line combination. "
+                    "Make-cut only generated in Rounds 1–2 (~2 days/week). "
+                    "Round score lines accumulate 4 days/week."
+                )
+                ml_data = fetch_golf_ml_readiness()
+                target = 7500
+
+                ml_combos = [
+                    ('round_score', 68.5),
+                    ('round_score', 70.5),
+                    ('round_score', 72.5),
+                    ('make_cut',    0.5),
+                ]
+                for prop, line in ml_combos:
+                    key = f"{prop}_{line}"
+                    count = ml_data.get(key, 0)
+                    pct   = min(count / target * 100, 100)
+                    label = f"{prop.replace('_', ' ').title()} {line}"
+                    col_a, col_b = st.columns([3, 1])
+                    with col_a:
+                        st.progress(pct / 100, text=f"{label}  —  {count:,} / {target:,}")
+                    with col_b:
+                        st.metric("", f"{pct:.1f}%", label_visibility="collapsed")
+
+                st.divider()
+                total_preds_all  = ml_data.get('_total_predictions', 0)
+                total_graded_all = ml_data.get('_total_graded', 0)
+                mc1, mc2 = st.columns(2)
+                mc1.metric("Total Predictions", f"{total_preds_all:,}")
+                mc2.metric("Total Graded", f"{total_graded_all:,}")
+                st.caption(
+                    "Bottleneck is make_cut_0.5 — only generated 2 days/week. "
+                    "Estimated 2–3 full PGA seasons to reach training threshold."
+                )
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TAB 5 — SYSTEM HEALTH
