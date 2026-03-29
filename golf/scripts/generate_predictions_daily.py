@@ -256,6 +256,14 @@ def run_predictions(target_date: str, force: bool = False):
             if not player_name:
                 continue
 
+            # Skip players who missed the cut for round 3+ predictions.
+            # The cut is determined after Round 2; STATUS_CUT players have no
+            # further rounds, so any round_score predictions for them would
+            # never be gradeable and poison the training data.
+            if current_round > 2 and player.get("made_cut") is False:
+                skipped += 1
+                continue
+
             # For make_cut prop, only generate before/at Round 2
             # (cut happens after Round 2 — no point predicting after it's determined)
             world_ranking = player.get("world_ranking")
