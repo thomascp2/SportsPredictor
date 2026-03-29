@@ -59,6 +59,7 @@ import csv
 import math
 import argparse
 import logging
+import bisect
 from datetime import date, timedelta
 from dataclasses import dataclass, field
 from typing import Optional
@@ -164,68 +165,141 @@ class SimResults:
 
 
 # ---------------------------------------------------------------------------
-# Core feature extraction (DB-only, no external API calls)
+# In-memory data store (loaded once, reused across all 480 configs)
 # ---------------------------------------------------------------------------
 
-def get_player_rounds_before(conn, player_name: str, before_date: str, n: int):
-    """Fetch last N round scores for a player before target_date."""
+@dataclass
+class GameData:
+    """
+    All player_round_logs pre-loaded into memory for fast lookups.
+
+    Structures:
+      all_rounds  : sorted list of (game_date, tournament_id, tournament_name,
+                                    round_number, season) — one row per unique round
+      round_players: {(tournament_id, round_number, game_date):
+                          [(player_name, round_score, world_ranking)]}
+      player_history: {player_name: [(game_date, round_score, tournament_id,
+                                      round_number, made_cut, finish_position)]}
+                       each list sorted ascending by (game_date, round_number)
+      player_dates  : {player_name: [game_date, ...]}  — parallel to player_history,
+                       used for bisect date lookups
+    """
+    all_rounds:     list
+    round_players:  dict
+    player_history: dict
+    player_dates:   dict
+
+
+def load_data(conn, seasons: list) -> GameData:
+    """Load all player_round_logs rows into memory once."""
+    placeholders = ",".join("?" * len(seasons))
     rows = conn.execute(
-        """
-        SELECT round_score, game_date, tournament_id, round_number
+        f"""
+        SELECT player_name, tournament_id, tournament_name, round_number,
+               game_date, season, round_score, made_cut, finish_position,
+               world_ranking
         FROM player_round_logs
-        WHERE player_name = ? AND game_date < ? AND round_score IS NOT NULL
-        ORDER BY game_date DESC, round_number DESC
-        LIMIT ?
+        WHERE season IN ({placeholders})
+        ORDER BY game_date ASC, tournament_id, round_number ASC, player_name ASC
         """,
-        (player_name, before_date, n),
+        seasons,
     ).fetchall()
-    return [r[0] for r in rows]  # just scores
+
+    player_history = {}   # {name: [(date, score, tid, rnum, made_cut, finish_pos)]}
+    player_dates   = {}   # {name: [date, ...]} — parallel list for bisect
+    round_players  = {}   # {(tid, rnum, date): [(name, score, ranking)]}
+    seen_rounds    = {}   # {(tid, rnum, date): (name, season)} — for all_rounds dedup
+
+    for (pname, tid, tname, rnum, gdate, season, rscore,
+         made_cut, finish_pos, ranking) in rows:
+
+        # player_history
+        if pname not in player_history:
+            player_history[pname] = []
+            player_dates[pname]   = []
+        player_history[pname].append((gdate, rscore, tid, rnum, made_cut, finish_pos))
+        player_dates[pname].append(gdate)
+
+        # round_players
+        key = (tid, rnum, gdate)
+        if key not in round_players:
+            round_players[key] = []
+        round_players[key].append((pname, rscore, ranking))
+
+        # seen_rounds for all_rounds list
+        if key not in seen_rounds:
+            seen_rounds[key] = (tname, season)
+
+    all_rounds = sorted(
+        [(gdate, tid, tname, rnum, season)
+         for (tid, rnum, gdate), (tname, season) in seen_rounds.items()],
+        key=lambda r: (r[0], r[1], r[3]),
+    )
+
+    return GameData(
+        all_rounds=all_rounds,
+        round_players=round_players,
+        player_history=player_history,
+        player_dates=player_dates,
+    )
 
 
-def get_course_history(conn, player_name: str, tournament_id: str, before_date: str):
+# ---------------------------------------------------------------------------
+# Core feature extraction (in-memory, no DB queries)
+# ---------------------------------------------------------------------------
+
+def _rounds_before(data: GameData, player_name: str, before_date: str):
+    """Return all history entries for player strictly before before_date, newest first."""
+    dates = data.player_dates.get(player_name)
+    if not dates:
+        return []
+    idx = bisect.bisect_left(dates, before_date)
+    return data.player_history[player_name][:idx][::-1]  # reverse = newest first
+
+
+def get_player_rounds_before_mem(data: GameData, player_name: str,
+                                 before_date: str, n: int) -> list:
+    """Last N round scores for a player before target_date."""
+    recent = _rounds_before(data, player_name, before_date)
+    scores = []
+    for (gdate, rscore, tid, rnum, made_cut, finish_pos) in recent:
+        if rscore is not None:
+            scores.append(rscore)
+        if len(scores) >= n:
+            break
+    return scores
+
+
+def get_course_history_mem(data: GameData, player_name: str,
+                           tournament_id: str, before_date: str) -> list:
     """Historical round scores for this player at this specific course."""
-    rows = conn.execute(
-        """
-        SELECT round_score FROM player_round_logs
-        WHERE player_name = ? AND tournament_id = ?
-          AND game_date < ? AND round_score IS NOT NULL
-        ORDER BY game_date DESC
-        """,
-        (player_name, tournament_id, before_date),
-    ).fetchall()
-    return [r[0] for r in rows]
+    recent = _rounds_before(data, player_name, before_date)
+    return [rscore for (gdate, rscore, tid, rnum, mc, fp) in recent
+            if tid == tournament_id and rscore is not None]
 
 
-def get_cut_history(conn, player_name: str, before_date: str, n: int = 15):
-    """Recent make-cut rate and top-10 rate."""
-    rows = conn.execute(
-        """
-        SELECT made_cut, finish_position
-        FROM player_round_logs
-        WHERE player_name = ? AND game_date < ?
-          AND made_cut IS NOT NULL
-          AND round_number = 2          -- use R2 as the cut-determination round
-        ORDER BY game_date DESC
-        LIMIT ?
-        """,
-        (player_name, before_date, n),
-    ).fetchall()
+def get_cut_history_mem(data: GameData, player_name: str,
+                        before_date: str, n: int = 15):
+    """Recent make-cut rate and top-10 rate (uses R2 as cut-determination round)."""
+    recent = _rounds_before(data, player_name, before_date)
+    rows = [(mc, fp) for (gdate, rscore, tid, rnum, mc, fp) in recent
+            if rnum == 2 and mc is not None][:n]
     if not rows:
         return 0.65, 0.12   # league average defaults
-    made = sum(1 for r in rows if r[0] == 1)
-    top10 = sum(1 for r in rows if r[1] and r[1] <= 10)
+    made  = sum(1 for mc, fp in rows if mc == 1)
+    top10 = sum(1 for mc, fp in rows if fp and fp <= 10)
     return made / len(rows), top10 / len(rows)
 
 
-def build_features(conn, player_name: str, line: float, target_date: str,
+def build_features(data: GameData, player_name: str, line: float, target_date: str,
                    round_num: int, tournament_id: str, world_ranking: Optional[int],
                    is_major: bool, config: SimConfig) -> Optional[dict]:
     """
-    Build features from DB-only data (no external API calls).
+    Build features from in-memory data (no DB queries).
     Returns None if player has insufficient history.
     """
     n = config.form_window
-    scores = get_player_rounds_before(conn, player_name, target_date, max(n, 20))
+    scores = get_player_rounds_before_mem(data, player_name, target_date, max(n, 20))
 
     if len(scores) < config.min_rounds_history:
         return None
@@ -242,7 +316,7 @@ def build_features(conn, player_name: str, line: float, target_date: str,
         std = LEAGUE_AVG_STD
 
     # Course history adjustment
-    course_scores = get_course_history(conn, player_name, tournament_id, target_date)
+    course_scores = get_course_history_mem(data, player_name, tournament_id, target_date)
     course_adj = 0.0
     if course_scores and config.course_weight > 0:
         course_avg = sum(course_scores) / len(course_scores)
@@ -256,7 +330,7 @@ def build_features(conn, player_name: str, line: float, target_date: str,
     mu = mu_recent + course_adj + major_adj
 
     # Cut rate
-    cut_rate, top10_rate = get_cut_history(conn, player_name, target_date)
+    cut_rate, top10_rate = get_cut_history_mem(data, player_name, target_date)
 
     return {
         "mu":             mu,
@@ -293,44 +367,30 @@ def compute_probability(features: dict, line: float) -> tuple:
 # Simulation engine
 # ---------------------------------------------------------------------------
 
-def run_simulation(config: SimConfig, seasons: list, conn) -> SimResults:
+def run_simulation(config: SimConfig, seasons: list, data: GameData) -> SimResults:
     """
     Walk-forward simulation for the given config and seasons.
-    Iterates every (tournament, round) in the DB and grades predictions.
+    Uses pre-loaded in-memory GameData — no DB queries during the sweep.
     """
     results = SimResults(config=config)
+    seasons_set = set(seasons)
 
-    # Get all unique (tournament_id, round_number, game_date) combos in target seasons
-    rounds = conn.execute(
-        """
-        SELECT DISTINCT tournament_id, tournament_name, round_number,
-               game_date, season
-        FROM player_round_logs
-        WHERE season IN ({})
-        ORDER BY game_date, tournament_id, round_number
-        """.format(",".join("?" * len(seasons))),
-        seasons,
-    ).fetchall()
+    for (game_date, tournament_id, tournament_name, round_num, season) in data.all_rounds:
+        if season not in seasons_set:
+            continue
 
-    for (tournament_id, tournament_name, round_num, game_date, season) in rounds:
         # Round filter
         if config.round_filter and round_num != config.round_filter:
             continue
 
         is_major = any(m.lower() in tournament_name.lower() for m in MAJOR_NAMES)
 
-        # Get all players who played this round (actual scores known)
-        players = conn.execute(
-            """
-            SELECT player_name, round_score, world_ranking
-            FROM player_round_logs
-            WHERE tournament_id = ? AND round_number = ?
-              AND game_date = ? AND round_score IS NOT NULL
-            """,
-            (tournament_id, round_num, game_date),
-        ).fetchall()
+        players = data.round_players.get((tournament_id, round_num, game_date), [])
 
         for (player_name, actual_score, world_ranking) in players:
+            if actual_score is None:
+                continue
+
             # Ranking filter
             if config.ranking_cutoff and world_ranking:
                 if world_ranking > config.ranking_cutoff:
@@ -341,7 +401,7 @@ def run_simulation(config: SimConfig, seasons: list, conn) -> SimResults:
 
             for line in lines:
                 features = build_features(
-                    conn, player_name, line, game_date,
+                    data, player_name, line, game_date,
                     round_num, tournament_id, world_ranking,
                     is_major, config,
                 )
@@ -769,11 +829,17 @@ def main():
         configs = generate_configs(grid)
         print(f"  Parameter sweep: {len(configs)} configurations")
 
+    # Pre-load all data into memory once (avoids ~1 billion SQLite queries in the sweep)
+    print(f"  Loading data into memory...", end=" ", flush=True)
+    data = load_data(conn, args.seasons)
+    conn.close()
+    print(f"done ({len(data.all_rounds):,} rounds, {len(data.player_history):,} players)")
+
     # Run simulations
     print(f"\n  Running... (this may take a few minutes for large sweeps)\n")
     all_results = []
     for i, cfg in enumerate(configs, 1):
-        result = run_simulation(cfg, args.seasons, conn)
+        result = run_simulation(cfg, args.seasons, data)
         all_results.append(result)
         if i % 50 == 0 or i == len(configs):
             best_so_far = max(
@@ -783,8 +849,6 @@ def main():
             )
             best_str = f"best ROI so far: {best_so_far.roi:+.4f}" if best_so_far else "no viable config yet"
             print(f"  [{i:>4}/{len(configs)}] {best_str}")
-
-    conn.close()
 
     # Report
     print_report(all_results, top_n=args.top)
