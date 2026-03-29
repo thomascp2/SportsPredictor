@@ -235,9 +235,26 @@ class GamePredictionEngine:
             ml_prob = None
             model_type = "statistical"
 
+            # Build model key: try exact line match first, then nearest trained
+            # line, then bare bet_type (e.g. "spread_1.5" -> "spread_5.5" fallback)
             ml_key = sp.bet_type
             if sp.line and sp.bet_type in ["spread", "total"]:
-                ml_key = f"{sp.bet_type}_{sp.line}"
+                exact_key = f"{sp.bet_type}_{sp.line}"
+                if exact_key in self.ml_models:
+                    ml_key = exact_key
+                else:
+                    # Find the nearest trained line for this bet type
+                    candidates = [k for k in self.ml_models
+                                  if k.startswith(f"{sp.bet_type}_")]
+                    if candidates:
+                        def _dist(k):
+                            try:
+                                return abs(float(k.split("_", 1)[1]) - abs(sp.line))
+                            except ValueError:
+                                return 9999
+                        ml_key = min(candidates, key=_dist)
+                    else:
+                        ml_key = sp.bet_type
 
             if ml_key in self.ml_models or sp.bet_type in self.ml_models:
                 key = ml_key if ml_key in self.ml_models else sp.bet_type
