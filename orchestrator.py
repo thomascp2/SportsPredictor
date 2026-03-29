@@ -358,7 +358,7 @@ class SportConfig:
         # Scripts
         self.prediction_script = "scripts/generate_predictions_daily.py"
         self.grading_script = "scripts/auto_grade_daily.py"
-        self.schedule_script = "scripts/fetch_tournament_schedule.py"
+        self.schedule_script = None  # Golf: tournament detection is handled inside generate_predictions_daily.py
 
         # Timing (CST)
         # PGA Tour rounds finish Thu/Fri/Sat/Sun evenings; grade next morning
