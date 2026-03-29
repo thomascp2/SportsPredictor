@@ -3017,7 +3017,10 @@ class SportsOrchestrator:
             else:
                 n_tok = result.get("prompt_tokens", 0) + result.get("completion_tokens", 0)
                 print(f"[H+B] Picks saved ({n_tok} tokens used)")
-                # Push to Supabase so Streamlit Cloud dashboard sees the new picks
+
+            # Always sync to Supabase so the dashboard is current — idempotent upsert,
+            # safe to run whether picks were just generated or already existed today.
+            if not result.get("no_games"):
                 try:
                     sys.path.insert(0, str(self.root / "shared"))
                     from supabase_local_sync import sync_hits_blocks
