@@ -22,7 +22,7 @@ Expected data volume:
 Estimated runtime: ~45–90 minutes for full backfill (API rate-limited)
 
 Usage:
-    # Full backfill (2020–2024)
+    # Full backfill (2020–2025)
     python backfill_round_logs.py
 
     # Single season
@@ -57,7 +57,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Seasons to backfill (PGA Tour season year = calendar year the season ends)
-DEFAULT_SEASONS = [2020, 2021, 2022, 2023, 2024]
+DEFAULT_SEASONS = [2020, 2021, 2022, 2023, 2024, 2025]
 
 # Rate limiting between ESPN API calls (seconds)
 API_RATE_LIMIT = 0.5
