@@ -131,8 +131,10 @@ class SportConfig:
             self._init_nba()
         elif self.sport == "MLB":
             self._init_mlb()
+        elif self.sport == "GOLF":
+            self._init_golf()
         else:
-            raise ValueError(f"Unknown sport: {sport}. Use 'nhl', 'nba', or 'mlb'")
+            raise ValueError(f"Unknown sport: {sport}. Use 'nhl', 'nba', 'mlb', or 'golf'")
 
     def _init_nhl(self):
         """Initialize NHL-specific configuration"""
@@ -339,6 +341,67 @@ class SportConfig:
 
         # SZLN ML refresh (weekly — lines change slowly)
         self.szln_refresh_time = "09:00"   # 9 AM Monday
+
+    def _init_golf(self):
+        """Initialize Golf-specific configuration"""
+        self.project_root = self.root / "golf"
+        self.db_path = self.project_root / "database" / "golf_predictions.db"
+
+        # Scripts
+        self.prediction_script = "scripts/generate_predictions_daily.py"
+        self.grading_script = "scripts/auto_grade_daily.py"
+        self.schedule_script = "scripts/fetch_tournament_schedule.py"
+
+        # Timing (CST)
+        # PGA Tour rounds finish Thu/Fri/Sat/Sun evenings; grade next morning
+        self.grading_time = "08:00"      # 8 AM — grade previous round scores
+        self.retrain_time = "08:30"      # 8:30 AM Sunday — weekly ML retrain
+        self.prizepicks_time = "09:00"   # 9 AM — fetch PrizePicks golf lines
+        self.prediction_time = "10:00"   # 10 AM — tee times posted, generate predictions
+        self.pp_sync_time = "12:00"      # Noon — refresh lines as tee times confirm
+        self.top_picks_time = "13:00"    # 1 PM — post Discord picks
+
+        # No full-game pipeline for golf (individual/tournament sport)
+        self.team_stats_time = None
+        self.game_prediction_time = None
+        self.game_grading_time = None
+
+        # ML Training Goals
+        # Golf has ~46 events/season × 5 seasons × ~100 players × ~3.5 rounds = ~80k rows
+        # → should reach 7,500 per prop/line combo well within backfill
+        self.ml_training_target_per_prop = 7500
+        self.ml_training_min_new_preds = 200    # Fewer per week than daily sports
+        self.ml_training_start_date = "2025-06-01"   # After first full season of live predictions
+
+        # Prop types and lines (4 combos total)
+        self.prop_lines = {
+            'round_score': [68.5, 70.5, 72.5],  # 3 combos
+            'make_cut':    [0.5],                # 1 combo
+        }
+        self.total_prop_combos = sum(len(lines) for lines in self.prop_lines.values())  # 4
+
+        # Data Quality Thresholds
+        # Golf has more missing data (not all players have full stat coverage)
+        self.min_feature_completeness = 0.80
+        self.min_probability_variety = 20    # Smaller daily volume than team sports
+        self.min_opponent_feature_rate = 0.0  # Not applicable to golf
+        self.opponent_feature_lookback_days = 0
+        self.min_daily_predictions = 50    # ~100–400 predictions per tournament day
+        self.max_daily_predictions = 2000  # Large field × multiple props
+
+        # Performance Thresholds
+        self.target_under_accuracy = 0.60
+        self.target_over_accuracy = 0.55
+
+        # API Health Check URL (ESPN golf scoreboard)
+        self.api_health_url = "https://site.api.espn.com/apis/site/v2/sports/golf/leaderboard?league=pga"
+
+        # Display
+        self.emoji = "[GOLF]"
+        self.full_name = "PGA Tour Golf"
+
+        # Discord webhook for Golf channel
+        self.discord_picks_webhook = os.getenv('GOLF_DISCORD_WEBHOOK', '')
 
 
 class GlobalConfig:
@@ -3176,9 +3239,9 @@ Examples:
     )
     parser.add_argument(
         '--sport',
-        choices=['nhl', 'nba', 'mlb', 'all'],
+        choices=['nhl', 'nba', 'mlb', 'golf', 'all'],
         required=True,
-        help='Sport to manage (nhl, nba, mlb, or all)'
+        help='Sport to manage (nhl, nba, mlb, golf, or all)'
     )
     parser.add_argument(
         '--mode',
@@ -3201,7 +3264,7 @@ Examples:
     print_banner()
 
     # Determine which sports to run
-    sports = ['nhl', 'nba', 'mlb'] if args.sport == 'all' else [args.sport]
+    sports = ['nhl', 'nba', 'mlb', 'golf'] if args.sport == 'all' else [args.sport]
 
     # Special handling for continuous mode with multiple sports
     if args.mode == 'continuous' and len(sports) > 1:
