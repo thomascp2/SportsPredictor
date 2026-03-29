@@ -186,37 +186,59 @@ class ESPNGolfApi:
         """
         Retrieve ESPN event IDs for all PGA Tour events in a given season.
 
-        ESPN uses a "season" param that maps to PGA Tour season year.
-        The PGA season starts in the fall of the prior calendar year
-        (e.g., "2024 season" includes events from late 2023 through mid-2024).
+        Uses the ESPN sports.core API seasons/{year}/types/2/events endpoint which
+        returns all regular-season events for the PGA Tour. The site.api.espn.com
+        leaderboard endpoint's ?season param and ?dates param both return only the
+        current live tournament and do not support historical season queries.
 
         Args:
             season: PGA Tour season year (e.g., 2024)
 
         Returns:
-            list[dict]: Lightweight event info dicts with 'event_id', 'name', 'start_date'
+            list[dict]: Lightweight event info dicts with 'event_id', 'name',
+                        'start_date', 'end_date'
         """
-        data = self._get(
-            self.BASE_URL,
-            params={"league": "pga", "season": str(season)}
-        )
+        url = f"{self.SPORTS_CORE_URL}/seasons/{season}/types/2/events"
+        data = self._get(url, params={"limit": 200})
         if not data:
             return []
 
+        items = data.get("items", [])
+        if not items:
+            return []
+
         events = []
-        # ESPN returns a calendar when queried by season
-        for league in data.get("leagues", []):
-            for calendar in league.get("calendar", []):
-                for entry in calendar.get("entries", []):
-                    event_id = entry.get("id", "") or entry.get("eventId", "")
-                    if not event_id:
-                        continue
-                    events.append({
-                        "event_id": str(event_id),
-                        "name": entry.get("label", entry.get("shortLabel", f"Event {event_id}")),
-                        "start_date": entry.get("startDate", "")[:10],
-                        "end_date": entry.get("endDate", "")[:10],
-                    })
+        for item in items:
+            ref = item.get("$ref", "")
+            if not ref:
+                continue
+            # Extract event ID from the ref URL, e.g.:
+            # http://sports.core.api.espn.com/.../events/401580329?lang=...
+            try:
+                event_id = ref.split("/events/")[1].split("?")[0]
+            except (IndexError, AttributeError):
+                continue
+
+            # Resolve the ref to get name and dates
+            ev_data = self._get(ref)
+            if not ev_data:
+                # Fall back to ID-only stub; name will be set during leaderboard fetch
+                events.append({
+                    "event_id": event_id,
+                    "name": f"Event {event_id}",
+                    "start_date": "",
+                    "end_date": "",
+                })
+                continue
+
+            events.append({
+                "event_id": str(ev_data.get("id", event_id)),
+                "name": ev_data.get("name", f"Event {event_id}"),
+                "start_date": ev_data.get("date", "")[:10],
+                "end_date": ev_data.get("endDate", "")[:10],
+            })
+            time.sleep(self.RETRY_DELAY * 0.15)  # light rate-limit on ref resolution
+
         return events
 
     # ------------------------------------------------------------------
@@ -225,49 +247,49 @@ class ESPNGolfApi:
 
     def _parse_event_summary(self, data: dict):
         """Extract top-level event metadata from ESPN leaderboard response."""
-        leagues = data.get("leagues", [])
-        if not leagues:
+        # ESPN leaderboard API returns data['events'] at the top level (no 'leagues' wrapper)
+        events = data.get("events", [])
+        if not events:
             return None
 
-        # Find the current/relevant event
-        for league in leagues:
-            events = league.get("events", [])
-            if not events:
-                continue
-            event = events[0]
-            competitions = event.get("competitions", [])
-            competition = competitions[0] if competitions else {}
-            venue = competition.get("venue", {})
-            course_name = venue.get("fullName", "") or venue.get("shortName", "")
-            status_obj = competition.get("status", {})
-            status_type = status_obj.get("type", {})
-            status_state = status_type.get("state", "pre")  # 'pre', 'in', 'post'
+        event = events[0]
+        competitions = event.get("competitions", [])
+        competition = competitions[0] if competitions else {}
+        venue = competition.get("venue", {})
+        course_name = venue.get("fullName", "") or venue.get("shortName", "")
+        status_obj = competition.get("status", {})
+        status_type = status_obj.get("type", {})
+        status_state = status_type.get("state", "pre")  # 'pre', 'in', 'post'
 
-            # Determine current round from competitors' scorecard
-            current_round = self._infer_current_round(competition)
+        # Determine current round from competitors' scorecard
+        current_round = self._infer_current_round(competition)
 
-            return {
-                "event_id": str(event.get("id", "")),
-                "name": event.get("name", event.get("shortName", "Unknown Tournament")),
-                "start_date": competition.get("date", "")[:10],
-                "end_date": competition.get("endDate", "")[:10],
-                "course_name": course_name,
-                "status": status_state,
-                "current_round": current_round,
-            }
-        return None
+        return {
+            "event_id": str(event.get("id", "")),
+            "name": event.get("name", event.get("shortName", "Unknown Tournament")),
+            "start_date": event.get("date", competition.get("date", ""))[:10],
+            "end_date": event.get("endDate", competition.get("endDate", ""))[:10],
+            "course_name": course_name,
+            "status": status_state,
+            "current_round": current_round,
+        }
 
     def _parse_leaderboard(self, data: dict):
         """Parse full player leaderboard from ESPN response."""
         players = []
-        leagues = data.get("leagues", [])
-        for league in leagues:
-            for event in league.get("events", []):
-                for competition in event.get("competitions", []):
-                    for competitor in competition.get("competitors", []):
-                        entry = self._parse_competitor(competitor)
-                        if entry:
-                            players.append(entry)
+        # ESPN leaderboard API returns data['events'] at the top level (no 'leagues' wrapper)
+        for event in data.get("events", []):
+            for competition in event.get("competitions", []):
+                # Skip non-standard events (Presidents Cup, team events) where
+                # competitions contains nested lists instead of player dicts
+                if not isinstance(competition, dict):
+                    continue
+                for competitor in competition.get("competitors", []):
+                    if not isinstance(competitor, dict):
+                        continue
+                    entry = self._parse_competitor(competitor)
+                    if entry:
+                        players.append(entry)
         return players
 
     def _parse_competitor(self, competitor: dict):
@@ -282,31 +304,62 @@ class ESPNGolfApi:
         if not player_id:
             return None
 
-        status = competitor.get("status", "")
+        # status is a dict: {type: {name: 'STATUS_FINISH'|'STATUS_CUT'|...}}
+        status_obj = competitor.get("status", {})
+        status_name = ""
         made_cut = None
-        if status in ("active", "cut"):
-            made_cut = status != "cut"
+        if isinstance(status_obj, dict):
+            status_name = status_obj.get("type", {}).get("name", "")
+            if status_name == "STATUS_FINISH":
+                made_cut = True
+            elif status_name == "STATUS_CUT":
+                made_cut = False
+        elif isinstance(status_obj, str):
+            # Legacy format fallback
+            if status_obj in ("active", "cut"):
+                made_cut = status_obj != "cut"
 
         # Total score vs par
         score_str = competitor.get("score", "")
-        total_score = self._parse_score(score_str)
+        total_score = self._parse_score(str(score_str) if score_str else "")
 
-        # Position
-        pos_str = competitor.get("status", "") if not competitor.get("position") else ""
-        try:
-            position = int(competitor.get("position", 0)) or None
-        except (ValueError, TypeError):
-            position = None
+        # Position: in status.position.id (numeric finish position)
+        position = None
+        if isinstance(status_obj, dict):
+            pos_obj = status_obj.get("position", {})
+            try:
+                pos_val = int(pos_obj.get("id", 0))
+                position = pos_val if pos_val > 0 else None
+            except (ValueError, TypeError):
+                pass
+        if position is None:
+            try:
+                position = int(competitor.get("sortOrder", 0)) or None
+            except (ValueError, TypeError):
+                pass
 
         # Round-by-round scores from linescores
+        # linescore.value = gross score (float, e.g. 71.0)
+        # linescore.displayValue = vs-par string (e.g. '-2')
+        # linescore.period = round number (1, 2, 3, 4)
         rounds = []
-        for i, ls in enumerate(competitor.get("linescores", []), start=1):
-            value = ls.get("value", ls.get("displayValue", ""))
-            score = self._parse_score(str(value))
+        for ls in competitor.get("linescores", []):
+            round_num = ls.get("period", len(rounds) + 1)
+            raw_value = ls.get("value")
+            score = None
+            if raw_value is not None:
+                try:
+                    score = int(float(raw_value))
+                except (ValueError, TypeError):
+                    pass
+            if score is None:
+                score = self._parse_score(str(ls.get("displayValue", "")))
+            vs_par_str = ls.get("displayValue", "")
+            vs_par = self._parse_score(vs_par_str) if vs_par_str not in ("E", "", "--") else 0
             rounds.append({
-                "round": i,
+                "round": round_num,
                 "score": score,
-                "vs_par": None,  # ESPN linescores give gross score; vs_par computed later
+                "vs_par": vs_par,
             })
 
         return {
@@ -315,7 +368,7 @@ class ESPNGolfApi:
             "position": position,
             "made_cut": made_cut,
             "total_score": total_score,
-            "status": status,
+            "status": status_name,
             "rounds": rounds,
         }
 

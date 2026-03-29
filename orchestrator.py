@@ -113,6 +113,14 @@ except ImportError:
     SUPABASE_SYNC_AVAILABLE = False
     print("NOTE: Supabase sync not available. Cloud sync disabled.")
 
+# Optional: Pre-game intel (Grok injury/availability sweep)
+try:
+    sys.path.insert(0, str(Path(__file__).parent / "shared"))
+    from pregame_intel import PreGameIntel
+    PREGAME_INTEL_AVAILABLE = True
+except ImportError:
+    PREGAME_INTEL_AVAILABLE = False
+
 
 # ============================================================================
 # SPORT-SPECIFIC CONFIGURATION
@@ -609,6 +617,22 @@ class SportsOrchestrator:
                     details['schedule_fetch'] = {'success': True}
                     print(f"   Schedule fetched")
                 step += 1
+
+            # Step 1.5: Pre-game intel sweep (Grok — injury/availability/goalie)
+            # Runs once, cached to disk. Prediction scripts read the cache during
+            # player loop and skip OUT players automatically.
+            if PREGAME_INTEL_AVAILABLE and os.getenv('XAI_API_KEY'):
+                try:
+                    _intel = PreGameIntel()
+                    # matchups=[] — module will auto-pull from games DB
+                    _intel.fetch(sport_key, target_date, matchups=[])
+                    details['pregame_intel'] = {'success': True}
+                    notes = _intel.get_notes(sport_key, target_date)
+                    if notes:
+                        print(f'   Intel: {notes[0]}')
+                except Exception as e:
+                    details['pregame_intel'] = {'success': False, 'error': str(e)}
+                    warnings.append(f'Pre-game intel failed (non-fatal): {e}')
 
             # Step 2: Generate predictions
             print(f"[{step}/4] Generating predictions...")
@@ -2762,6 +2786,9 @@ class SportsOrchestrator:
             schedule.every().day.at(self.config.hits_blocks_time).do(
                 self.run_nhl_hits_blocks
             )
+            # Startup catch-up: if we're past the scheduled time and today's picks
+            # are missing (e.g. orchestrator restarted after 11 AM), run immediately.
+            self._catchup_hits_blocks()
 
         # Weekly SZLN ML refresh (MLB only — season-long lines change slowly)
         if self.config.sport == "MLB" and hasattr(self.config, 'szln_refresh_time'):
@@ -2927,6 +2954,39 @@ class SportsOrchestrator:
         except Exception as e:
             print(f"[GAME GRADE] Error: {e}")
             return {"success": False, "error": str(e)}
+
+    def _catchup_hits_blocks(self):
+        """
+        If the orchestrator starts after the hits_blocks_time (e.g. 11 AM) and
+        today's picks haven't been generated yet, run them immediately so a late
+        restart doesn't silently skip the day.
+        """
+        from datetime import datetime as _dt
+        now = _dt.now()
+        sched_h, sched_m = map(int, self.config.hits_blocks_time.split(":"))
+        sched_mins = sched_h * 60 + sched_m
+        now_mins = now.hour * 60 + now.minute
+        if now_mins < sched_mins:
+            return  # haven't reached scheduled time yet — normal schedule will handle it
+
+        # Check if today's picks are already saved
+        today = now.strftime("%Y-%m-%d")
+        try:
+            import sqlite3 as _sql
+            db_path = self.root / "nhl" / "database" / "hits_blocks.db"
+            if db_path.exists():
+                conn = _sql.connect(str(db_path))
+                row = conn.execute(
+                    "SELECT 1 FROM daily_picks WHERE run_date = ? LIMIT 1", (today,)
+                ).fetchone()
+                conn.close()
+                if row:
+                    return  # already ran today
+        except Exception:
+            pass  # if we can't check, attempt the run anyway
+
+        print(f"[H+B] Startup catch-up: past {self.config.hits_blocks_time} with no picks for {today} — running now")
+        self.run_nhl_hits_blocks()
 
     def run_nhl_hits_blocks(self) -> Dict:
         """
