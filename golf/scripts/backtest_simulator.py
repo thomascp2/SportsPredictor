@@ -2,7 +2,7 @@
 Golf Walk-Forward Backtest Simulator
 ======================================
 
-Runs simulations against 5 seasons (2020-2024) of historical PGA Tour data
+Runs simulations against 6 seasons (2020-2025) of historical PGA Tour data
 to find profitable betting strategies BEFORE going live. No look-ahead bias —
 all features are computed using only data available before each round.
 
@@ -698,8 +698,8 @@ def main():
         "--seasons", "-s",
         nargs="+",
         type=int,
-        default=[2020, 2021, 2022, 2023, 2024],
-        help="Seasons to simulate (default: 2020-2024)",
+        default=[2020, 2021, 2022, 2023, 2024, 2025],
+        help="Seasons to simulate (default: 2020-2025)",
     )
     parser.add_argument(
         "--full-sweep",
