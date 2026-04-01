@@ -19,6 +19,12 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime, timedelta
 from typing import Optional
+import sys, os as _os
+sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "shared"))
+try:
+    from project_config import BREAK_EVEN as _PROJECT_BREAK_EVEN
+except ImportError:
+    _PROJECT_BREAK_EVEN = {"standard": 0.56, "goblin": 0.76, "demon": 0.45}
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -30,19 +36,52 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    /* ── Design tokens (change here, applies everywhere) ──── */
+    :root {
+        /* Surface / chrome */
+        --bg-page:        #0d1117;
+        --bg-card:        #161b22;
+        --bg-card-hover:  #1c2128;
+        --border:         #30363d;
+        --border-subtle:  #21262d;
+
+        /* Text */
+        --text-primary:   #e6edf3;
+        --text-secondary: #c9d1d9;
+        --text-muted:     #8b949e;
+        --text-dim:       #484f58;
+
+        /* Semantic / status */
+        --green:   #3fb950;
+        --blue:    #58a6ff;
+        --yellow:  #e3b341;
+        --orange:  #f0883e;
+        --red:     #f85149;
+        --purple:  #bc8cff;
+
+        /* Tier colours */
+        --tier-prime:  #3fb950;
+        --tier-sharp:  #58a6ff;
+        --tier-lean:   #f0883e;
+        --tier-pass:   #8b949e;
+
+        /* Font */
+        --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+    }
+
     /* ── Layout ─────────────────────────────────────────── */
     .block-container { padding-top: 1rem; padding-bottom: 1rem; }
 
     /* ── Prop tier badge colours ─────────────────────────── */
-    .tier-elite  { color: #00e676; font-weight: bold; }
+    .tier-elite  { color: var(--green);  font-weight: bold; }
     .tier-strong { color: #69f0ae; }
-    .tier-good   { color: #ffee58; }
-    .tier-lean   { color: #ffa726; }
+    .tier-good   { color: var(--yellow); }
+    .tier-lean   { color: var(--orange); }
 
     /* ── Game card ───────────────────────────────────────── */
     .gl-card {
-        background: #161b22;
-        border: 1px solid #30363d;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
         border-radius: 10px;
         padding: 14px 18px;
         margin-bottom: 10px;
@@ -55,17 +94,17 @@ st.markdown("""
         align-items: center;
         margin-bottom: 10px;
         padding-bottom: 8px;
-        border-bottom: 1px solid #21262d;
+        border-bottom: 1px solid var(--border-subtle);
     }
     .gl-matchup {
         font-size: 15px;
         font-weight: 700;
-        color: #e6edf3;
+        color: var(--text-primary);
         letter-spacing: 0.3px;
     }
     .gl-elo {
         font-size: 11px;
-        color: #8b949e;
+        color: var(--text-muted);
         margin-top: 2px;
     }
     .gl-row {
@@ -74,7 +113,7 @@ st.markdown("""
         align-items: center;
         gap: 8px;
         padding: 5px 0;
-        border-bottom: 1px solid #21262d;
+        border-bottom: 1px solid var(--border-subtle);
     }
     .gl-row:last-child { border-bottom: none; }
     .gl-bet-type {
@@ -82,21 +121,21 @@ st.markdown("""
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.5px;
-        color: #8b949e;
+        color: var(--text-muted);
     }
     .gl-pick {
         font-weight: 600;
-        color: #e6edf3;
+        color: var(--text-primary);
         font-size: 13px;
     }
     .gl-prob {
         text-align: right;
-        color: #c9d1d9;
+        color: var(--text-secondary);
         font-size: 13px;
         font-variant-numeric: tabular-nums;
     }
     .gl-bar-wrap {
-        background: #21262d;
+        background: var(--border-subtle);
         border-radius: 4px;
         height: 6px;
         overflow: hidden;
@@ -105,39 +144,39 @@ st.markdown("""
         height: 6px;
         border-radius: 4px;
     }
-    .gl-edge-pos { color: #3fb950; font-size: 12px; font-weight: 600; text-align: right; }
-    .gl-edge-neg { color: #f85149; font-size: 12px; font-weight: 600; text-align: right; }
-    .gl-edge-neu { color: #8b949e; font-size: 12px; text-align: right; }
+    .gl-edge-pos { color: var(--green);    font-size: 12px; font-weight: 600; text-align: right; }
+    .gl-edge-neg { color: var(--red);      font-size: 12px; font-weight: 600; text-align: right; }
+    .gl-edge-neu { color: var(--text-muted); font-size: 12px; text-align: right; }
 
     /* ── Tier badge pills ─────────────────────────────────── */
-    .badge-PRIME  { background:#1a3a2a; color:#3fb950; border:1px solid #2ea043; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
-    .badge-SHARP  { background:#1a2a3a; color:#58a6ff; border:1px solid #388bfd; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
-    .badge-LEAN   { background:#3a2a1a; color:#f0883e; border:1px solid #d18616; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
-    .badge-PASS   { background:#2a2a2a; color:#8b949e; border:1px solid #484f58; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
+    .badge-PRIME  { background:#1a3a2a; color:var(--tier-prime); border:1px solid #2ea043; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
+    .badge-SHARP  { background:#1a2a3a; color:var(--tier-sharp); border:1px solid #388bfd; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
+    .badge-LEAN   { background:#3a2a1a; color:var(--tier-lean);  border:1px solid #d18616; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
+    .badge-PASS   { background:#2a2a2a; color:var(--tier-pass);  border:1px solid var(--text-dim); border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
 
     /* ── Terminal health monitor ──────────────────────────── */
     .terminal-panel {
-        background: #0d1117;
-        border: 1px solid #30363d;
+        background: var(--bg-page);
+        border: 1px solid var(--border);
         border-radius: 10px;
         padding: 16px 20px;
-        font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+        font-family: var(--font-mono);
         font-size: 12.5px;
         line-height: 1.75;
-        color: #e6edf3;
+        color: var(--text-primary);
         margin-bottom: 12px;
     }
-    .terminal-panel .t-sport  { color: #58a6ff; font-weight: 700; font-size: 13px; }
-    .terminal-panel .t-ok     { color: #3fb950; }
-    .terminal-panel .t-warn   { color: #f0883e; }
-    .terminal-panel .t-err    { color: #f85149; }
-    .terminal-panel .t-dim    { color: #484f58; }
-    .terminal-panel .t-label  { color: #8b949e; }
-    .terminal-panel .t-val    { color: #c9d1d9; }
+    .terminal-panel .t-sport  { color: var(--blue);    font-weight: 700; font-size: 13px; }
+    .terminal-panel .t-ok     { color: var(--green);   }
+    .terminal-panel .t-warn   { color: var(--orange);  }
+    .terminal-panel .t-err    { color: var(--red);     }
+    .terminal-panel .t-dim    { color: var(--text-dim); }
+    .terminal-panel .t-label  { color: var(--text-muted); }
+    .terminal-panel .t-val    { color: var(--text-secondary); }
     .terminal-panel .t-sched  { color: #a5d6ff; }
     .terminal-refresh {
         font-size: 11px;
-        color: #484f58;
+        color: var(--text-dim);
         text-align: right;
         margin-bottom: 8px;
     }
@@ -148,12 +187,12 @@ st.markdown("""
         grid-template-columns: 100px 70px 70px 90px 80px;
         gap: 0;
         padding: 7px 12px;
-        border-bottom: 1px solid #21262d;
+        border-bottom: 1px solid var(--border-subtle);
         font-size: 13px;
         align-items: center;
     }
-    .perf-row:first-child { border-radius: 8px 8px 0 0; background:#1c2128; font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#8b949e; }
-    .perf-table { background:#161b22; border:1px solid #30363d; border-radius:8px; overflow:hidden; margin-bottom:12px; }
+    .perf-row:first-child { border-radius: 8px 8px 0 0; background: var(--bg-card-hover); font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color: var(--text-muted); }
+    .perf-table { background: var(--bg-card); border:1px solid var(--border); border-radius:8px; overflow:hidden; margin-bottom:12px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -398,8 +437,8 @@ def fetch_all_lines_for_players(
     return df
 
 
-# Break-even rates (must match smart_pick_selector.py BREAK_EVEN)
-_BREAK_EVEN = {"standard": 0.56, "goblin": 0.76, "demon": 0.45}
+# Break-even rates — sourced from shared/project_config.py
+_BREAK_EVEN = _PROJECT_BREAK_EVEN
 _ODDS_ABBREV = {"standard": "STD", "goblin": "GOB", "demon": "DEM"}
 
 
@@ -494,6 +533,55 @@ def fetch_performance(sport: str) -> pd.DataFrame:
            .limit(30)
            .execute())
     return pd.DataFrame(r.data) if r.data else pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def fetch_pnl_local(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Read profit/outcome data directly from local SQLite prediction_outcomes.
+    Used for the investor P&L section since Supabase daily_props lacks profit.
+    Returns one row per graded prediction with columns:
+        game_date, outcome, profit, ai_tier (if available)
+    """
+    import os as _os
+    PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    db_map = {
+        "NHL": _os.path.join(PROJECT_ROOT, "nhl", "database", "nhl_predictions_v2.db"),
+        "NBA": _os.path.join(PROJECT_ROOT, "nba", "database", "nba_predictions.db"),
+        "MLB": _os.path.join(PROJECT_ROOT, "mlb", "database", "mlb_predictions.db"),
+        "GOLF": _os.path.join(PROJECT_ROOT, "golf", "database", "golf_predictions.db"),
+    }
+    db_path = db_map.get(sport.upper(), "")
+    if not _os.path.exists(db_path):
+        return pd.DataFrame()
+    try:
+        conn = sqlite3.connect(db_path)
+        # Try to join with predictions for tier; fall back if column missing
+        try:
+            df = pd.read_sql_query("""
+                SELECT o.game_date, o.outcome, o.profit,
+                       p.confidence_tier as ai_tier
+                FROM prediction_outcomes o
+                LEFT JOIN predictions p ON p.id = o.prediction_id
+                WHERE o.game_date BETWEEN ? AND ?
+                  AND o.outcome IN ('HIT','MISS')
+                  AND o.profit IS NOT NULL
+                ORDER BY o.game_date
+            """, conn, params=(start_date, end_date))
+        except Exception:
+            df = pd.read_sql_query("""
+                SELECT game_date, outcome, profit
+                FROM prediction_outcomes
+                WHERE game_date BETWEEN ? AND ?
+                  AND outcome IN ('HIT','MISS')
+                  AND profit IS NOT NULL
+                ORDER BY game_date
+            """, conn, params=(start_date, end_date))
+            df["ai_tier"] = None
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=300)
@@ -1659,9 +1747,100 @@ def main():
             perf_start, perf_end = date_range[0].isoformat(), date_range[1].isoformat()
 
         results_df = fetch_recent_results(ps, perf_start, perf_end)
+        pnl_df     = fetch_pnl_local(ps, perf_start, perf_end)
         days_shown = (date_range[1] - date_range[0]).days
         st.caption(f"Showing {days_shown}-day window ({perf_start} to {perf_end}). "
                    "DNP records (actual_value=0) excluded.")
+
+        # ── Investor P&L Section ──────────────────────────────────────────────
+        if not pnl_df.empty:
+            st.subheader("Investor P&L Overview")
+            st.caption("Flat $100/bet at standard -110 odds. HIT = +$90.91, MISS = -$100.00")
+
+            total_bets   = len(pnl_df)
+            total_hits   = (pnl_df["outcome"] == "HIT").sum()
+            total_profit = pnl_df["profit"].sum()
+            win_rate_pnl = total_hits / total_bets if total_bets else 0
+            roi          = total_profit / (total_bets * 100) * 100 if total_bets else 0
+            coin_flip_profit = (total_hits * 90.91) + ((total_bets - total_hits) * -100.0)
+
+            iv1, iv2, iv3, iv4, iv5 = st.columns(5)
+            iv1.metric("Total Bets",   f"{total_bets:,}")
+            iv2.metric("Win Rate",     f"{win_rate_pnl:.1%}")
+            iv3.metric("Net P&L",      f"${total_profit:+,.0f}")
+            iv4.metric("ROI",          f"{roi:+.1f}%")
+            iv5.metric("vs Coin-Flip", f"${total_profit - coin_flip_profit:+,.0f}")
+
+            # Cumulative P&L chart
+            daily_pnl = (pnl_df.groupby("game_date")["profit"]
+                         .sum().reset_index().sort_values("game_date"))
+            daily_pnl["Cumulative P&L ($)"] = daily_pnl["profit"].cumsum()
+            daily_pnl["Coin Flip Baseline"] = (
+                pnl_df.groupby("game_date").apply(
+                    lambda g: (g["outcome"] == "HIT").sum() * 90.91
+                    + (g["outcome"] == "MISS").sum() * -100.0
+                ).cumsum().values
+            ) if len(daily_pnl) == len(
+                pnl_df.groupby("game_date")
+            ) else 0
+            chart_data = daily_pnl.rename(columns={"game_date": "Date"}).set_index("Date")[
+                ["Cumulative P&L ($)"]
+            ]
+            st.line_chart(chart_data, height=250)
+
+            # Kelly bankroll simulation
+            with st.expander("Kelly Bankroll Simulation ($1,000 starting bank)"):
+                if win_rate_pnl > 0:
+                    # Kelly fraction at -110: f = (b*p - q) / b  where b = 10/11
+                    b = 10 / 11
+                    p = win_rate_pnl
+                    q = 1 - p
+                    kelly_f = max(0, (b * p - q) / b)
+                    half_kelly = kelly_f / 2
+
+                    bank = 1000.0
+                    bank_history = [bank]
+                    for _, row in pnl_df.sort_values("game_date").iterrows():
+                        bet = bank * half_kelly
+                        if row["outcome"] == "HIT":
+                            bank += bet * (10 / 11)
+                        else:
+                            bank -= bet
+                        bank_history.append(max(bank, 0))
+
+                    final_bank = bank_history[-1]
+                    st.metric("Final bankroll (half-Kelly)",  f"${final_bank:,.0f}",
+                              delta=f"{(final_bank/1000 - 1)*100:+.1f}%")
+                    st.caption(
+                        f"Full Kelly fraction: {kelly_f:.1%}  |  "
+                        f"Half-Kelly (used): {half_kelly:.1%} of bank per bet"
+                    )
+                    kelly_chart = pd.DataFrame({"Bankroll ($)": bank_history})
+                    st.line_chart(kelly_chart, height=200)
+                else:
+                    st.info("Not enough data for Kelly simulation.")
+
+            # Win rate by tier
+            if pnl_df["ai_tier"].notna().any():
+                st.markdown("**Win rate by tier**")
+                tier_pnl = []
+                for tier in ["T1-ELITE", "T2-STRONG", "T3-GOOD", "T4-LEAN"]:
+                    sub = pnl_df[pnl_df["ai_tier"] == tier]
+                    if len(sub) >= 5:
+                        wr_t  = (sub["outcome"] == "HIT").mean()
+                        pnl_t = sub["profit"].sum()
+                        roi_t = pnl_t / (len(sub) * 100) * 100
+                        tier_pnl.append({
+                            "Tier": tier, "Bets": len(sub),
+                            "Win Rate": f"{wr_t:.1%}",
+                            "Net P&L": f"${pnl_t:+,.0f}",
+                            "ROI": f"{roi_t:+.1f}%",
+                        })
+                if tier_pnl:
+                    st.dataframe(pd.DataFrame(tier_pnl),
+                                 use_container_width=True, hide_index=True)
+
+            st.divider()
 
         if not results_df.empty:
             hits = results_df[results_df["result"] == "HIT"]
@@ -1781,14 +1960,13 @@ def main():
                 # Hit rate by odds_type (standard / goblin / demon)
                 if "odds_type" in results_df.columns and results_df["odds_type"].notna().any():
                     st.markdown("**Hit rate by line type**")
-                    BREAK_EVEN = {"standard": 0.56, "goblin": 0.76, "demon": 0.45}
                     ot_rows = []
                     for ot in ["standard", "goblin", "demon"]:
                         sub = df_cal[df_cal["odds_type"] == ot]
                         if len(sub) >= 5:
                             hr = sub["hit"].mean() * 100
                             avg_prob = sub["ai_probability"].mean() * 100
-                            be = BREAK_EVEN.get(ot, 0.56) * 100
+                            be = _BREAK_EVEN.get(ot, 0.56) * 100
                             ot_rows.append({
                                 "Line type": ot.capitalize(),
                                 "n": len(sub),

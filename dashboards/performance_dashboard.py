@@ -35,36 +35,34 @@ import requests
 # CONFIGURATION
 # ============================================================================
 
-PROJECT_ROOT = Path(__file__).parent
+PROJECT_ROOT = Path(__file__).parent.parent  # repo root
 
 # Sport-specific configurations
 SPORTS_CONFIG = {
     'nba': {
         'name': 'NBA',
-        'db_path': Path(r"C:\Users\thoma\nba_predictions.db"),
-        'project_root': Path(r"C:\Users\thoma\NBA-Prediciton-Model-v1"),
+        'db_path': PROJECT_ROOT / 'nba' / 'database' / 'nba_predictions.db',
+        'project_root': PROJECT_ROOT / 'nba',
         'prop_types': ['points', 'rebounds', 'assists', 'threes', 'stocks', 'pra', 'minutes'],
         'scoreboard_url': 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard',
         'scripts': [
-            'generate_predictions_daily.py',
+            'generate_predictions_daily_V6.py',
             'auto_grade_multi_api_FIXED.py',
-            'setup_database.py'
         ],
-        'color': '#FDB927',  # Lakers gold
+        'color': '#FDB927',
         'icon': 'basketball'
     },
     'nhl': {
         'name': 'NHL',
-        'db_path': Path(r"C:\Users\thoma\NHL-Model-Rebuild-V2\database\nhl_predictions_v2.db"),
-        'project_root': Path(r"C:\Users\thoma\NHL-Model-Rebuild-V2"),
-        'prop_types': ['points', 'shots', 'goals', 'assists', 'saves'],
+        'db_path': PROJECT_ROOT / 'nhl' / 'database' / 'nhl_predictions_v2.db',
+        'project_root': PROJECT_ROOT / 'nhl',
+        'prop_types': ['points', 'shots', 'goals', 'assists', 'saves', 'hits', 'blocked_shots'],
         'scoreboard_url': 'https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard',
         'scripts': [
-            'generate_predictions_daily.py',
-            'v2_auto_grade_yesterday_v3.py',
-            'create_database.py'
+            'generate_predictions_daily_V6.py',
+            'v2_auto_grade_yesterday_v3_RELIABLE.py',
         ],
-        'color': '#C8102E',  # Hockey red
+        'color': '#C8102E',
         'icon': 'hockey-puck'
     }
 }

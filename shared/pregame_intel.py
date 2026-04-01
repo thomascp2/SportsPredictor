@@ -401,8 +401,203 @@ class PreGameIntel:
         """Return key notes for the day."""
         return self.load(sport, game_date).get('key_notes', [])
 
+    # ── Betting context ───────────────────────────────────────────────────────
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+    def fetch_betting_context(self, sport: str, game_date: str,
+                              matchups: Optional[List[str]] = None) -> Dict:
+        """
+        Fetch betting context (line movement, sharp action, prop moves) via Grok.
+        Cached to data/pregame_intel/{sport}_{date}_betting.json.
+        """
+        cache_path = _cache_path_betting(sport, game_date)
+        if cache_path.exists():
+            try:
+                data = json.loads(cache_path.read_text())
+                if data.get('fetched_at'):
+                    print(f'  [INTEL] Loaded cached betting context for {sport.upper()} {game_date}')
+                    return data
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        print(f'  [INTEL] Fetching betting context for {sport.upper()} {game_date}...')
+
+        if not matchups:
+            matchups = _get_matchups_from_db(sport, game_date)
+
+        matchup_str = '\n'.join(f'  - {m}' for m in matchups) if matchups \
+                      else f'  - (all {sport.upper()} games today)'
+
+        prompt = BETTING_CONTEXT_PROMPT.format(
+            date=game_date,
+            league=sport.upper(),
+            matchups=matchup_str,
+        )
+
+        raw = _call_grok(prompt)
+        empty = {'line_moves': [], 'sharp_action': [], 'prop_moves': [],
+                 'key_angles': [], 'fetched_at': None, 'model': None}
+        if not raw:
+            try:
+                cache_path.write_text(json.dumps(empty, indent=2))
+            except OSError:
+                pass
+            return empty
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            data = json.loads(match.group()) if match else {}
+
+        result = {
+            'line_moves':   data.get('line_moves', []),
+            'sharp_action': data.get('sharp_action', []),
+            'prop_moves':   data.get('prop_moves', []),
+            'key_angles':   data.get('key_angles', []),
+            'fetched_at':   datetime.now().isoformat(),
+            'model':        GROK_MODEL,
+        }
+
+        lm = len(result['line_moves'])
+        sa = len(result['sharp_action'])
+        pm = len(result['prop_moves'])
+        print(f'  [INTEL] Betting context: {lm} line moves, {sa} sharp actions, {pm} prop moves')
+        for angle in result['key_angles'][:3]:
+            print(f'    * {angle}')
+
+        try:
+            cache_path.write_text(json.dumps(result, indent=2))
+        except OSError as exc:
+            print(f'  [INTEL] Cache write failed: {exc}')
+
+        return result
+
+    def load_betting_context(self, sport: str, game_date: str) -> Dict:
+        """Load cached betting context without a new Grok call."""
+        cache_path = _cache_path_betting(sport, game_date)
+        if cache_path.exists():
+            try:
+                return json.loads(cache_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {'line_moves': [], 'sharp_action': [], 'prop_moves': [], 'key_angles': []}
+
+
+# ── Discord poster ────────────────────────────────────────────────────────────
+
+def post_intel_to_discord(sport: str, game_date: str, webhook_url: str) -> bool:
+    """Post today's pre-game intel + betting context as a Discord embed."""
+    if not webhook_url:
+        return False
+
+    try:
+        import requests as _requests
+    except ImportError:
+        print('  [INTEL] requests not installed — cannot post to Discord')
+        return False
+
+    intel_obj = PreGameIntel()
+    intel     = intel_obj.load(sport, game_date)
+    betting   = intel_obj.load_betting_context(sport, game_date)
+
+    fields = []
+
+    injury_lines = []
+    if intel.get('out_players'):
+        injury_lines.append(f"OUT: {', '.join(intel['out_players'][:6])}")
+    if intel.get('doubtful_players'):
+        injury_lines.append(f"DOUBTFUL: {', '.join(intel['doubtful_players'][:4])}")
+    if intel.get('questionable_players'):
+        injury_lines.append(f"GTD: {', '.join(intel['questionable_players'][:4])}")
+    if intel.get('goalie_starters'):
+        starters = ', '.join(f"{t}: {g}" for t, g in intel['goalie_starters'].items())
+        injury_lines.append(f"Goalies: {starters}")
+    if injury_lines:
+        fields.append({"name": "Injuries / Lineup",
+                       "value": '\n'.join(injury_lines), "inline": False})
+
+    if betting.get('sharp_action'):
+        sa_lines = [
+            f"{s.get('game','?')} - {s.get('side','?')} ({s.get('bet_type','?')}): {s.get('note','')}"
+            for s in betting['sharp_action'][:4]
+        ]
+        fields.append({"name": "Sharp Action", "value": '\n'.join(sa_lines), "inline": False})
+
+    if betting.get('line_moves'):
+        lm_lines = [
+            f"{m.get('game','?')} {m.get('bet_type','?')} {m.get('direction','?')} "
+            f"{m.get('amount','')}: {m.get('note','')}"
+            for m in betting['line_moves'][:4]
+        ]
+        fields.append({"name": "Line Moves", "value": '\n'.join(lm_lines), "inline": False})
+
+    if betting.get('key_angles'):
+        fields.append({"name": "Key Angles",
+                       "value": '\n'.join(f"* {a}" for a in betting['key_angles'][:4]),
+                       "inline": False})
+
+    if intel.get('key_notes'):
+        fields.append({"name": "News Notes",
+                       "value": '\n'.join(f"* {n}" for n in intel['key_notes'][:4]),
+                       "inline": False})
+
+    if not fields:
+        return False
+
+    embed = {
+        "title": f"[{sport.upper()}] Pre-Game Intel - {game_date}",
+        "color": 0x5865F2,
+        "fields": fields,
+        "footer": {"text": f"Powered by Grok | {datetime.now().strftime('%H:%M CST')}"},
+    }
+    try:
+        r = _requests.post(webhook_url, json={"embeds": [embed]}, timeout=10)
+        return r.status_code in (200, 204)
+    except Exception as exc:
+        print(f'  [INTEL] Discord post failed: {exc}')
+        return False
+
+
+# ── Betting context prompt ────────────────────────────────────────────────────
+
+BETTING_CONTEXT_PROMPT = """You are a sharp sports betting analyst. Today is {date}.
+
+Use your live web search RIGHT NOW to find relevant betting intel for tonight's {league} games.
+
+Search for:
+1. "{league} line movement today" — which lines have moved 1.5+ points/goals since open
+2. "{league} sharp money action {date}" — where the sharp/professional bettors are going
+3. "{league} reverse line movement {date}" — bets going opposite to public money
+4. "{league} steam move {date}" — coordinated sharp action
+5. Notable prop line movement — any player props that moved significantly
+
+Tonight's games:
+{matchups}
+
+Return ONLY a raw JSON object — no markdown code fences, no explanation.
+
+{{
+  "line_moves": [
+    {{"game": "AWAY @ HOME", "bet_type": "spread|total|moneyline", "direction": "up|down", "amount": "1.5", "note": "brief context"}}
+  ],
+  "sharp_action": [
+    {{"game": "AWAY @ HOME", "bet_type": "spread|total|moneyline", "side": "AWAY|HOME|OVER|UNDER", "note": "why sharps like it"}}
+  ],
+  "prop_moves": [
+    {{"player": "Full Name", "prop": "points|assists etc", "direction": "up|down", "note": "brief context"}}
+  ],
+  "key_angles": ["One-sentence betting angle, max 5 items"]
+}}
+
+Return empty arrays if you genuinely find nothing relevant after a thorough search.
+"""
+
+
+def _cache_path_betting(sport: str, game_date: str) -> Path:
+    return CACHE_DIR / f'{sport}_{game_date}_betting.json'
+
+
+# ── Main class (extended) ─────────────────────────────────────────────────────
 
 if __name__ == '__main__':
     import argparse

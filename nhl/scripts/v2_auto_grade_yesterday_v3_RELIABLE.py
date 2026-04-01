@@ -477,10 +477,22 @@ def grade_predictions(game_date: str) -> Dict:
     """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
+
+    # Idempotent migrations — run once, safe to repeat
+    for migration in [
+        "ALTER TABLE prediction_outcomes ADD COLUMN profit REAL",
+        "ALTER TABLE prediction_outcomes RENAME COLUMN predicted_outcome TO prediction",
+        "ALTER TABLE prediction_outcomes RENAME COLUMN actual_stat_value TO actual_value",
+    ]:
+        try:
+            cursor.execute(migration)
+            conn.commit()
+        except Exception:
+            pass  # Column already exists or was already renamed
+
     # Get predictions for date
     cursor.execute('''
-        SELECT id, player_name, team, opponent, prop_type, line, 
+        SELECT id, player_name, team, opponent, prop_type, line,
                prediction, probability, confidence_tier
         FROM predictions
         WHERE game_date = ?
@@ -571,20 +583,22 @@ def grade_predictions(game_date: str) -> Dict:
             hit = actual_value < line
         
         outcome = 'HIT' if hit else 'MISS'
-        
+
         # Determine what actually happened
         actual_outcome = 'OVER' if actual_value > line else 'UNDER'
-        
+
+        profit = 90.91 if outcome == 'HIT' else -100.0
+
         # Store in database
         cursor.execute('''
             INSERT INTO prediction_outcomes
             (prediction_id, game_date, player_name, prop_type, line,
-             predicted_outcome, predicted_probability, 
-             actual_stat_value, actual_outcome, outcome, graded_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             prediction, predicted_probability,
+             actual_value, actual_outcome, outcome, graded_at, profit)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (pred_id, game_date, player_name, prop_type, line,
-              prediction, probability, actual_value, actual_outcome, outcome, 
-              datetime.now().isoformat()))
+              prediction, probability, actual_value, actual_outcome, outcome,
+              datetime.now().isoformat(), profit))
         
         # Update stats
         results['total'] += 1
@@ -615,7 +629,14 @@ def grade_predictions(game_date: str) -> Dict:
             'actual': actual_value,
             'outcome': outcome
         })
-    
+
+    # Backfill profit for any existing rows that are missing it
+    cursor.execute("""
+        UPDATE prediction_outcomes
+        SET profit = CASE outcome WHEN 'HIT' THEN 90.91 ELSE -100.0 END
+        WHERE profit IS NULL AND outcome IN ('HIT', 'MISS')
+    """)
+
     conn.commit()
     conn.close()
     
