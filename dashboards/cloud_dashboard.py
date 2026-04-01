@@ -1465,90 +1465,96 @@ def main():
 
             st.divider()
 
-            # ── Game cards — one card per matchup with all bet types ───────────
-            def _bar_color(prob: float) -> str:
-                if prob >= 0.62:
-                    return "#3fb950"
-                elif prob >= 0.55:
-                    return "#58a6ff"
-                elif prob >= 0.50:
-                    return "#f0883e"
+            # ── Game cards — one card per matchup, all bet types together ────────
+            # All styling is inline — Streamlit strips CSS class names with
+            # uppercase letters (badge-PRIME etc.) and misparses multiline HTML.
+
+            # Shared inline style constants
+            _C = {
+                "card":    "background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px 20px;margin-bottom:12px;",
+                "header":  "display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid #21262d;",
+                "matchup": "font-size:17px;font-weight:700;color:#e6edf3;letter-spacing:0.3px;",
+                "elo":     "font-size:12px;color:#8b949e;margin-top:3px;",
+                "row":     "display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #21262d;",
+                "row_last":"display:flex;align-items:center;gap:10px;padding:7px 0;",
+                "label":   "width:110px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.6px;color:#8b949e;flex-shrink:0;",
+                "pick":    "flex:1;font-size:14px;font-weight:600;color:#e6edf3;",
+                "pct":     "width:52px;text-align:right;font-size:14px;color:#c9d1d9;font-variant-numeric:tabular-nums;",
+                "bar_bg":  "flex:1;background:#21262d;border-radius:4px;height:7px;overflow:hidden;min-width:60px;",
+                "badge": {
+                    "PRIME": "background:#1a3a2a;color:#3fb950;border:1px solid #2ea043;border-radius:12px;padding:3px 12px;font-size:12px;font-weight:700;letter-spacing:0.5px;white-space:nowrap;",
+                    "SHARP": "background:#1a2a3a;color:#58a6ff;border:1px solid #388bfd;border-radius:12px;padding:3px 12px;font-size:12px;font-weight:700;letter-spacing:0.5px;white-space:nowrap;",
+                    "LEAN":  "background:#3a2a1a;color:#f0883e;border:1px solid #d18616;border-radius:12px;padding:3px 12px;font-size:12px;font-weight:700;letter-spacing:0.5px;white-space:nowrap;",
+                    "PASS":  "background:#222;color:#8b949e;border:1px solid #484f58;border-radius:12px;padding:3px 12px;font-size:12px;font-weight:700;letter-spacing:0.5px;white-space:nowrap;",
+                },
+            }
+
+            def _prob_color(prob):
+                if prob >= 0.62: return "#3fb950"
+                if prob >= 0.55: return "#58a6ff"
+                if prob >= 0.50: return "#f0883e"
                 return "#484f58"
 
-            def _edge_class(edge: float) -> str:
-                if edge > 0.02:
-                    return "gl-edge-pos"
-                elif edge < -0.01:
-                    return "gl-edge-neg"
-                return "gl-edge-neu"
+            def _edge_color(edge):
+                if edge > 0.02: return "#3fb950"
+                if edge < -0.01: return "#f85149"
+                return "#8b949e"
 
-            def _render_game_cards(df: "pd.DataFrame"):
-                games = df.groupby(["home_team", "away_team"])
-                for (home, away), game_df in games:
-                    # Best tier across all bets for this game
-                    tier_order = {"PRIME": 0, "SHARP": 1, "LEAN": 2, "PASS": 3}
+            def _render_game_cards(df):
+                tier_order = {"PRIME": 0, "SHARP": 1, "LEAN": 2, "PASS": 3}
+                for (home, away), game_df in df.groupby(["home_team", "away_team"]):
                     best_tier = min(game_df["confidence_tier"].unique(),
                                     key=lambda t: tier_order.get(t, 9))
+                    badge_style = _C["badge"].get(best_tier, _C["badge"]["PASS"])
 
-                    elo_str = ""
                     h_elo = game_df["home_elo"].dropna()
                     a_elo = game_df["away_elo"].dropna()
+                    elo_line = ""
                     if len(h_elo) and len(a_elo):
-                        elo_str = (f'<div class="gl-elo">Elo: '
-                                   f'{int(h_elo.iloc[0])} ({home}) vs '
-                                   f'{int(a_elo.iloc[0])} ({away})</div>')
+                        elo_line = f'<div style="{_C["elo"]}">Elo: {int(h_elo.iloc[0])} ({home}) vs {int(a_elo.iloc[0])} ({away})</div>'
 
-                    rows_html = ""
-                    for _, row in game_df.sort_values(
-                            "bet_type",
-                            key=lambda s: s.map({"moneyline": 0, "spread": 1, "total": 2})
-                    ).iterrows():
-                        bt = row["bet_type"]
-                        bs = row["bet_side"]
-                        prob = row["probability"]
-                        edge = row["edge"]
-                        pred = row["prediction"]
-
-                        # Bet label
+                    sorted_bets = game_df.sort_values(
+                        "bet_type",
+                        key=lambda s: s.map({"moneyline": 0, "spread": 1, "total": 2})
+                    )
+                    rows = sorted_bets.to_dict("records")
+                    row_parts = []
+                    for i, r in enumerate(rows):
+                        bt, bs, prob, edge, pred = r["bet_type"], r["bet_side"], r["probability"], r["edge"], r["prediction"]
                         if bt == "moneyline":
-                            label = f"ML · {bs.title()}"
-                            pick_str = f"{home if bs == 'home' else away} {pred}"
+                            lbl = f"ML &middot; {bs.title()}"
+                            pick = f"{home if bs == 'home' else away} {pred}"
                         elif bt == "spread":
-                            line_v = f"{row['line']:+.1f}" if row["line"] else "PK"
-                            label = f"Spread {line_v}"
-                            pick_str = f"{'Home' if pred == 'WIN' else 'Away'} covers"
+                            lv = f"{r['line']:+.1f}" if r["line"] else "PK"
+                            lbl = f"Spread {lv}"
+                            pick = f"{'Home' if pred == 'WIN' else 'Away'} covers"
                         else:
-                            line_v = f"{row['line']:.1f}" if row["line"] else "—"
-                            label = f"Total {line_v}"
-                            pick_str = pred
+                            lv = f"{r['line']:.1f}" if r["line"] else "&mdash;"
+                            lbl = f"Total {lv}"
+                            pick = pred
+                        pc = _prob_color(prob)
+                        ec = _edge_color(edge)
+                        row_style = _C["row_last"] if i == len(rows) - 1 else _C["row"]
+                        row_parts.append(
+                            f'<div style="{row_style}">'
+                            f'<span style="{_C["label"]}">{lbl}</span>'
+                            f'<span style="{_C["pick"]}">{pick}</span>'
+                            f'<span style="{_C["pct"]}">{prob*100:.1f}%</span>'
+                            f'<div style="{_C["bar_bg"]}"><div style="width:{int(prob*100)}%;height:7px;background:{pc};border-radius:4px;"></div></div>'
+                            f'<span style="width:52px;text-align:right;font-size:13px;font-weight:600;color:{ec};">{edge*100:+.1f}%</span>'
+                            f'</div>'
+                        )
 
-                        bar_w = int(prob * 100)
-                        bar_c = _bar_color(prob)
-                        edge_cls = _edge_class(edge)
-
-                        rows_html += f"""
-<div class="gl-row">
-  <span class="gl-bet-type">{label}</span>
-  <span class="gl-pick">{pick_str}</span>
-  <span class="gl-prob">{prob*100:.1f}%</span>
-  <div class="gl-bar-wrap">
-    <div class="gl-bar-fill" style="width:{bar_w}%;background:{bar_c};"></div>
-  </div>
-  <span class="{edge_cls}">{edge*100:+.1f}%</span>
-</div>"""
-
-                    card_html = f"""
-<div class="gl-card">
-  <div class="gl-card-header">
-    <div>
-      <div class="gl-matchup">{away} @ {home}</div>
-      {elo_str}
-    </div>
-    <span class="badge-{best_tier}">{best_tier}</span>
-  </div>
-  {rows_html}
-</div>"""
-                    st.markdown(card_html, unsafe_allow_html=True)
+                    card = (
+                        f'<div style="{_C["card"]}">'
+                        f'<div style="{_C["header"]}">'
+                        f'<div><div style="{_C["matchup"]}">{away} @ {home}</div>{elo_line}</div>'
+                        f'<span style="{badge_style}">{best_tier}</span>'
+                        f'</div>'
+                        + "".join(row_parts)
+                        + '</div>'
+                    )
+                    st.markdown(card, unsafe_allow_html=True)
 
             _render_game_cards(gdf)
 
@@ -1577,7 +1583,22 @@ def main():
                             col.metric(bt.title(), f"{h/len(sub)*100:.1f}%",
                                        delta=f"{h}/{len(sub)}")
 
-                    # Tier breakdown as a clean HTML table
+                    # Tier breakdown — fully inline styles, no CSS classes
+                    _badge_s = {
+                        "PRIME": "background:#1a3a2a;color:#3fb950;border:1px solid #2ea043;border-radius:10px;padding:2px 10px;font-size:12px;font-weight:700;",
+                        "SHARP": "background:#1a2a3a;color:#58a6ff;border:1px solid #388bfd;border-radius:10px;padding:2px 10px;font-size:12px;font-weight:700;",
+                        "LEAN":  "background:#3a2a1a;color:#f0883e;border:1px solid #d18616;border-radius:10px;padding:2px 10px;font-size:12px;font-weight:700;",
+                        "PASS":  "background:#222;color:#8b949e;border:1px solid #484f58;border-radius:10px;padding:2px 10px;font-size:12px;font-weight:700;",
+                    }
+                    _row_s   = "display:flex;align-items:center;gap:0;padding:8px 14px;border-bottom:1px solid #21262d;font-size:14px;"
+                    _head_s  = "display:flex;align-items:center;gap:0;padding:7px 14px;background:#1c2128;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#8b949e;"
+                    _col_w   = ["140px", "70px", "70px", "90px", "1fr"]
+
+                    def _cell(content, idx, style="color:#c9d1d9;"):
+                        w = _col_w[idx]
+                        flex = f"flex:{w};" if w == "1fr" else f"width:{w};flex-shrink:0;"
+                        return f'<span style="{flex}{style}">{content}</span>'
+
                     tier_rows = ""
                     for tier in ["PRIME", "SHARP", "LEAN", "PASS"]:
                         sub = hit_miss[hit_miss["confidence_tier"] == tier]
@@ -1585,23 +1606,30 @@ def main():
                             continue
                         h = len(sub[sub["outcome"] == "HIT"])
                         acc = h / len(sub) * 100
-                        bar_w = int(acc)
                         bar_c = "#3fb950" if acc >= 55 else ("#f0883e" if acc >= 50 else "#f85149")
-                        tier_rows += f"""
-<div class="perf-row">
-  <span><span class="badge-{tier}">{tier}</span></span>
-  <span style="color:#c9d1d9">{len(sub)}</span>
-  <span style="color:#c9d1d9">{h}</span>
-  <span style="color:{bar_c};font-weight:600">{acc:.1f}%</span>
-  <div class="gl-bar-wrap"><div class="gl-bar-fill" style="width:{bar_w}%;background:{bar_c}"></div></div>
-</div>"""
+                        badge = f'<span style="{_badge_s[tier]}">{tier}</span>'
+                        bar = f'<div style="flex:1;background:#21262d;border-radius:4px;height:7px;overflow:hidden;"><div style="width:{int(acc)}%;height:7px;background:{bar_c};border-radius:4px;"></div></div>'
+                        tier_rows += (
+                            f'<div style="{_row_s}">'
+                            + _cell(badge, 0, "")
+                            + _cell(str(len(sub)), 1)
+                            + _cell(str(h), 2)
+                            + _cell(f'{acc:.1f}%', 3, f"color:{bar_c};font-weight:700;")
+                            + _cell(bar, 4, "")
+                            + "</div>"
+                        )
 
-                    header_row = """
-<div class="perf-row">
-  <span>Tier</span><span>Bets</span><span>Hits</span><span>Accuracy</span><span></span>
-</div>"""
+                    header = (
+                        f'<div style="{_head_s}">'
+                        + _cell("Tier", 0, "")
+                        + _cell("Bets", 1, "")
+                        + _cell("Hits", 2, "")
+                        + _cell("Accuracy", 3, "")
+                        + _cell("", 4, "")
+                        + "</div>"
+                    )
                     st.markdown(
-                        f'<div class="perf-table">{header_row}{tier_rows}</div>',
+                        f'<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden;margin-bottom:12px;">{header}{tier_rows}</div>',
                         unsafe_allow_html=True,
                     )
 
