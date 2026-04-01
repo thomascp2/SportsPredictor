@@ -30,13 +30,130 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* Tighten padding on mobile */
+    /* ── Layout ─────────────────────────────────────────── */
     .block-container { padding-top: 1rem; padding-bottom: 1rem; }
-    /* Tier badge colours */
+
+    /* ── Prop tier badge colours ─────────────────────────── */
     .tier-elite  { color: #00e676; font-weight: bold; }
     .tier-strong { color: #69f0ae; }
     .tier-good   { color: #ffee58; }
     .tier-lean   { color: #ffa726; }
+
+    /* ── Game card ───────────────────────────────────────── */
+    .gl-card {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 10px;
+        font-size: 14px;
+        line-height: 1.55;
+    }
+    .gl-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid #21262d;
+    }
+    .gl-matchup {
+        font-size: 15px;
+        font-weight: 700;
+        color: #e6edf3;
+        letter-spacing: 0.3px;
+    }
+    .gl-elo {
+        font-size: 11px;
+        color: #8b949e;
+        margin-top: 2px;
+    }
+    .gl-row {
+        display: grid;
+        grid-template-columns: 90px 1fr 60px 80px 70px;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 0;
+        border-bottom: 1px solid #21262d;
+    }
+    .gl-row:last-child { border-bottom: none; }
+    .gl-bet-type {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #8b949e;
+    }
+    .gl-pick {
+        font-weight: 600;
+        color: #e6edf3;
+        font-size: 13px;
+    }
+    .gl-prob {
+        text-align: right;
+        color: #c9d1d9;
+        font-size: 13px;
+        font-variant-numeric: tabular-nums;
+    }
+    .gl-bar-wrap {
+        background: #21262d;
+        border-radius: 4px;
+        height: 6px;
+        overflow: hidden;
+    }
+    .gl-bar-fill {
+        height: 6px;
+        border-radius: 4px;
+    }
+    .gl-edge-pos { color: #3fb950; font-size: 12px; font-weight: 600; text-align: right; }
+    .gl-edge-neg { color: #f85149; font-size: 12px; font-weight: 600; text-align: right; }
+    .gl-edge-neu { color: #8b949e; font-size: 12px; text-align: right; }
+
+    /* ── Tier badge pills ─────────────────────────────────── */
+    .badge-PRIME  { background:#1a3a2a; color:#3fb950; border:1px solid #2ea043; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
+    .badge-SHARP  { background:#1a2a3a; color:#58a6ff; border:1px solid #388bfd; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
+    .badge-LEAN   { background:#3a2a1a; color:#f0883e; border:1px solid #d18616; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
+    .badge-PASS   { background:#2a2a2a; color:#8b949e; border:1px solid #484f58; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
+
+    /* ── Terminal health monitor ──────────────────────────── */
+    .terminal-panel {
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 10px;
+        padding: 16px 20px;
+        font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+        font-size: 12.5px;
+        line-height: 1.75;
+        color: #e6edf3;
+        margin-bottom: 12px;
+    }
+    .terminal-panel .t-sport  { color: #58a6ff; font-weight: 700; font-size: 13px; }
+    .terminal-panel .t-ok     { color: #3fb950; }
+    .terminal-panel .t-warn   { color: #f0883e; }
+    .terminal-panel .t-err    { color: #f85149; }
+    .terminal-panel .t-dim    { color: #484f58; }
+    .terminal-panel .t-label  { color: #8b949e; }
+    .terminal-panel .t-val    { color: #c9d1d9; }
+    .terminal-panel .t-sched  { color: #a5d6ff; }
+    .terminal-refresh {
+        font-size: 11px;
+        color: #484f58;
+        text-align: right;
+        margin-bottom: 8px;
+    }
+
+    /* ── Perf table clean-up ─────────────────────────────── */
+    .perf-row {
+        display: grid;
+        grid-template-columns: 100px 70px 70px 90px 80px;
+        gap: 0;
+        padding: 7px 12px;
+        border-bottom: 1px solid #21262d;
+        font-size: 13px;
+        align-items: center;
+    }
+    .perf-row:first-child { border-radius: 8px 8px 0 0; background:#1c2128; font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#8b949e; }
+    .perf-table { background:#161b22; border:1px solid #30363d; border-radius:8px; overflow:hidden; margin-bottom:12px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -411,6 +528,118 @@ def fetch_recent_results(sport: str, start_date: str, end_date: str) -> pd.DataF
         offset += page_size
 
     return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
+
+
+@st.cache_data(ttl=60)
+def fetch_orchestrator_health() -> dict:
+    """
+    Read orchestrator state + local DB prediction counts for the health monitor.
+    Cached for 60 seconds so the dashboard feels live without hammering disk.
+    """
+    import json as _json
+    import sqlite3 as _sq
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).parent.parent
+    state_path = root / "data" / "orchestrator_state.json"
+
+    # Load orchestrator state.json
+    state = {}
+    if state_path.exists():
+        try:
+            state = _json.loads(state_path.read_text())
+        except Exception:
+            pass
+
+    # Sport metadata (schedules + db paths + config)
+    SPORT_META = {
+        "NHL": {
+            "emoji": "🏒", "name": "NHL Hockey",
+            "db": root / "nhl" / "database" / "nhl_predictions_v2.db",
+            "pred_table": "predictions",
+            "grading": "03:00", "pp_fetch": "03:30",
+            "predictions": "04:00", "pp_sync": "13:00",
+            "game_predictions": "09:00",
+            "ml_combos": 11, "ml_target": 7500,
+        },
+        "NBA": {
+            "emoji": "🏀", "name": "NBA Basketball",
+            "db": root / "nba" / "database" / "nba_predictions.db",
+            "pred_table": "predictions",
+            "grading": "05:00", "pp_fetch": "05:30",
+            "predictions": "06:00", "pp_sync": "12:30",
+            "game_predictions": "09:30",
+            "ml_combos": 14, "ml_target": 7500,
+        },
+        "MLB": {
+            "emoji": "⚾", "name": "MLB Baseball",
+            "db": root / "mlb" / "database" / "mlb_predictions.db",
+            "pred_table": "predictions",
+            "grading": "08:00", "pp_fetch": "08:30",
+            "predictions": "12:00", "pp_sync": "15:00",
+            "game_predictions": "09:45",
+            "ml_combos": 30, "ml_target": 7500,
+        },
+        "GOLF": {
+            "emoji": "⛳", "name": "PGA Tour Golf",
+            "db": root / "golf" / "database" / "golf_predictions.db",
+            "pred_table": "predictions",
+            "grading": "08:00", "pp_fetch": "09:00",
+            "predictions": "10:00", "pp_sync": "12:00",
+            "game_predictions": None,
+            "ml_combos": 4, "ml_target": 7500,
+        },
+    }
+
+    result = {}
+    for sport, meta in SPORT_META.items():
+        s = state.get(sport.lower(), {})
+
+        # Prediction count from local DB
+        pred_count = 0
+        try:
+            conn = _sq.connect(str(meta["db"]))
+            row = conn.execute(f"SELECT COUNT(*) FROM {meta['pred_table']}").fetchone()
+            pred_count = row[0] if row else 0
+            conn.close()
+        except Exception:
+            pass
+
+        # Parse last-run timestamps
+        def _fmt(ts):
+            if not ts:
+                return "—"
+            try:
+                dt = datetime.fromisoformat(ts)
+                return dt.strftime("%b %d %H:%M")
+            except Exception:
+                return ts[:16]
+
+        failures = s.get("consecutive_failures", 0)
+        result[sport] = {
+            "emoji": meta["emoji"],
+            "name": meta["name"],
+            "pred_count": pred_count,
+            "ml_combos": meta["ml_combos"],
+            "ml_target": meta["ml_target"],
+            "started_at": _fmt(s.get("started_at")),
+            "last_predict": _fmt(s.get("last_prediction_gen")),
+            "last_grade": _fmt(s.get("last_grading")),
+            "last_health": _fmt(s.get("last_health_check")),
+            "total_runs": s.get("total_runs", 0),
+            "consecutive_failures": failures,
+            "ml_training_started": s.get("ml_training_started", False),
+            "schedule": {
+                "grading": meta["grading"],
+                "pp_fetch": meta["pp_fetch"],
+                "predictions": meta["predictions"],
+                "pp_sync": meta["pp_sync"],
+                "game_predictions": meta["game_predictions"],
+            },
+            "db_path": str(meta["db"]),
+            "status": "ok" if failures == 0 else ("warn" if failures < 3 else "err"),
+        }
+    return result
 
 
 @st.cache_data(ttl=3600)
@@ -1198,16 +1427,20 @@ def main():
     # TAB — GAME LINES (Moneyline, Spread, Total predictions)
     # ═══════════════════════════════════════════════════════════════════════════
     with tab_games:
-        gc1, gc2, gc3 = st.columns([1, 1, 1])
-        with gc1:
+        hdr1, hdr2, hdr3, hdr4 = st.columns([1, 1, 1, 1])
+        with hdr1:
             gl_sport = st.selectbox("Sport", ["NHL", "NBA", "MLB"],
                                      key="gl_sport", label_visibility="collapsed")
-        with gc2:
+        with hdr2:
             gl_date = st.date_input("Date", value=date.today(),
                                      key="gl_date", label_visibility="collapsed").isoformat()
-        with gc3:
-            gl_tier = st.selectbox("Tier", ["All", "PRIME", "SHARP", "LEAN", "PASS"],
+        with hdr3:
+            gl_tier = st.selectbox("Tier", ["All", "PRIME", "SHARP", "LEAN"],
                                     key="gl_tier", label_visibility="collapsed")
+        with hdr4:
+            if st.button("Refresh", key="gl_refresh", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
 
         gdf = fetch_game_predictions(gl_sport, gl_date)
 
@@ -1215,111 +1448,116 @@ def main():
             st.info(f"No game predictions for {gl_sport} on {gl_date}. "
                     f"Run: `python {gl_sport.lower()}/scripts/generate_game_predictions.py {gl_date}`")
         else:
-            # Filter by tier
             if gl_tier != "All":
                 gdf = gdf[gdf["confidence_tier"] == gl_tier]
 
-            # Summary metrics
-            prime_sharp = gdf[gdf["confidence_tier"].isin(["PRIME", "SHARP"])]
-            sharp_count = len(prime_sharp) if gl_tier == "All" else len(gdf)
+            # ── Summary bar ───────────────────────────────────────────────────
             games_count = len(gdf[["home_team", "away_team"]].drop_duplicates())
+            prime_sharp_count = len(gdf[gdf["confidence_tier"].isin(["PRIME", "SHARP"])])
             avg_edge = gdf["edge"].mean() * 100 if not gdf.empty else 0
+            avg_prob = gdf["probability"].mean() * 100 if not gdf.empty else 0
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Games", games_count)
-            m2.metric("Predictions", len(gdf))
-            m3.metric("Actionable (PRIME+SHARP)", sharp_count if gl_tier == "All" else "filtered")
-            m4.metric("Avg Edge", f"{avg_edge:+.1f}%")
+            sm1, sm2, sm3, sm4 = st.columns(4)
+            sm1.metric("Games", games_count)
+            sm2.metric("PRIME + SHARP", prime_sharp_count)
+            sm3.metric("Avg Probability", f"{avg_prob:.1f}%")
+            sm4.metric("Avg Edge", f"{avg_edge:+.1f}%")
 
-            # Group by game for display
-            sub_ml, sub_spread, sub_total = st.tabs(
-                ["Moneyline", "Spread", "Total"]
-            )
-
-            with sub_ml:
-                ml_df = gdf[gdf["bet_type"] == "moneyline"].copy()
-                if ml_df.empty:
-                    st.caption("No moneyline predictions")
-                else:
-                    # Pivot: one row per game with home/away columns
-                    for _, row in ml_df[ml_df["bet_side"] == "home"].iterrows():
-                        away_row = ml_df[(ml_df["home_team"] == row["home_team"]) &
-                                         (ml_df["bet_side"] == "away")]
-                        tier_color = {"PRIME": ":green", "SHARP": ":blue", "LEAN": ":orange", "PASS": ""}.get(
-                            row["confidence_tier"], "")
-
-                        matchup = f"**{row['away_team']}** @ **{row['home_team']}**"
-                        home_prob = f"{row['probability']*100:.1f}%"
-                        home_edge = f"{row['edge']*100:+.1f}%"
-                        away_prob = f"{(1-row['probability'])*100:.1f}%" if away_row.empty else \
-                            f"{away_row.iloc[0]['probability']*100:.1f}%"
-
-                        pick = row["home_team"] if row["prediction"] == "WIN" else row["away_team"]
-                        tier_badge = f" {tier_color}[{row['confidence_tier']}]" if tier_color else \
-                            f" [{row['confidence_tier']}]"
-
-                        elo_str = ""
-                        if row.get("home_elo") and row.get("away_elo"):
-                            elo_str = f" | Elo: {int(row['home_elo'])} vs {int(row['away_elo'])}"
-
-                        st.markdown(
-                            f"{matchup} | Pick: **{pick}** ({home_prob}, edge {home_edge})"
-                            f"{tier_badge}{elo_str}"
-                        )
-
-            with sub_spread:
-                sp_df = gdf[gdf["bet_type"] == "spread"].copy()
-                if sp_df.empty:
-                    st.caption("No spread predictions")
-                else:
-                    for _, row in sp_df[sp_df["bet_side"] == "home"].iterrows():
-                        line_str = f"{row['line']:+.1f}" if row["line"] else "PK"
-                        prob = f"{row['probability']*100:.1f}%"
-                        edge = f"{row['edge']*100:+.1f}%"
-                        tier_color = {"PRIME": ":green", "SHARP": ":blue", "LEAN": ":orange"}.get(
-                            row["confidence_tier"], "")
-                        tier_badge = f" {tier_color}[{row['confidence_tier']}]" if tier_color else \
-                            f" [{row['confidence_tier']}]"
-
-                        pick_side = "Home" if row["prediction"] == "WIN" else "Away"
-                        st.markdown(
-                            f"**{row['away_team']}** @ **{row['home_team']}** "
-                            f"({line_str}) | {pick_side} covers ({prob}, edge {edge})"
-                            f"{tier_badge}"
-                        )
-
-            with sub_total:
-                tot_df = gdf[gdf["bet_type"] == "total"].copy()
-                if tot_df.empty:
-                    st.caption("No total predictions")
-                else:
-                    for _, row in tot_df[tot_df["bet_side"] == "over"].iterrows():
-                        under_row = tot_df[(tot_df["home_team"] == row["home_team"]) &
-                                            (tot_df["bet_side"] == "under")]
-                        line_str = f"{row['line']:.1f}" if row["line"] else "—"
-                        over_prob = f"{row['probability']*100:.1f}%"
-                        under_prob = f"{(1-row['probability'])*100:.1f}%" if under_row.empty else \
-                            f"{under_row.iloc[0]['probability']*100:.1f}%"
-
-                        pick = row["prediction"]
-                        edge = f"{row['edge']*100:+.1f}%"
-                        tier_color = {"PRIME": ":green", "SHARP": ":blue", "LEAN": ":orange"}.get(
-                            row["confidence_tier"], "")
-                        tier_badge = f" {tier_color}[{row['confidence_tier']}]" if tier_color else \
-                            f" [{row['confidence_tier']}]"
-
-                        st.markdown(
-                            f"**{row['away_team']}** @ **{row['home_team']}** "
-                            f"O/U {line_str} | **{pick}** (O:{over_prob} / U:{under_prob}, "
-                            f"edge {edge}){tier_badge}"
-                        )
-
-            # Performance section (if outcomes exist)
             st.divider()
-            st.subheader("Game Lines Performance (Last 30 Days)")
+
+            # ── Game cards — one card per matchup with all bet types ───────────
+            def _bar_color(prob: float) -> str:
+                if prob >= 0.62:
+                    return "#3fb950"
+                elif prob >= 0.55:
+                    return "#58a6ff"
+                elif prob >= 0.50:
+                    return "#f0883e"
+                return "#484f58"
+
+            def _edge_class(edge: float) -> str:
+                if edge > 0.02:
+                    return "gl-edge-pos"
+                elif edge < -0.01:
+                    return "gl-edge-neg"
+                return "gl-edge-neu"
+
+            def _render_game_cards(df: "pd.DataFrame"):
+                games = df.groupby(["home_team", "away_team"])
+                for (home, away), game_df in games:
+                    # Best tier across all bets for this game
+                    tier_order = {"PRIME": 0, "SHARP": 1, "LEAN": 2, "PASS": 3}
+                    best_tier = min(game_df["confidence_tier"].unique(),
+                                    key=lambda t: tier_order.get(t, 9))
+
+                    elo_str = ""
+                    h_elo = game_df["home_elo"].dropna()
+                    a_elo = game_df["away_elo"].dropna()
+                    if len(h_elo) and len(a_elo):
+                        elo_str = (f'<div class="gl-elo">Elo: '
+                                   f'{int(h_elo.iloc[0])} ({home}) vs '
+                                   f'{int(a_elo.iloc[0])} ({away})</div>')
+
+                    rows_html = ""
+                    for _, row in game_df.sort_values(
+                            "bet_type",
+                            key=lambda s: s.map({"moneyline": 0, "spread": 1, "total": 2})
+                    ).iterrows():
+                        bt = row["bet_type"]
+                        bs = row["bet_side"]
+                        prob = row["probability"]
+                        edge = row["edge"]
+                        pred = row["prediction"]
+
+                        # Bet label
+                        if bt == "moneyline":
+                            label = f"ML · {bs.title()}"
+                            pick_str = f"{home if bs == 'home' else away} {pred}"
+                        elif bt == "spread":
+                            line_v = f"{row['line']:+.1f}" if row["line"] else "PK"
+                            label = f"Spread {line_v}"
+                            pick_str = f"{'Home' if pred == 'WIN' else 'Away'} covers"
+                        else:
+                            line_v = f"{row['line']:.1f}" if row["line"] else "—"
+                            label = f"Total {line_v}"
+                            pick_str = pred
+
+                        bar_w = int(prob * 100)
+                        bar_c = _bar_color(prob)
+                        edge_cls = _edge_class(edge)
+
+                        rows_html += f"""
+<div class="gl-row">
+  <span class="gl-bet-type">{label}</span>
+  <span class="gl-pick">{pick_str}</span>
+  <span class="gl-prob">{prob*100:.1f}%</span>
+  <div class="gl-bar-wrap">
+    <div class="gl-bar-fill" style="width:{bar_w}%;background:{bar_c};"></div>
+  </div>
+  <span class="{edge_cls}">{edge*100:+.1f}%</span>
+</div>"""
+
+                    card_html = f"""
+<div class="gl-card">
+  <div class="gl-card-header">
+    <div>
+      <div class="gl-matchup">{away} @ {home}</div>
+      {elo_str}
+    </div>
+    <span class="badge-{best_tier}">{best_tier}</span>
+  </div>
+  {rows_html}
+</div>"""
+                    st.markdown(card_html, unsafe_allow_html=True)
+
+            _render_game_cards(gdf)
+
+            # ── Performance section ────────────────────────────────────────────
+            st.divider()
+            st.subheader("Performance — Last 30 Days")
             odf = fetch_game_outcomes(gl_sport, 30)
             if odf.empty:
-                st.caption("No graded outcomes yet. Results appear after games complete.")
+                st.caption("No graded outcomes yet.")
             else:
                 hit_miss = odf[odf["outcome"].isin(["HIT", "MISS"])]
                 if not hit_miss.empty:
@@ -1327,35 +1565,48 @@ def main():
                     total_hits = len(hit_miss[hit_miss["outcome"] == "HIT"])
                     overall_acc = total_hits / total_bets * 100
 
-                    # By bet type
-                    by_type = hit_miss.groupby("bet_type").apply(
-                        lambda x: pd.Series({
-                            "Bets": len(x),
-                            "Hits": len(x[x["outcome"] == "HIT"]),
-                            "Accuracy": f"{len(x[x['outcome']=='HIT'])/len(x)*100:.1f}%",
-                        })
-                    ).reset_index()
-                    by_type.columns = ["Bet Type", "Bets", "Hits", "Accuracy"]
+                    pm1, pm2, pm3, pm4 = st.columns(4)
+                    pm1.metric("Overall", f"{overall_acc:.1f}%",
+                               delta=f"{total_hits}/{total_bets} bets")
+                    # Accuracy by bet type
+                    for col, bt in zip([pm2, pm3, pm4],
+                                       ["moneyline", "spread", "total"]):
+                        sub = hit_miss[hit_miss["bet_type"] == bt]
+                        if len(sub):
+                            h = len(sub[sub["outcome"] == "HIT"])
+                            col.metric(bt.title(), f"{h/len(sub)*100:.1f}%",
+                                       delta=f"{h}/{len(sub)}")
 
-                    p1, p2 = st.columns([1, 2])
-                    p1.metric("Overall Accuracy", f"{overall_acc:.1f}%",
-                              delta=f"{total_hits}/{total_bets}")
-
-                    # By tier
+                    # Tier breakdown as a clean HTML table
+                    tier_rows = ""
                     for tier in ["PRIME", "SHARP", "LEAN", "PASS"]:
-                        tier_df = hit_miss[hit_miss["confidence_tier"] == tier]
-                        if len(tier_df) > 0:
-                            tier_hits = len(tier_df[tier_df["outcome"] == "HIT"])
-                            tier_acc = tier_hits / len(tier_df) * 100
-                            p2.metric(f"{tier}", f"{tier_acc:.1f}%",
-                                      delta=f"{tier_hits}/{len(tier_df)}")
+                        sub = hit_miss[hit_miss["confidence_tier"] == tier]
+                        if len(sub) == 0:
+                            continue
+                        h = len(sub[sub["outcome"] == "HIT"])
+                        acc = h / len(sub) * 100
+                        bar_w = int(acc)
+                        bar_c = "#3fb950" if acc >= 55 else ("#f0883e" if acc >= 50 else "#f85149")
+                        tier_rows += f"""
+<div class="perf-row">
+  <span><span class="badge-{tier}">{tier}</span></span>
+  <span style="color:#c9d1d9">{len(sub)}</span>
+  <span style="color:#c9d1d9">{h}</span>
+  <span style="color:{bar_c};font-weight:600">{acc:.1f}%</span>
+  <div class="gl-bar-wrap"><div class="gl-bar-fill" style="width:{bar_w}%;background:{bar_c}"></div></div>
+</div>"""
 
-                    st.dataframe(by_type, use_container_width=True, hide_index=True)
+                    header_row = """
+<div class="perf-row">
+  <span>Tier</span><span>Bets</span><span>Hits</span><span>Accuracy</span><span></span>
+</div>"""
+                    st.markdown(
+                        f'<div class="perf-table">{header_row}{tier_rows}</div>',
+                        unsafe_allow_html=True,
+                    )
 
-                    # P&L if available
                     if "profit" in odf.columns and odf["profit"].notna().any():
-                        total_profit = odf["profit"].sum()
-                        st.metric("Net P&L (flat $100)", f"${total_profit:+,.0f}")
+                        st.metric("Net P&L (flat $100/bet)", f"${odf['profit'].sum():+,.0f}")
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TAB — PERFORMANCE
@@ -2236,72 +2487,145 @@ A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 
                 )
 
     # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 5 — SYSTEM HEALTH
+    # TAB — SYSTEM HEALTH  (live orchestrator monitor)
     # ═══════════════════════════════════════════════════════════════════════════
     with tab_system:
-        st.subheader("Pipeline Status")
-        pipeline = fetch_pipeline_status()
+        # Auto-refresh every 60 seconds via HTML meta tag
+        st.markdown(
+            '<meta http-equiv="refresh" content="60">',
+            unsafe_allow_html=True,
+        )
 
-        for sport_name, info in pipeline.items():
-            last = info["last_date"]
-            count = info["count"]
-            today_str = date.today().isoformat()
-            yesterday_str = (date.today() - timedelta(days=1)).isoformat()
+        now_str = datetime.now().strftime("%H:%M:%S")
+        sys_r1, sys_r2 = st.columns([3, 1])
+        sys_r1.markdown("### Orchestrator Health Monitor")
+        sys_r2.markdown(
+            f'<div class="terminal-refresh">Auto-refreshes every 60s &nbsp;|&nbsp; '
+            f'Last loaded: {now_str}</div>',
+            unsafe_allow_html=True,
+        )
 
-            if last == today_str:
-                status_icon = "✅"
-                status_msg = "Today's predictions synced"
-            elif last == yesterday_str:
-                status_icon = "🟡"
-                status_msg = "Yesterday — today's run pending"
-            else:
-                status_icon = "🔴"
-                status_msg = f"Last seen {last}"
-
-            sc1, sc2, sc3 = st.columns([1, 2, 2])
-            sc1.metric(sport_name, status_icon)
-            sc2.metric("Last Date", last)
-            sc3.metric("Predictions", f"{count:,}")
-            st.caption(status_msg)
-            st.divider()
-
-        st.subheader("Cloud-Synced Totals")
-        st.caption("Counts reflect data synced to Supabase. Historical predictions "
-                   "pre-dating the sync layer live in local SQLite only.")
-        for sport_name in ["NBA", "NHL", "MLB"]:
-            r = (sb.table("daily_props")
-                   .select("id", count="exact")
-                   .eq("sport", sport_name)
-                   .execute())
-            graded = (sb.table("daily_props")
-                        .select("id", count="exact")
-                        .eq("sport", sport_name)
-                        .not_.is_("result", "null")
-                        .execute())
-            tc1, tc2 = st.columns(2)
-            tc1.metric(f"{sport_name} Synced Props", f"{r.count:,}")
-            tc2.metric(f"{sport_name} Graded", f"{graded.count:,}")
-
-        st.divider()
-        st.subheader("ML Models")
-        ml_info = get_ml_model_info()
-        for sport_name in ["NBA", "NHL", "MLB"]:
-            info = ml_info.get(sport_name, {})
-            mc1, mc2, mc3 = st.columns(3)
-            mc1.metric(f"{sport_name} Models", info.get("count", 0))
-            mc2.metric("Last Retrained", info.get("last_trained", "—"))
-            avg = info.get("avg_accuracy")
-            mc3.metric("Avg Accuracy", f"{avg*100:.1f}%" if avg else "—")
-        st.caption("Models auto-retrain every Sunday at 2 AM CST (NHL) / 2:30 AM (NBA) / 8:30 AM (MLB) "
-                   "when 500+ new predictions have accumulated since the last train. "
-                   "MLB ML training target: 7,500 per prop/line combo (targets 2027 season).")
-
-        st.divider()
-        st.caption("Dashboard reads from Supabase. Data syncs after each "
-                   "prediction and grading run (6:15 AM CST daily).")
-        if st.button("Force refresh all data"):
+        if st.button("Force refresh", key="sys_refresh"):
             st.cache_data.clear()
             st.rerun()
+
+        health = fetch_orchestrator_health()
+        ml_info = get_ml_model_info()
+
+        # ── Sport panels (2-column grid on desktop, stacks on mobile) ─────────
+        col_pairs = [
+            ("NHL", "NBA"),
+            ("MLB", "GOLF"),
+        ]
+
+        for left_sport, right_sport in col_pairs:
+            c_left, c_right = st.columns(2)
+            for col, sport_key in [(c_left, left_sport), (c_right, right_sport)]:
+                h = health.get(sport_key, {})
+                if not h:
+                    col.markdown(
+                        f'<div class="terminal-panel">'
+                        f'<span class="t-sport">[{sport_key}]</span> '
+                        f'<span class="t-err">No data</span></div>',
+                        unsafe_allow_html=True,
+                    )
+                    continue
+
+                status = h["status"]
+                failures = h["consecutive_failures"]
+                status_html = (
+                    '<span class="t-ok">&#9679; HEALTHY</span>' if status == "ok" else
+                    f'<span class="t-warn">&#9679; WARNING ({failures} failures)</span>' if status == "warn" else
+                    f'<span class="t-err">&#9679; ERRORS ({failures} consecutive)</span>'
+                )
+
+                sched = h["schedule"]
+                sched_parts = [f'Grade {sched["grading"]}', f'Predict {sched["predictions"]}',
+                                f'Sync {sched["pp_sync"]}']
+                if sched.get("game_predictions"):
+                    sched_parts.append(f'GameLines {sched["game_predictions"]}')
+                sched_str = " &nbsp;·&nbsp; ".join(sched_parts)
+
+                # ML progress for this sport
+                ml = ml_info.get(sport_key, {})
+                ml_count = ml.get("count", 0)
+                ml_trained = ml.get("last_trained", "—")
+                ml_acc = ml.get("avg_accuracy")
+                ml_acc_str = f"{ml_acc*100:.1f}%" if ml_acc else "—"
+
+                # Prediction count with progress toward target
+                pred_count = h["pred_count"]
+                target = h["ml_target"] * h["ml_combos"]
+                pct = min(pred_count / target * 100, 100) if target else 0
+                pct_bar_w = int(pct)
+                pct_bar_c = "#3fb950" if pct >= 75 else ("#58a6ff" if pct >= 40 else "#f0883e")
+
+                panel_html = f"""
+<div class="terminal-panel">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;border-bottom:1px solid #21262d;padding-bottom:8px">
+    <span class="t-sport">{h['emoji']} [{sport_key}] {h['name']} Orchestrator</span>
+    {status_html}
+  </div>
+
+  <div style="margin-bottom:8px">
+    <span class="t-label">Predictions &nbsp;</span>
+    <span class="t-val" style="font-weight:600">{pred_count:,}</span>
+    <span class="t-dim"> / {target:,} target</span>
+    <div style="margin-top:4px;background:#21262d;border-radius:4px;height:5px;overflow:hidden">
+      <div style="width:{pct_bar_w}%;height:5px;background:{pct_bar_c};border-radius:4px"></div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:8px;">
+    <span><span class="t-label">Last predict</span> <span class="t-val">{h['last_predict']}</span></span>
+    <span><span class="t-label">Last grade</span> <span class="t-val">{h['last_grade']}</span></span>
+    <span><span class="t-label">Last health</span> <span class="t-val">{h['last_health']}</span></span>
+    <span><span class="t-label">Total runs</span> <span class="t-val">{h['total_runs']}</span></span>
+  </div>
+
+  <div style="margin-bottom:8px;padding:6px 8px;background:#1c2128;border-radius:6px">
+    <span class="t-label" style="font-size:11px">ML &nbsp;</span>
+    <span class="t-val">{ml_count} models</span>
+    <span class="t-dim"> &nbsp;|&nbsp; </span>
+    <span class="t-label">Retrained</span> <span class="t-val">{ml_trained}</span>
+    <span class="t-dim"> &nbsp;|&nbsp; </span>
+    <span class="t-label">Avg acc</span> <span class="t-val">{ml_acc_str}</span>
+  </div>
+
+  <div style="font-size:11px;border-top:1px solid #21262d;padding-top:7px;margin-top:4px">
+    <span class="t-label">Schedule &nbsp;</span>
+    <span class="t-sched">{sched_str}</span>
+  </div>
+</div>"""
+                col.markdown(panel_html, unsafe_allow_html=True)
+
+        # ── Cloud sync totals ──────────────────────────────────────────────────
+        st.divider()
+        st.markdown("#### Supabase Sync")
+        st.caption("Counts reflect data synced to Supabase. Local SQLite holds full history.")
+
+        sync_cols = st.columns(3)
+        for col, sport_name in zip(sync_cols, ["NBA", "NHL", "MLB"]):
+            try:
+                r = (sb.table("daily_props")
+                       .select("id", count="exact")
+                       .eq("sport", sport_name)
+                       .execute())
+                graded = (sb.table("daily_props")
+                            .select("id", count="exact")
+                            .eq("sport", sport_name)
+                            .not_.is_("result", "null")
+                            .execute())
+                synced = r.count or 0
+                graded_n = graded.count or 0
+                pct_graded = graded_n / synced * 100 if synced else 0
+                col.metric(
+                    f"{sport_name}",
+                    f"{synced:,} synced",
+                    delta=f"{graded_n:,} graded ({pct_graded:.0f}%)",
+                )
+            except Exception:
+                col.metric(sport_name, "—")
 
 
 if __name__ == "__main__":
