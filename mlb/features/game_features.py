@@ -70,7 +70,9 @@ DEFAULT_FEATURES = {
     "gf_home_sp_innings": 0.0,    # Season IP (proxy for reliability)
     "gf_away_sp_innings": 0.0,
 
-    # Elo
+    # Elo (raw ratings + derived)
+    "gf_home_elo": 1500.0,
+    "gf_away_elo": 1500.0,
     "gf_elo_diff": 0.0,
     "gf_elo_home_prob": 0.535,
 
@@ -289,6 +291,8 @@ class MLBGameFeatureExtractor:
             from elo_engine import EloEngine
             elo = EloEngine(sport="mlb")
             if elo.load():
+                features["gf_home_elo"] = elo.get_rating(home) or 1500.0
+                features["gf_away_elo"] = elo.get_rating(away) or 1500.0
                 features["gf_elo_diff"] = elo.get_elo_diff(home, away)
                 features["gf_elo_home_prob"] = elo.predict_home_win(home, away)
         except Exception:

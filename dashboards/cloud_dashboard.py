@@ -1049,6 +1049,49 @@ def main():
         if df.empty:
             st.warning(f"No picks for {sport} on {game_date} with current filters.")
         else:
+            # ── Prop / Player / Team checkboxes (populated from live data) ────────
+            with st.expander("Filter by Props / Players / Teams", expanded=False):
+                xc1, xc2, xc3 = st.columns([1, 1, 1])
+
+                with xc1:
+                    all_props = sorted(df["Prop"].unique().tolist())
+                    prop_filter = st.multiselect(
+                        "Props", all_props, default=all_props, key="prop_cb"
+                    )
+
+                with xc2:
+                    player_search = st.text_input(
+                        "Search player", value="", key="player_search",
+                        placeholder="e.g. LeBron"
+                    )
+
+                with xc3:
+                    # Extract unique teams from Matchup column (format: "AWAY @ HOME")
+                    teams_raw = set()
+                    for matchup in df["Matchup"].dropna().unique():
+                        for t in str(matchup).replace(" @ ", "@").split("@"):
+                            t = t.strip().split(" ")[0]  # grab team abbrev before any extra text
+                            if t:
+                                teams_raw.add(t)
+                    all_teams = sorted(teams_raw)
+                    team_filter = st.multiselect(
+                        "Teams", all_teams, default=all_teams, key="team_cb"
+                    )
+
+            # Apply prop / player / team filters
+            if prop_filter:
+                df = df[df["Prop"].isin(prop_filter)]
+            if player_search.strip():
+                df = df[df["player_name"].str.contains(player_search.strip(), case=False, na=False)]
+            if team_filter and len(team_filter) < len(all_teams):
+                df = df[df["Matchup"].apply(
+                    lambda m: any(t in str(m) for t in team_filter)
+                )]
+
+            if df.empty:
+                st.warning("No picks match the current prop/player/team filters.")
+                st.stop()
+
             # Summary metrics
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Picks", len(df))
