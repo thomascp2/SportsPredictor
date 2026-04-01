@@ -88,6 +88,13 @@ def run_grading(target_date: str):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
 
+    # Ensure profit column exists (idempotent migration)
+    try:
+        conn.execute("ALTER TABLE prediction_outcomes ADD COLUMN profit REAL")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists
+
     try:
         ungraded = conn.execute(
             """
@@ -206,15 +213,16 @@ def run_grading(target_date: str):
                 continue
 
             # Save outcome
+            profit = 90.91 if outcome == "HIT" else -100.0
             conn.execute(
                 """
                 INSERT INTO prediction_outcomes
                     (prediction_id, game_date, player_name, prop_type,
-                     line, actual_value, prediction, outcome)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     line, actual_value, prediction, outcome, profit)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (pred["id"], target_date, player_name, prop_type,
-                 line, actual_value, prediction, outcome),
+                 line, actual_value, prediction, outcome, profit),
             )
 
             graded += 1
@@ -222,6 +230,13 @@ def run_grading(target_date: str):
                 hits += 1
             else:
                 misses += 1
+
+        # Backfill profit for any existing rows that are missing it
+        conn.execute("""
+            UPDATE prediction_outcomes
+            SET profit = CASE outcome WHEN 'HIT' THEN 90.91 ELSE -100.0 END
+            WHERE profit IS NULL AND outcome IN ('HIT', 'MISS')
+        """)
 
         conn.commit()
 

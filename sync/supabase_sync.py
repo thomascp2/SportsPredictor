@@ -37,6 +37,8 @@ from sync.config import (
     SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
     NHL_DB_PATH, NBA_DB_PATH, MLB_DB_PATH, SYNC_BATCH_SIZE
 )
+sys.path.insert(0, str(PROJECT_ROOT / "shared"))
+from project_config import BREAK_EVEN as _BREAK_EVEN
 
 
 class SupabaseSync:
@@ -221,19 +223,10 @@ class SupabaseSync:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
-        # Query outcomes - different column names per sport
-        if sport.lower() == 'nhl':
-            prediction_col = 'predicted_outcome'
-            actual_val_col = 'actual_stat_value'
-        else:
-            # NBA and MLB both use 'prediction' / 'actual_value'
-            prediction_col = 'prediction'
-            actual_val_col = 'actual_value'
-
-        rows = conn.execute(f'''
+        rows = conn.execute('''
             SELECT o.player_name, o.prop_type, o.line,
-                   o.{actual_val_col} as actual_value,
-                   o.outcome, o.{prediction_col} as ai_prediction
+                   o.actual_value,
+                   o.outcome, o.prediction as ai_prediction
             FROM prediction_outcomes o
             WHERE o.game_date = ?
         ''', (game_date,)).fetchall()
@@ -385,8 +378,8 @@ class SupabaseSync:
             key = (self._normalize_name(name).lower(), prop, line)
             pp_lookup[key] = odds
 
-        # Break-even probabilities by line type (must match smart_pick_selector.py)
-        BREAK_EVEN = {'standard': 0.56, 'goblin': 0.76, 'demon': 0.45}
+        # Break-even probabilities by line type — imported from shared/project_config.py
+        BREAK_EVEN = _BREAK_EVEN
 
         # Fetch all prediction rows for today from Supabase (paginate past 1000-row limit)
         all_rows = []

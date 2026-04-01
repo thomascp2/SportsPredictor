@@ -626,10 +626,19 @@ class SportsOrchestrator:
                     _intel = PreGameIntel()
                     # matchups=[] — module will auto-pull from games DB
                     _intel.fetch(sport_key, target_date, matchups=[])
+                    _intel.fetch_betting_context(sport_key, target_date, matchups=[])
                     details['pregame_intel'] = {'success': True}
                     notes = _intel.get_notes(sport_key, target_date)
                     if notes:
                         print(f'   Intel: {notes[0]}')
+                    # Post combined intel embed to sport channel
+                    try:
+                        from pregame_intel import post_intel_to_discord
+                        sport_webhook = getattr(self.config, 'discord_picks_webhook', '')
+                        if sport_webhook and 'YOUR_' not in sport_webhook:
+                            post_intel_to_discord(sport_key, target_date, sport_webhook)
+                    except Exception:
+                        pass
                 except Exception as e:
                     details['pregame_intel'] = {'success': False, 'error': str(e)}
                     warnings.append(f'Pre-game intel failed (non-fatal): {e}')
@@ -1379,12 +1388,6 @@ class SportsOrchestrator:
             conn = sqlite3.connect(str(self.config.db_path))
             cursor = conn.cursor()
 
-            # Check schema to determine prediction column name
-            cursor.execute('PRAGMA table_info(prediction_outcomes)')
-            columns = [col[1] for col in cursor.fetchall()]
-            # NHL uses 'predicted_outcome', NBA uses 'prediction'
-            pred_col = 'predicted_outcome' if 'predicted_outcome' in columns else 'prediction'
-
             # Overall accuracy
             cursor.execute('''
                 SELECT
@@ -1399,12 +1402,12 @@ class SportsOrchestrator:
             hits = row[1] if row else 0
 
             # UNDER accuracy
-            cursor.execute(f'''
+            cursor.execute('''
                 SELECT
                     COUNT(*) as total,
                     SUM(CASE WHEN outcome = 'HIT' THEN 1 ELSE 0 END) as hits
                 FROM prediction_outcomes
-                WHERE game_date = ? AND {pred_col} = 'UNDER'
+                WHERE game_date = ? AND prediction = 'UNDER'
             ''', (date,))
 
             row = cursor.fetchone()
@@ -1412,12 +1415,12 @@ class SportsOrchestrator:
             under_hits = row[1] if row else 0
 
             # OVER accuracy
-            cursor.execute(f'''
+            cursor.execute('''
                 SELECT
                     COUNT(*) as total,
                     SUM(CASE WHEN outcome = 'HIT' THEN 1 ELSE 0 END) as hits
                 FROM prediction_outcomes
-                WHERE game_date = ? AND {pred_col} = 'OVER'
+                WHERE game_date = ? AND prediction = 'OVER'
             ''', (date,))
 
             row = cursor.fetchone()
@@ -3263,6 +3266,14 @@ def run_all_sports_continuous(sports: list):
 
     schedule.every(60).minutes.do(run_all_health_checks)
     print(f"Health checks: Every 60 minutes (all sports)")
+
+    # Daily audit — runs at 10:00 AM after all sports have finished grading
+    try:
+        from daily_audit import run_audit
+        schedule.every().day.at("10:00").do(run_audit)
+        print("Daily audit: 10:00 AM (all sports DB health + Discord report)")
+    except ImportError:
+        print("NOTE: daily_audit.py not found — audit skipped")
     print()
 
     print("=" * 70)
