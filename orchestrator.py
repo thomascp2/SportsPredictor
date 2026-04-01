@@ -165,7 +165,7 @@ class SportConfig:
 
         # Full-game prediction pipeline
         self.team_stats_time = "02:30"      # 2:30 AM - update team stats + Elo (after games end)
-        self.game_prediction_time = "12:00"  # Noon - generate game predictions (odds settled)
+        self.game_prediction_time = "09:00"  # 9:00 AM - generate game predictions (early lines posted by 9 AM)
         self.game_grading_time = "03:15"     # 3:15 AM - grade yesterday's game predictions
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 30, 2026)
@@ -225,7 +225,7 @@ class SportConfig:
 
         # Full-game prediction pipeline
         self.team_stats_time = "04:30"       # 4:30 AM - update team stats + Elo (after late games)
-        self.game_prediction_time = "13:00"  # 1 PM - generate game predictions
+        self.game_prediction_time = "09:30"  # 9:30 AM - generate game predictions (before market moves)
         self.game_grading_time = "05:15"     # 5:15 AM - grade yesterday's game predictions
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 27, 2026)
@@ -290,7 +290,7 @@ class SportConfig:
 
         # Full-game prediction pipeline
         self.team_stats_time = "07:30"       # 7:30 AM - update team stats + Elo
-        self.game_prediction_time = "12:30"  # 12:30 PM - generate game predictions (lineups posted)
+        self.game_prediction_time = "09:45"  # 9:45 AM - generate game predictions (after team stats settle)
         self.game_grading_time = "08:15"     # 8:15 AM - grade yesterday's game predictions
 
         # ML Training Goals — sourced from mlb_config.py for single source of truth
