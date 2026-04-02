@@ -387,7 +387,10 @@ class StatisticalPredictionEngine:
         """
         cutoff_date = (datetime.strptime(game_date, '%Y-%m-%d') - timedelta(days=1)).strftime('%Y-%m-%d')
 
-        # Query player history for this stat
+        # FENCEPOST GUARD: cutoff_date = game_date - 1d, then game_date < cutoff_date
+        # ensures the current game's stats are NEVER included in rolling windows.
+        # This prevents target leakage in feature computation.
+        # Verified: Phase 2 audit (FR-8). Do not change < to <=.
         cursor = self.conn.cursor()
         cursor.execute(f"""
             SELECT game_date, {db_column}, toi_seconds
