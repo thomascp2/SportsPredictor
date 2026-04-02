@@ -18,6 +18,7 @@ Author: Sports Prediction System
 Date: November 2025
 """
 
+import os
 import sqlite3
 import json
 import pandas as pd
@@ -377,7 +378,7 @@ class ModelTrainer:
     def prepare_data(self, df: pd.DataFrame, feature_cols: List[str]) -> Tuple:
         """
         Prepare data for training with a 4-way temporal split:
-            Train (65%) → Val (15%) → Cal (10%) → Test (10%)
+            Train (60%) -> Val (15%) -> Cal (10%) -> Test (15%)
 
         Val is used ONLY for model selection (never seen by calibration).
         Cal is used ONLY for isotonic calibration (never seen by training).
@@ -418,6 +419,43 @@ class ModelTrainer:
         X_val_scaled   = self.scaler.transform(X_val)
         X_cal_scaled   = self.scaler.transform(X_cal)
         X_test_scaled  = self.scaler.transform(X_test)
+
+        # Temporal overlap assertions (FR-8) — fail loud if splits overlap
+        train_dates = df['game_date'].iloc[:train_end].values
+        val_dates = df['game_date'].iloc[train_end:val_end].values
+        cal_dates = df['game_date'].iloc[val_end:cal_end].values
+        test_dates = df['game_date'].iloc[cal_end:].values
+
+        max_train_date = train_dates[-1] if len(train_dates) > 0 else ''
+        min_val_date = val_dates[0] if len(val_dates) > 0 else ''
+        max_val_date = val_dates[-1] if len(val_dates) > 0 else ''
+        min_cal_date = cal_dates[0] if len(cal_dates) > 0 else ''
+        max_cal_date = cal_dates[-1] if len(cal_dates) > 0 else ''
+        min_test_date = test_dates[0] if len(test_dates) > 0 else ''
+
+        assert max_train_date < min_val_date, (
+            f"Temporal leak: train max {max_train_date} >= val min {min_val_date}"
+        )
+        assert max_val_date < min_cal_date, (
+            f"Temporal leak: val max {max_val_date} >= cal min {min_cal_date}"
+        )
+        assert max_cal_date < min_test_date, (
+            f"Temporal leak: cal max {max_cal_date} >= test min {min_test_date}"
+        )
+
+        # Split ratio assertions (FR-8) — ensure splits match 60/15/10/15 within tolerance
+        assert abs(len(X_train) / n - 0.60) < 0.02, (
+            f"Train split {len(X_train)/n:.3f} deviates from 0.60"
+        )
+        assert abs(len(X_val) / n - 0.15) < 0.02, (
+            f"Val split {len(X_val)/n:.3f} deviates from 0.15"
+        )
+        assert abs(len(X_cal) / n - 0.10) < 0.02, (
+            f"Cal split {len(X_cal)/n:.3f} deviates from 0.10"
+        )
+        assert abs(len(X_test) / n - 0.15) < 0.02, (
+            f"Test split {len(X_test)/n:.3f} deviates from 0.15"
+        )
 
         return (
             X_train_scaled, X_val_scaled, X_cal_scaled, X_test_scaled,
@@ -686,6 +724,18 @@ class ModelTrainer:
 # MODEL SAVING
 # ============================================================================
 
+def _send_discord_warning(message: str) -> None:
+    """Send training warning to Discord. Silently no-ops if webhook not configured."""
+    webhook = os.getenv('DISCORD_WEBHOOK_URL', '')
+    if not webhook:
+        return
+    try:
+        import requests
+        requests.post(webhook, json={"content": message}, timeout=10)
+    except Exception:
+        pass  # Never let a notification crash training
+
+
 def save_trained_model(
     trainer: ModelTrainer,
     sport: str,
@@ -697,6 +747,9 @@ def save_trained_model(
     samples: int,
     importance_df: pd.DataFrame,
     training_window_days: int = 90,
+    train_date_range=None,          # NEW
+    prediction_distribution=None,   # NEW
+    split_sizes=None,               # NEW
 ) -> Optional[str]:
     """
     Save trained model to registry.
@@ -748,7 +801,10 @@ def save_trained_model(
         is_calibrated=trainer.config.calibrate_probabilities,
         calibration_method=trainer.config.calibration_method,
         training_window_days=training_window_days,
-        top_features=top_features
+        top_features=top_features,
+        train_date_range=train_date_range,
+        prediction_distribution=prediction_distribution,
+        split_sizes=split_sizes,
     )
 
     # Save to registry
@@ -851,7 +907,30 @@ def train_model(
 
     # Evaluate calibrated model on test set
     test_metrics = trainer.evaluate_on_test(X_test, y_test, best_model_name)
-    
+
+    # Degenerate model detection (FR-8)
+    # A model predicting >95% one direction with near-perfect Brier is degenerate
+    # (e.g., threes OVER model with Brier=0.0000)
+    best_model = trainer.models[best_model_name]
+    y_prob_test = best_model.predict_proba(X_test)[:, 1]
+    pct_over = float(np.mean(y_prob_test > 0.5))
+    pct_under = 1.0 - pct_over
+    is_degenerate = (
+        max(pct_over, pct_under) > 0.95
+        and (test_metrics['brier'] < 0.05 or len(y_test) < 50)
+    )
+
+    if is_degenerate:
+        warning_msg = (
+            f"**[ML WARNING] Degenerate model detected**\n"
+            f"Sport: {sport.upper()} | Prop: {prop_type} O{line}\n"
+            f"Distribution: {pct_over:.1%} OVER / {pct_under:.1%} UNDER\n"
+            f"Brier: {test_metrics['brier']:.4f} | Test samples: {len(y_test)}\n"
+            f"Registry promotion BLOCKED."
+        )
+        print(f"\n[DEGENERATE] {warning_msg}")
+        _send_discord_warning(warning_msg)
+
     # Feature importance
     print("\n" + "="*60)
     print("TOP 10 FEATURES")
@@ -888,9 +967,27 @@ def train_model(
         
         print(f"{metric:<15} {baseline_val:<12.4f} {ml_val:<12.4f} {delta:+.4f} {indicator}")
 
-    # Save model to registry
+    # Compute enriched metadata fields
+    _train_date_range = (
+        str(df['game_date'].iloc[:len(X_train)].min()),
+        str(df['game_date'].iloc[:len(X_train)].max()),
+    )
+    _prediction_distribution = {
+        "pct_over": float(pct_over),
+        "pct_under": float(pct_under),
+    }
+    _split_sizes = {
+        "train": len(X_train),
+        "val": len(X_val),
+        "cal": len(X_cal),
+        "test": len(X_test),
+    }
+
+    # Save model to registry (skip if degenerate)
     saved_version = None
-    if config.save_models and MODEL_SAVING_AVAILABLE:
+    if is_degenerate:
+        print(f"\n[BLOCKED] Degenerate model not saved to registry")
+    elif config.save_models and MODEL_SAVING_AVAILABLE:
         saved_version = save_trained_model(
             trainer=trainer,
             sport=sport,
@@ -902,6 +999,9 @@ def train_model(
             samples=len(df),
             importance_df=importance_df,
             training_window_days=effective_window,
+            train_date_range=_train_date_range,
+            prediction_distribution=_prediction_distribution,
+            split_sizes=_split_sizes,
         )
 
     return {
@@ -915,7 +1015,9 @@ def train_model(
         'baseline_metrics': baseline_metrics,
         'feature_importance': importance_df.to_dict() if len(importance_df) > 0 else {},
         'trainer': trainer,
-        'saved_version': saved_version
+        'saved_version': saved_version,
+        'is_degenerate': is_degenerate,
+        'prediction_distribution': {'pct_over': pct_over, 'pct_under': pct_under},
     }
 
 
