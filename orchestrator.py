@@ -113,6 +113,14 @@ except ImportError:
     SUPABASE_SYNC_AVAILABLE = False
     print("NOTE: Supabase sync not available. Cloud sync disabled.")
 
+# Optional: Pre-game intel (Grok injury/availability sweep)
+try:
+    sys.path.insert(0, str(Path(__file__).parent / "shared"))
+    from pregame_intel import PreGameIntel
+    PREGAME_INTEL_AVAILABLE = True
+except ImportError:
+    PREGAME_INTEL_AVAILABLE = False
+
 
 # ============================================================================
 # SPORT-SPECIFIC CONFIGURATION
@@ -131,8 +139,10 @@ class SportConfig:
             self._init_nba()
         elif self.sport == "MLB":
             self._init_mlb()
+        elif self.sport == "GOLF":
+            self._init_golf()
         else:
-            raise ValueError(f"Unknown sport: {sport}. Use 'nhl', 'nba', or 'mlb'")
+            raise ValueError(f"Unknown sport: {sport}. Use 'nhl', 'nba', 'mlb', or 'golf'")
 
     def _init_nhl(self):
         """Initialize NHL-specific configuration"""
@@ -155,7 +165,7 @@ class SportConfig:
 
         # Full-game prediction pipeline
         self.team_stats_time = "02:30"      # 2:30 AM - update team stats + Elo (after games end)
-        self.game_prediction_time = "12:00"  # Noon - generate game predictions (odds settled)
+        self.game_prediction_time = "09:00"  # 9:00 AM - generate game predictions (early lines posted by 9 AM)
         self.game_grading_time = "03:15"     # 3:15 AM - grade yesterday's game predictions
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 30, 2026)
@@ -215,7 +225,7 @@ class SportConfig:
 
         # Full-game prediction pipeline
         self.team_stats_time = "04:30"       # 4:30 AM - update team stats + Elo (after late games)
-        self.game_prediction_time = "13:00"  # 1 PM - generate game predictions
+        self.game_prediction_time = "09:30"  # 9:30 AM - generate game predictions (before market moves)
         self.game_grading_time = "05:15"     # 5:15 AM - grade yesterday's game predictions
 
         # ML Training Goals - UPDATED: 7.5k for faster launch (Jan 27, 2026)
@@ -280,7 +290,7 @@ class SportConfig:
 
         # Full-game prediction pipeline
         self.team_stats_time = "07:30"       # 7:30 AM - update team stats + Elo
-        self.game_prediction_time = "12:30"  # 12:30 PM - generate game predictions (lineups posted)
+        self.game_prediction_time = "09:45"  # 9:45 AM - generate game predictions (after team stats settle)
         self.game_grading_time = "08:15"     # 8:15 AM - grade yesterday's game predictions
 
         # ML Training Goals — sourced from mlb_config.py for single source of truth
@@ -339,6 +349,67 @@ class SportConfig:
 
         # SZLN ML refresh (weekly — lines change slowly)
         self.szln_refresh_time = "09:00"   # 9 AM Monday
+
+    def _init_golf(self):
+        """Initialize Golf-specific configuration"""
+        self.project_root = self.root / "golf"
+        self.db_path = self.project_root / "database" / "golf_predictions.db"
+
+        # Scripts
+        self.prediction_script = "scripts/generate_predictions_daily.py"
+        self.grading_script = "scripts/auto_grade_daily.py"
+        self.schedule_script = None  # Golf: tournament detection is handled inside generate_predictions_daily.py
+
+        # Timing (CST)
+        # PGA Tour rounds finish Thu/Fri/Sat/Sun evenings; grade next morning
+        self.grading_time = "08:00"      # 8 AM — grade previous round scores
+        self.retrain_time = "08:30"      # 8:30 AM Sunday — weekly ML retrain
+        self.prizepicks_time = "09:00"   # 9 AM — fetch PrizePicks golf lines
+        self.prediction_time = "10:00"   # 10 AM — tee times posted, generate predictions
+        self.pp_sync_time = "12:00"      # Noon — refresh lines as tee times confirm
+        self.top_picks_time = "13:00"    # 1 PM — post Discord picks
+
+        # No full-game pipeline for golf (individual/tournament sport)
+        self.team_stats_time = None
+        self.game_prediction_time = None
+        self.game_grading_time = None
+
+        # ML Training Goals
+        # Golf has ~46 events/season × 5 seasons × ~100 players × ~3.5 rounds = ~80k rows
+        # → should reach 7,500 per prop/line combo well within backfill
+        self.ml_training_target_per_prop = 7500
+        self.ml_training_min_new_preds = 200    # Fewer per week than daily sports
+        self.ml_training_start_date = "2025-06-01"   # After first full season of live predictions
+
+        # Prop types and lines (4 combos total)
+        self.prop_lines = {
+            'round_score': [68.5, 70.5, 72.5],  # 3 combos
+            'make_cut':    [0.5],                # 1 combo
+        }
+        self.total_prop_combos = sum(len(lines) for lines in self.prop_lines.values())  # 4
+
+        # Data Quality Thresholds
+        # Golf has more missing data (not all players have full stat coverage)
+        self.min_feature_completeness = 0.80
+        self.min_probability_variety = 20    # Smaller daily volume than team sports
+        self.min_opponent_feature_rate = 0.0  # Not applicable to golf
+        self.opponent_feature_lookback_days = 0
+        self.min_daily_predictions = 50    # ~100–400 predictions per tournament day
+        self.max_daily_predictions = 2000  # Large field × multiple props
+
+        # Performance Thresholds
+        self.target_under_accuracy = 0.60
+        self.target_over_accuracy = 0.55
+
+        # API Health Check URL (ESPN golf scoreboard)
+        self.api_health_url = "https://site.api.espn.com/apis/site/v2/sports/golf/leaderboard?league=pga"
+
+        # Display
+        self.emoji = "[GOLF]"
+        self.full_name = "PGA Tour Golf"
+
+        # Discord webhook for Golf channel
+        self.discord_picks_webhook = os.getenv('GOLF_DISCORD_WEBHOOK', '')
 
 
 class GlobalConfig:
@@ -546,6 +617,31 @@ class SportsOrchestrator:
                     details['schedule_fetch'] = {'success': True}
                     print(f"   Schedule fetched")
                 step += 1
+
+            # Step 1.5: Pre-game intel sweep (Grok — injury/availability/goalie)
+            # Runs once, cached to disk. Prediction scripts read the cache during
+            # player loop and skip OUT players automatically.
+            if PREGAME_INTEL_AVAILABLE and os.getenv('XAI_API_KEY'):
+                try:
+                    _intel = PreGameIntel()
+                    # matchups=[] — module will auto-pull from games DB
+                    _intel.fetch(sport_key, target_date, matchups=[])
+                    _intel.fetch_betting_context(sport_key, target_date, matchups=[])
+                    details['pregame_intel'] = {'success': True}
+                    notes = _intel.get_notes(sport_key, target_date)
+                    if notes:
+                        print(f'   Intel: {notes[0]}')
+                    # Post combined intel embed to sport channel
+                    try:
+                        from pregame_intel import post_intel_to_discord
+                        sport_webhook = getattr(self.config, 'discord_picks_webhook', '')
+                        if sport_webhook and 'YOUR_' not in sport_webhook:
+                            post_intel_to_discord(sport_key, target_date, sport_webhook)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    details['pregame_intel'] = {'success': False, 'error': str(e)}
+                    warnings.append(f'Pre-game intel failed (non-fatal): {e}')
 
             # Step 2: Generate predictions
             print(f"[{step}/4] Generating predictions...")
@@ -1292,12 +1388,6 @@ class SportsOrchestrator:
             conn = sqlite3.connect(str(self.config.db_path))
             cursor = conn.cursor()
 
-            # Check schema to determine prediction column name
-            cursor.execute('PRAGMA table_info(prediction_outcomes)')
-            columns = [col[1] for col in cursor.fetchall()]
-            # NHL uses 'predicted_outcome', NBA uses 'prediction'
-            pred_col = 'predicted_outcome' if 'predicted_outcome' in columns else 'prediction'
-
             # Overall accuracy
             cursor.execute('''
                 SELECT
@@ -1312,12 +1402,12 @@ class SportsOrchestrator:
             hits = row[1] if row else 0
 
             # UNDER accuracy
-            cursor.execute(f'''
+            cursor.execute('''
                 SELECT
                     COUNT(*) as total,
                     SUM(CASE WHEN outcome = 'HIT' THEN 1 ELSE 0 END) as hits
                 FROM prediction_outcomes
-                WHERE game_date = ? AND {pred_col} = 'UNDER'
+                WHERE game_date = ? AND prediction = 'UNDER'
             ''', (date,))
 
             row = cursor.fetchone()
@@ -1325,12 +1415,12 @@ class SportsOrchestrator:
             under_hits = row[1] if row else 0
 
             # OVER accuracy
-            cursor.execute(f'''
+            cursor.execute('''
                 SELECT
                     COUNT(*) as total,
                     SUM(CASE WHEN outcome = 'HIT' THEN 1 ELSE 0 END) as hits
                 FROM prediction_outcomes
-                WHERE game_date = ? AND {pred_col} = 'OVER'
+                WHERE game_date = ? AND prediction = 'OVER'
             ''', (date,))
 
             row = cursor.fetchone()
@@ -2699,6 +2789,9 @@ class SportsOrchestrator:
             schedule.every().day.at(self.config.hits_blocks_time).do(
                 self.run_nhl_hits_blocks
             )
+            # Startup catch-up: if we're past the scheduled time and today's picks
+            # are missing (e.g. orchestrator restarted after 11 AM), run immediately.
+            self._catchup_hits_blocks()
 
         # Weekly SZLN ML refresh (MLB only — season-long lines change slowly)
         if self.config.sport == "MLB" and hasattr(self.config, 'szln_refresh_time'):
@@ -2865,6 +2958,39 @@ class SportsOrchestrator:
             print(f"[GAME GRADE] Error: {e}")
             return {"success": False, "error": str(e)}
 
+    def _catchup_hits_blocks(self):
+        """
+        If the orchestrator starts after the hits_blocks_time (e.g. 11 AM) and
+        today's picks haven't been generated yet, run them immediately so a late
+        restart doesn't silently skip the day.
+        """
+        from datetime import datetime as _dt
+        now = _dt.now()
+        sched_h, sched_m = map(int, self.config.hits_blocks_time.split(":"))
+        sched_mins = sched_h * 60 + sched_m
+        now_mins = now.hour * 60 + now.minute
+        if now_mins < sched_mins:
+            return  # haven't reached scheduled time yet — normal schedule will handle it
+
+        # Check if today's picks are already saved
+        today = now.strftime("%Y-%m-%d")
+        try:
+            import sqlite3 as _sql
+            db_path = self.root / "nhl" / "database" / "hits_blocks.db"
+            if db_path.exists():
+                conn = _sql.connect(str(db_path))
+                row = conn.execute(
+                    "SELECT 1 FROM daily_picks WHERE run_date = ? LIMIT 1", (today,)
+                ).fetchone()
+                conn.close()
+                if row:
+                    return  # already ran today
+        except Exception:
+            pass  # if we can't check, attempt the run anyway
+
+        print(f"[H+B] Startup catch-up: past {self.config.hits_blocks_time} with no picks for {today} — running now")
+        self.run_nhl_hits_blocks()
+
     def run_nhl_hits_blocks(self) -> Dict:
         """
         Generate NHL daily hits & blocked shots picks via Claude API.
@@ -2894,7 +3020,10 @@ class SportsOrchestrator:
             else:
                 n_tok = result.get("prompt_tokens", 0) + result.get("completion_tokens", 0)
                 print(f"[H+B] Picks saved ({n_tok} tokens used)")
-                # Push to Supabase so Streamlit Cloud dashboard sees the new picks
+
+            # Always sync to Supabase so the dashboard is current — idempotent upsert,
+            # safe to run whether picks were just generated or already existed today.
+            if not result.get("no_games"):
                 try:
                     sys.path.insert(0, str(self.root / "shared"))
                     from supabase_local_sync import sync_hits_blocks
@@ -3137,6 +3266,14 @@ def run_all_sports_continuous(sports: list):
 
     schedule.every(60).minutes.do(run_all_health_checks)
     print(f"Health checks: Every 60 minutes (all sports)")
+
+    # Daily audit — runs at 10:00 AM after all sports have finished grading
+    try:
+        from daily_audit import run_audit
+        schedule.every().day.at("10:00").do(run_audit)
+        print("Daily audit: 10:00 AM (all sports DB health + Discord report)")
+    except ImportError:
+        print("NOTE: daily_audit.py not found — audit skipped")
     print()
 
     print("=" * 70)
@@ -3176,9 +3313,9 @@ Examples:
     )
     parser.add_argument(
         '--sport',
-        choices=['nhl', 'nba', 'mlb', 'all'],
+        choices=['nhl', 'nba', 'mlb', 'golf', 'all'],
         required=True,
-        help='Sport to manage (nhl, nba, mlb, or all)'
+        help='Sport to manage (nhl, nba, mlb, golf, or all)'
     )
     parser.add_argument(
         '--mode',
@@ -3201,7 +3338,7 @@ Examples:
     print_banner()
 
     # Determine which sports to run
-    sports = ['nhl', 'nba', 'mlb'] if args.sport == 'all' else [args.sport]
+    sports = ['nhl', 'nba', 'mlb', 'golf'] if args.sport == 'all' else [args.sport]
 
     # Special handling for continuous mode with multiple sports
     if args.mode == 'continuous' and len(sports) > 1:

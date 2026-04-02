@@ -37,6 +37,15 @@ from statistical_predictions import NBAStatisticalPredictor
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__))))
 from espn_nba_api import ESPNNBAApi
 
+# Pre-game intel (Grok-powered injury/availability sweep)
+_SHARED = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'shared')
+sys.path.append(_SHARED)
+try:
+    from pregame_intel import PreGameIntel
+    INTEL_AVAILABLE = True
+except ImportError:
+    INTEL_AVAILABLE = False
+
 
 class NBADailyPredictor:
     """Daily prediction generator for NBA games."""
@@ -46,6 +55,7 @@ class NBADailyPredictor:
         self.api = NBAStatsAPI()
         self.espn_api = ESPNNBAApi()
         self.predictor = NBAStatisticalPredictor()
+        self.intel = PreGameIntel() if INTEL_AVAILABLE else None
 
     def generate_predictions(self, target_date=None, players_per_team=None):
         """
@@ -86,6 +96,12 @@ class NBADailyPredictor:
         # has no odds. ESPN scoreboard has both game info and odds.
         game_lines = self._fetch_and_save_game_lines(conn, target_date)
 
+        # Pre-game intel: fetch injury/availability from Grok (once, cached)
+        skipped_intel = 0
+        if self.intel:
+            matchups = [f"{g['away_team']} vs {g['home_team']}" for g in games]
+            self.intel.fetch('nba', target_date, matchups)
+
         # Generate predictions for each game
         total_predictions = 0
         skipped_blowouts = 0
@@ -112,6 +128,12 @@ class NBADailyPredictor:
                 players = self._get_team_players(conn, team, players_per_team, target_date)
 
                 for player_name in players:
+                    # Intel filter: skip confirmed OUT players entirely
+                    if self.intel and self.intel.is_player_out(player_name, 'nba', target_date):
+                        print(f"   [INTEL] {player_name} — OUT (skipping all props)")
+                        skipped_intel += 1
+                        continue
+
                     # Generate predictions for core props
                     for prop_type, lines in CORE_PROPS.items():
                         for line in lines:
@@ -140,6 +162,8 @@ class NBADailyPredictor:
         print(f"[STATS] Total predictions: {total_predictions}")
         if skipped_blowouts:
             print(f"[SKIP] Blowout games skipped: {skipped_blowouts} (spread >= {BLOWOUT_SPREAD_THRESHOLD})")
+        if skipped_intel:
+            print(f"[INTEL] Players skipped (OUT): {skipped_intel}")
         print(f" Unique probabilities: {unique_probs}")
 
         if unique_probs < 10:

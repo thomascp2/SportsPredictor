@@ -100,6 +100,14 @@ class MLBGrader:
         print(f"[MLB Grader] Grading predictions for {target_date}")
         print(f"{'='*60}")
 
+        # Ensure profit column exists (idempotent migration)
+        with sqlite3.connect(self.db_path) as _mc:
+            try:
+                _mc.execute("ALTER TABLE prediction_outcomes ADD COLUMN profit REAL")
+                _mc.commit()
+            except Exception:
+                pass  # Column already exists
+
         # Backup database first
         backup_database(self.db_path, BACKUPS_DIR)
 
@@ -135,6 +143,15 @@ class MLBGrader:
                 graded += game_graded
                 void += game_void
                 errors += game_errors
+
+            # Backfill profit for any existing rows that are missing it
+            conn.execute("""
+                UPDATE prediction_outcomes
+                SET profit = CASE outcome WHEN 'HIT' THEN 90.91
+                                          WHEN 'MISS' THEN -100.0
+                                          ELSE 0.0 END
+                WHERE profit IS NULL AND outcome IN ('HIT', 'MISS', 'VOID')
+            """)
 
             conn.commit()
 
@@ -447,15 +464,16 @@ class MLBGrader:
                        game_id: str, player_name: str, prop_type: str, line: float,
                        prediction: str, actual_value: Optional[float], outcome: str) -> None:
         """Save a single prediction outcome to the prediction_outcomes table."""
+        profit = 90.91 if outcome == 'HIT' else (-100.0 if outcome == 'MISS' else 0.0)
         conn.execute('''
             INSERT OR IGNORE INTO prediction_outcomes (
                 prediction_id, game_date, game_id, player_name,
-                prop_type, line, prediction, actual_value, outcome, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                prop_type, line, prediction, actual_value, outcome, created_at, profit
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             prediction_id, game_date, game_id, player_name,
             prop_type, line, prediction, actual_value, outcome,
-            datetime.now().isoformat()
+            datetime.now().isoformat(), profit
         ))
 
     def _void_predictions(self, conn: sqlite3.Connection, game_date: str,
