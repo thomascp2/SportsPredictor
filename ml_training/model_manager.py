@@ -47,6 +47,11 @@ class ModelMetadata:
     # Feature importance (top 10)
     top_features: Dict[str, float] = field(default_factory=dict)
 
+    # Phase 2 additions — all Optional with None defaults for backward compat (FR-9)
+    train_date_range: Optional[Tuple[str, str]] = None      # (min_date, max_date) of training set
+    prediction_distribution: Optional[Dict[str, float]] = None  # {"pct_over": 0.6, "pct_under": 0.4}
+    split_sizes: Optional[Dict[str, int]] = None             # {"train": N, "val": N, "cal": N, "test": N}
+
 
 class ModelRegistry:
     """
