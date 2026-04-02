@@ -69,7 +69,9 @@ DEFAULT_FEATURES = {
     "gf_home_goalie_gaa": 2.80,
     "gf_away_goalie_gaa": 2.80,
 
-    # Elo
+    # Elo (raw ratings + derived)
+    "gf_home_elo": 1500.0,
+    "gf_away_elo": 1500.0,
     "gf_elo_diff": 0.0,
     "gf_elo_home_prob": 0.55,
 
@@ -96,6 +98,15 @@ DEFAULT_FEATURES = {
     "gf_home_home_win_pct": 0.550,
     "gf_away_away_win_pct": 0.450,
     "gf_altitude_diff": 0,
+
+    # Momentum (L5 goal diff vs season goal diff — positive = trending up)
+    "gf_home_momentum": 0.0,
+    "gf_away_momentum": 0.0,
+    # L5 scoring (recent form for totals model)
+    "gf_home_l5_gf_avg": 3.0,
+    "gf_away_l5_gf_avg": 3.0,
+    "gf_home_l5_ga_avg": 3.0,
+    "gf_away_l5_ga_avg": 3.0,
 
     # Combined predictions
     "gf_predicted_total": 6.0,
@@ -170,11 +181,15 @@ class NHLGameFeatureExtractor:
                 ORDER BY as_of_date DESC LIMIT 1
             """, (team, game_date)).fetchone()
 
+            season_gf_avg = 3.0
+            season_goal_diff = 0.0
             if row:
+                season_gf_avg = row["goals_for_avg"] or 3.0
+                season_goal_diff = row["goal_diff_avg"] or 0.0
                 features[f"gf_{prefix}_win_pct"] = row["win_pct"] or 0.5
-                features[f"gf_{prefix}_gf_avg"] = row["goals_for_avg"] or 3.0
+                features[f"gf_{prefix}_gf_avg"] = season_gf_avg
                 features[f"gf_{prefix}_ga_avg"] = row["goals_against_avg"] or 3.0
-                features[f"gf_{prefix}_goal_diff"] = row["goal_diff_avg"] or 0.0
+                features[f"gf_{prefix}_goal_diff"] = season_goal_diff
                 features[f"gf_{prefix}_hits_avg"] = row["avg_hits_per_game"] or 20.0
                 features[f"gf_{prefix}_blocks_avg"] = row["avg_blocks_per_game"] or 12.0
                 features[f"gf_{prefix}_home_win_pct" if prefix == "home" else f"gf_{prefix}_away_win_pct"] = (
@@ -196,6 +211,23 @@ class NHLGameFeatureExtractor:
             if row10:
                 features[f"gf_{prefix}_l10_win_pct"] = row10["win_pct"] or 0.5
 
+            # L5 stats — used for momentum and recent totals form
+            row5 = conn.execute("""
+                SELECT goals_for_avg, goals_against_avg, goal_diff_avg
+                FROM team_rolling_stats
+                WHERE team = ? AND window = 'L5' AND as_of_date <= ?
+                ORDER BY as_of_date DESC LIMIT 1
+            """, (team, game_date)).fetchone()
+
+            if row5:
+                l5_gf = row5["goals_for_avg"] or season_gf_avg
+                l5_ga = row5["goals_against_avg"] or features.get(f"gf_{prefix}_ga_avg", 3.0)
+                l5_diff = row5["goal_diff_avg"] or 0.0
+                features[f"gf_{prefix}_l5_gf_avg"] = l5_gf
+                features[f"gf_{prefix}_l5_ga_avg"] = l5_ga
+                # Momentum = recent goal diff minus season goal diff (positive = heating up)
+                features[f"gf_{prefix}_momentum"] = round(l5_diff - season_goal_diff, 3)
+
     def _add_goalie_stats(self, conn, features, home, away):
         """Add starting goalie quality from goalie_stats table."""
         for team, prefix in [(home, "home"), (away, "away")]:
@@ -216,6 +248,8 @@ class NHLGameFeatureExtractor:
             from elo_engine import EloEngine
             elo = EloEngine(sport="nhl")
             if elo.load():
+                features["gf_home_elo"] = elo.get_rating(home) or 1500.0
+                features["gf_away_elo"] = elo.get_rating(away) or 1500.0
                 features["gf_elo_diff"] = elo.get_elo_diff(home, away)
                 features["gf_elo_home_prob"] = elo.predict_home_win(home, away)
         except Exception:

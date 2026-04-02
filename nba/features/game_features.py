@@ -74,7 +74,9 @@ DEFAULT_FEATURES = {
     "gf_home_reb_pg": 44.0,
     "gf_away_reb_pg": 44.0,
 
-    # Elo
+    # Elo (raw ratings + derived)
+    "gf_home_elo": 1500.0,
+    "gf_away_elo": 1500.0,
     "gf_elo_diff": 0.0,
     "gf_elo_home_prob": 0.575,
 
@@ -103,6 +105,15 @@ DEFAULT_FEATURES = {
     "gf_home_home_win_pct": 0.600,
     "gf_away_away_win_pct": 0.400,
     "gf_altitude_diff": 0,
+
+    # Momentum (L5 point diff vs season point diff — positive = trending up)
+    "gf_home_momentum": 0.0,
+    "gf_away_momentum": 0.0,
+    # L5 scoring (recent form for totals model)
+    "gf_home_l5_ppg": 112.0,
+    "gf_away_l5_ppg": 112.0,
+    "gf_home_l5_papg": 112.0,
+    "gf_away_l5_papg": 112.0,
 
     # Derived predictions
     "gf_predicted_total": 224.0,
@@ -209,12 +220,33 @@ class NBAGameFeatureExtractor:
             if row10:
                 features[f"gf_{prefix}_l10_win_pct"] = row10["win_pct"] or 0.5
 
+            # L5 recent form — momentum + recent scoring for totals model
+            season_ppg = features.get(f"gf_{prefix}_ppg", 112.0)
+            season_diff = features.get(f"gf_{prefix}_point_diff", 0.0)
+            row5 = conn.execute("""
+                SELECT points_per_game, points_allowed_per_game, point_diff_avg
+                FROM team_rolling_stats
+                WHERE team = ? AND window = 'L5' AND as_of_date <= ?
+                ORDER BY as_of_date DESC LIMIT 1
+            """, (team, game_date)).fetchone()
+
+            if row5:
+                l5_ppg = row5["points_per_game"] or season_ppg
+                l5_papg = row5["points_allowed_per_game"] or features.get(f"gf_{prefix}_papg", 112.0)
+                l5_diff = row5["point_diff_avg"] or 0.0
+                features[f"gf_{prefix}_l5_ppg"] = l5_ppg
+                features[f"gf_{prefix}_l5_papg"] = l5_papg
+                # Momentum = recent point diff minus season point diff
+                features[f"gf_{prefix}_momentum"] = round(l5_diff - season_diff, 2)
+
     def _add_elo_features(self, features, home, away):
         """Add Elo ratings."""
         try:
             from elo_engine import EloEngine
             elo = EloEngine(sport="nba")
             if elo.load():
+                features["gf_home_elo"] = elo.get_rating(home) or 1500.0
+                features["gf_away_elo"] = elo.get_rating(away) or 1500.0
                 features["gf_elo_diff"] = elo.get_elo_diff(home, away)
                 features["gf_elo_home_prob"] = elo.predict_home_win(home, away)
         except Exception:

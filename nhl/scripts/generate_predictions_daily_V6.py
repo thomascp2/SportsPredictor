@@ -54,6 +54,14 @@ except ImportError:
     PP_AVAILABLE = False
     print("WARNING: PrizePicks client not available")
 
+# Pre-game intel (Grok-powered injury/availability/goalie sweep)
+try:
+    from pregame_intel import PreGameIntel
+    INTEL_AVAILABLE = True
+except ImportError:
+    INTEL_AVAILABLE = False
+    print("NOTE: pregame_intel not available — running without player filter")
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -738,6 +746,12 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
         ml_weight=ML_WEIGHT
     )
 
+    # Pre-game intel: fetch injury/availability/goalie confirmations from Grok
+    intel = PreGameIntel() if INTEL_AVAILABLE else None
+    if intel:
+        matchups = [f'{away} vs {home}' for _, away, home, _ in games]
+        intel.fetch('nhl', target_date, matchups)
+
     # Track predictions
     total_predictions = 0
     pp_matched_players = 0
@@ -745,6 +759,7 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
     predictions_by_prop = {'points': 0, 'shots': 0, 'hits': 0, 'blocked_shots': 0}
     predictions_by_line = {}
     skipped_blowouts = 0
+    skipped_intel = 0
 
     print('STEP 3: Generating predictions...')
     print()
@@ -768,6 +783,12 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
             print(f"{team}: {len(players)} players with history")
 
             for player in players:
+                # Intel filter: skip confirmed OUT / scratched players
+                if intel and intel.is_player_out(player, 'nhl', game_date):
+                    print(f'  [INTEL] {player} — OUT / scratched (skipping)')
+                    skipped_intel += 1
+                    continue
+
                 # Find PP lines for this player
                 if use_pp_lines:
                     pp_name = match_player_to_pp(player, pp_player_lines)
@@ -862,6 +883,9 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
     if skipped_blowouts:
         print(f'[SKIP] Blowout games skipped: {skipped_blowouts} '
               f'(implied prob >= {BLOWOUT_IMPLIED_PROB_THRESHOLD:.0%})')
+        print()
+    if skipped_intel:
+        print(f'[INTEL] Players skipped (OUT/scratched): {skipped_intel}')
         print()
 
     if use_pp_lines:

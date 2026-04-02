@@ -39,7 +39,14 @@ class MultiAPIGrader:
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
+
+        # Ensure profit column exists (idempotent migration)
+        try:
+            cursor.execute("ALTER TABLE prediction_outcomes ADD COLUMN profit REAL")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
+
         # Get predictions to grade
         cursor.execute("""
             SELECT id, game_id, player_name, prop_type, line, prediction, probability
@@ -111,24 +118,33 @@ class MultiAPIGrader:
                 outcome = 'HIT' if actual_value > line else 'MISS'
             else:
                 outcome = 'HIT' if actual_value <= line else 'MISS'
-            
+
+            profit = 90.91 if outcome == 'HIT' else -100.0
+
             cursor.execute("""
                 INSERT INTO prediction_outcomes
                 (prediction_id, game_id, game_date, player_name, prop_type, line,
-                 prediction, actual_value, outcome, match_tier, match_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 prediction, actual_value, outcome, match_tier, match_score, profit)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 pred_id, game_id, target_date, player_name, prop_type, line,
-                prediction, actual_value, outcome, match_tier, match_score
+                prediction, actual_value, outcome, match_tier, match_score, profit
             ))
             
             graded_count += 1
             if outcome == 'HIT':
                 hit_count += 1
         
+        # Backfill profit for any existing rows that are missing it
+        cursor.execute("""
+            UPDATE prediction_outcomes
+            SET profit = CASE outcome WHEN 'HIT' THEN 90.91 ELSE -100.0 END
+            WHERE profit IS NULL AND outcome IN ('HIT', 'MISS')
+        """)
+
         # Save player logs
         logs_saved = self._save_player_game_logs(conn, all_player_stats, target_date)
-        
+
         conn.commit()
         
         accuracy = (hit_count / graded_count * 100) if graded_count > 0 else 0

@@ -239,14 +239,17 @@ class GameStatisticalPredictor:
         odds_prob = f.get("gf_home_implied_prob", 0.50)
 
         # Blend
+        # NOTE: Do NOT add a flat home advantage boost here.
+        # Home advantage is already captured in all three signals:
+        #   - Elo: trained on outcomes, inherently reflects home court/ice edge
+        #   - Odds: market prices in home field (highly efficient)
+        #   - Stats: gf_home_home_win_pct / gf_away_away_win_pct reflect actual splits
+        # Adding an extra boost causes systematic home-team overestimation.
         blended = (
             w["elo_weight"] * elo_prob +
             w["stats_weight"] * stats_prob +
             w["odds_weight"] * odds_prob
         )
-
-        # Apply home advantage boost
-        blended += w["home_advantage"]
 
         # Apply rest adjustment (NBA B2B = big swing)
         rest_adv = f.get("gf_rest_advantage", 0)

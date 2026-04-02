@@ -200,7 +200,7 @@ class DataLoader:
                 p.prediction as model_prediction,
                 p.probability as model_probability,
                 p.features_json,
-                o.actual_stat_value,
+                o.actual_value,
                 o.actual_outcome,
                 o.outcome,
                 -- CRITICAL: Train on actual outcome (OVER/UNDER), NOT prediction correctness (HIT/MISS)
@@ -247,7 +247,6 @@ class DataLoader:
         Storage layout:
           - Features stored as JSON blob (same as NHL)
           - Outcome derived from actual_value > line (same pattern as NBA)
-          - prediction_outcomes uses 'actual_value' column (not 'actual_stat_value')
         """
         query = """
             SELECT
@@ -260,7 +259,7 @@ class DataLoader:
                 p.prediction  AS model_prediction,
                 p.probability AS model_probability,
                 p.features_json,
-                o.actual_value AS actual_stat_value,
+                o.actual_value,
                 o.outcome,
                 -- Derive actual outcome from raw value so the model trains on
                 -- truth, not on whether our statistical model called it correctly.
@@ -327,10 +326,10 @@ class DataLoader:
                 p.f_trend_acceleration,
                 p.f_avg_minutes,
                 p.f_consistency_score,
-                o.actual_value as actual_stat_value,
+                o.actual_value,
                 o.outcome,
                 -- CRITICAL: Train on actual outcome (OVER/UNDER), NOT prediction correctness (HIT/MISS)
-                -- For NBA, derive actual_outcome from actual_value > line
+                -- Derive actual_outcome from actual_value > line
                 CASE WHEN o.actual_value > p.line THEN 'OVER' ELSE 'UNDER' END as actual_outcome,
                 CASE WHEN o.actual_value > p.line THEN 1 ELSE 0 END as target
             FROM predictions p
@@ -348,8 +347,9 @@ class DataLoader:
         # Exclude non-feature columns
         exclude_cols = {
             'id', 'game_date', 'player_name', 'team', 'opponent',
-            'model_prediction', 'model_probability', 'actual_stat_value',
-            'actual_outcome', 'outcome', 'target', 'features_json', 'prob_over'
+            'model_prediction', 'model_probability', 'actual_value',
+            'actual_outcome', 'outcome', 'target', 'features_json', 'prob_over',
+            'player_type',
         }
         
         feature_cols = [col for col in df.columns if col not in exclude_cols]
