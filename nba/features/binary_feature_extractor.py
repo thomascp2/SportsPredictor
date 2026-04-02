@@ -77,7 +77,10 @@ class BinaryFeatureExtractor:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # Get historical games BEFORE game_date (temporal safety)
+        # FENCEPOST GUARD: game_date < ? ensures the current game's stats are NEVER
+        # included in rolling window features. This prevents target leakage — the
+        # model must not see today's stats when predicting today's outcome.
+        # Verified: Phase 2 audit (FR-8). Do not change < to <=.
         query = """
             SELECT game_date, {stat_column}, home_away, minutes
             FROM player_game_logs
