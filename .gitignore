@@ -47,12 +47,24 @@ Thumbs.db
 .env
 *.pem
 credentials.json
+api/xai-api_*.txt
 
 # Temporary
 *.tmp
 *.temp
 .cache/
 
+# Runtime data (generated, not source)
+data/audit_logs/
+data/pregame_intel/
+data/api_schemas/
+data/orchestrator_state.json
+nba/data/nba_schedule_cache.json
+
 # Data exports
 *.csv
 !requirements.csv
+!scoreboard/bets_import.csv
+
+# Worktrees (managed by git, not source)
+.claude/worktrees/
