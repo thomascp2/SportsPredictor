@@ -177,14 +177,25 @@ class PrizePicksAPI:
                         else:
                             print(f"   [WARN] Got non-JSON response from {endpoint}")
                             break  # Try next endpoint
+                    elif response.status_code == 429:
+                        # Rate limited — respect Retry-After header or wait 45s
+                        retry_after = int(response.headers.get('Retry-After', 45))
+                        retry_after = min(retry_after, 120)  # cap at 2 min
+                        if attempt < max_retries - 1:
+                            print(f"   [WARN] Rate limited (429) — waiting {retry_after}s before retry {attempt + 2}/{max_retries}...")
+                            time.sleep(retry_after)
+                            continue
+                        else:
+                            print(f"   [WARN] Rate limited (429) — max retries reached for {endpoint}")
+                            break  # Try next endpoint
                     elif response.status_code == 403:
                         print(f"   [WARN] 403 Forbidden from {endpoint}")
                         break  # Try next endpoint (bot protection)
                     elif response.status_code in [500, 502, 503, 521]:
-                        # Server error - retry
+                        # Server error - retry with backoff
                         if attempt < max_retries - 1:
                             print(f"   [WARN] Status {response.status_code}, retrying...")
-                            time.sleep(2 ** attempt)  # Exponential backoff
+                            time.sleep(2 ** attempt)
                             continue
                     else:
                         print(f"   [WARN] Status {response.status_code} from {endpoint}")
@@ -575,7 +586,11 @@ class PrizePicksIngestion:
             'errors': []
         }
 
-        for sport in sports:
+        for i, sport in enumerate(sports):
+            if i > 0:
+                print(f"   [RATE] Waiting 5s before next sport...")
+                time.sleep(5)
+
             print(f"\n[{sport}] Processing {sport}...")
 
             try:

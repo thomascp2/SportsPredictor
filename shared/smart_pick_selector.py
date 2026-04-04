@@ -289,7 +289,8 @@ class SmartPickSelector:
         """
         try:
             conn = sqlite3.connect(str(self.pred_db_path))
-            if self.sport == 'NBA':
+            if self.sport in ('NBA', 'MLB'):
+                # NBA/MLB: probability lives in predictions table — join to get it
                 rows = conn.execute("""
                     SELECT
                         o.prop_type,
@@ -304,7 +305,7 @@ class SmartPickSelector:
                     HAVING n >= 20
                 """).fetchall()
             else:
-                # NHL: probability stored directly in prediction_outcomes
+                # NHL: predicted_probability stored directly in prediction_outcomes
                 rows = conn.execute("""
                     SELECT
                         prop_type,

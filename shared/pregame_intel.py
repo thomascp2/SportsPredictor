@@ -221,13 +221,27 @@ DB_PATHS = {
 }
 
 def _get_matchups_from_db(sport: str, game_date: str) -> List[str]:
-    """Pull tonight's matchups from the sport DB so Grok has team names to search."""
+    """Pull tonight's matchups from the sport DB so Grok has team names to search.
+    Checks game_context first (MLB primary), then falls back to games table."""
     import sqlite3
     db = DB_PATHS.get(sport)
     if not db or not db.exists():
         return []
     try:
         conn = sqlite3.connect(str(db))
+        # Check game_context first (MLB stores schedule here)
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if 'game_context' in tables:
+            rows = conn.execute(
+                'SELECT DISTINCT away_team, home_team FROM game_context WHERE game_date = ?',
+                (game_date,)
+            ).fetchall()
+            if rows:
+                conn.close()
+                return [f'{away} vs {home}' for away, home in rows]
+        # Fallback to games table
         rows = conn.execute(
             'SELECT away_team, home_team FROM games WHERE game_date = ?', (game_date,)
         ).fetchall()
