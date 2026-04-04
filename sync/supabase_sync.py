@@ -22,9 +22,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
-# Add project root to path
+# Add project root and gsd_module to path so shared.odds / shared.inference_utils resolve
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "gsd_module"))
 
 try:
     from supabase import create_client, Client
@@ -37,8 +38,11 @@ from sync.config import (
     SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
     NHL_DB_PATH, NBA_DB_PATH, MLB_DB_PATH, SYNC_BATCH_SIZE
 )
-sys.path.insert(0, str(PROJECT_ROOT / "shared"))
-from project_config import BREAK_EVEN as _BREAK_EVEN
+
+# Correct break-even constants (fix for confirmed production bug: 0.56 was wrong)
+# shared.odds and shared.inference_utils live in gsd_module/shared/ (added to sys.path above)
+from shared.odds import BREAK_EVEN_MAP
+from shared.inference_utils import tier_from_edge
 
 
 class SupabaseSync:
@@ -140,8 +144,10 @@ class SupabaseSync:
             confidence = min(confidence, 0.95)
 
             # Calculate edge and tier based on directional confidence
-            edge = (confidence - 0.56) * 100 if confidence else 0
-            tier = self._get_tier(confidence)
+            # Default to standard; sync_odds_types corrects goblin/demon later
+            be = BREAK_EVEN_MAP.get('standard', BREAK_EVEN_MAP['standard'])
+            edge = round((confidence - be) * 100, 2) if confidence else 0.0
+            tier = tier_from_edge(edge)
 
             # Calculate EV values using directional confidence
             ev_2leg = (confidence ** 2) * 3.0 - 1 if confidence else 0
@@ -153,7 +159,8 @@ class SupabaseSync:
             norm_name = self._normalize_name(row_dict['player_name']).lower()
             pp_team = pp_team_lookup.get(norm_name, '')
             if pp_team and local_team and pp_team.upper() != local_team.upper():
-                print(f"[SYNC] Trade correction: {row_dict['player_name']} {local_team} -> {pp_team}")
+                pname_ascii = row_dict['player_name'].encode('ascii', 'replace').decode('ascii')
+                print(f"[SYNC] Trade correction: {pname_ascii} {local_team} -> {pp_team}")
                 team = pp_team
             else:
                 team = local_team
@@ -177,6 +184,12 @@ class SupabaseSync:
                 'status': 'open',
                 'is_smart_pick': False,  # sync_smart_picks() sets True for selected picks
             }
+            # Include rationale and l5_trend if present in local row
+            # (Plan 02 migration adds these columns to Supabase; silently ignored until then)
+            if row_dict.get('rationale'):
+                prop['rationale'] = row_dict['rationale']
+            if row_dict.get('l5_trend') is not None:
+                prop['l5_trend'] = row_dict['l5_trend']
             props.append(prop)
 
         # Upsert in batches
@@ -378,24 +391,11 @@ class SupabaseSync:
             key = (self._normalize_name(name).lower(), prop, line)
             pp_lookup[key] = odds
 
-        # Break-even probabilities by line type — imported from shared/project_config.py
-        BREAK_EVEN = _BREAK_EVEN
-
         # Fetch all prediction rows for today from Supabase (paginate past 1000-row limit)
-        all_rows = []
-        page_size = 1000
-        offset = 0
-        while True:
-            r = self.client.table('daily_props').select(
-                'id,player_name,prop_type,line,odds_type,ai_probability,ai_prediction,ai_edge'
-            ).eq('sport', sport_upper).eq('game_date', game_date).range(
-                offset, offset + page_size - 1
-            ).execute()
-            batch = r.data or []
-            all_rows.extend(batch)
-            if len(batch) < page_size:
-                break
-            offset += page_size
+        all_rows = self._fetch_all_sport_date(
+            sport_upper, game_date,
+            'id,player_name,prop_type,line,odds_type,ai_probability,ai_prediction,ai_edge'
+        )
 
         patches = []
         for row in all_rows:
@@ -424,8 +424,8 @@ class SupabaseSync:
                              and row.get('ai_prediction') == 'UNDER')
 
             ai_prob = row.get('ai_probability')
-            if ai_prob is not None and effective_type in BREAK_EVEN:
-                expected_edge = round((ai_prob - BREAK_EVEN[effective_type]) * 100, 2)
+            if ai_prob is not None and effective_type in BREAK_EVEN_MAP:
+                expected_edge = round((ai_prob - BREAK_EVEN_MAP[effective_type]) * 100, 2)
                 stored_edge = row.get('ai_edge')
                 needs_edge_fix = (stored_edge is None or
                                   abs(stored_edge - expected_edge) > 0.05)
@@ -436,32 +436,35 @@ class SupabaseSync:
             if not needs_odds_update and not needs_dir_fix and not needs_edge_fix:
                 continue
 
+            new_odds_type = pp_odds if needs_odds_update else row['odds_type']
+            new_ai_edge = expected_edge
+            new_ai_tier = tier_from_edge(new_ai_edge) if new_ai_edge is not None else 'T5-FADE'
             patches.append({
                 'id': row['id'],
-                'game_date': game_date,
-                'sport': sport_upper,
                 'player_name': row['player_name'],
-                'prop_type': prop,
-                'line': line,
-                'odds_type': pp_odds if needs_odds_update else row['odds_type'],
-                'ai_edge': expected_edge,
+                'odds_type': new_odds_type,
+                'ai_edge': new_ai_edge,
+                'ai_tier': new_ai_tier,
                 'ai_prediction': 'OVER' if needs_dir_fix else row.get('ai_prediction'),
             })
 
-        # Update by id — grouped by (odds_type, ai_prediction) to minimize round trips
+        # Atomic update: odds_type + ai_edge + ai_tier in a single .update() call per row
         updated = 0
         for patch in patches:
             row_id = patch['id']
             fields = {
                 'odds_type': patch['odds_type'],
                 'ai_edge': patch['ai_edge'],
+                'ai_tier': patch['ai_tier'],
                 'ai_prediction': patch['ai_prediction'],
             }
             try:
                 self.client.table('daily_props').update(fields).eq('id', row_id).execute()
                 updated += 1
             except Exception as e:
-                print(f"[SYNC ERROR] odds_type {patch.get('player_name')}: {e}")
+                pname = patch.get('player_name', 'unknown')
+                pname_ascii = pname.encode('ascii', 'replace').decode('ascii')
+                print(f"[SYNC ERROR] odds_type {pname_ascii}: {e}")
 
         print(f"[SYNC] Corrected {updated} odds_type labels for {sport_upper} on {game_date}")
         return {'updated': updated, 'sport': sport_upper, 'date': game_date}
@@ -598,18 +601,36 @@ class SupabaseSync:
             if unicodedata.category(c) != 'Mn'
         )
 
-    @staticmethod
-    def _get_tier(probability: float) -> str:
-        if probability >= 0.75:
-            return 'T1-ELITE'
-        elif probability >= 0.70:
-            return 'T2-STRONG'
-        elif probability >= 0.65:
-            return 'T3-GOOD'
-        elif probability >= 0.55:
-            return 'T4-LEAN'
-        else:
-            return 'T5-FADE'
+    def _fetch_all_sport_date(self, sport_upper: str, game_date: str, columns: str) -> list:
+        """
+        Fetch all daily_props rows for a sport/date, paginating past the 1000-row Supabase limit.
+
+        Supabase default cap is 1000 rows per query. ALL batch selects must loop via
+        .range(offset, offset+999) until a batch smaller than page_size is returned.
+
+        Args:
+            sport_upper: Uppercase sport code ('NBA' or 'NHL')
+            game_date:   ISO date string e.g. '2026-04-03'
+            columns:     Comma-separated column names for .select()
+
+        Returns:
+            List of all matching rows across all pages.
+        """
+        all_rows = []
+        page_size = 1000
+        offset = 0
+        while True:
+            r = self.client.table('daily_props').select(columns).eq(
+                'sport', sport_upper
+            ).eq('game_date', game_date).range(
+                offset, offset + page_size - 1
+            ).execute()
+            batch = r.data or []
+            all_rows.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+        return all_rows
 
 
 def main():
