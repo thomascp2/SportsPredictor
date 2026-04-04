@@ -354,28 +354,17 @@ def _fmt_time(ts):
     if not ts:
         return ""
     try:
-        # "2026-03-01T19:10:00+00:00" or "2026-03-01T13:10:00-05:00"
-        s = str(ts)
-        # Parse offset
-        if '+' in s[10:]:
-            base, off = s[:19], s[19:]
-            sign = 1
-            off = off.lstrip('+')
-        elif s[19:20] == '-':
-            base = s[:19]
-            off = s[20:]
-            sign = -1
-        else:
-            base, sign, off = s[:19], 0, '00:00'
-        h_off, m_off = (int(x) for x in off.split(':')[:2])
-        offset_min = sign * (h_off * 60 + m_off)
-        dt = datetime.strptime(base, '%Y-%m-%dT%H:%M:%S')
-        # Convert to ET (UTC-5 in winter, UTC-4 in summer)
-        utc_dt = dt - timedelta(minutes=offset_min)
-        et_dt = utc_dt - timedelta(hours=5)  # EST
-        h = et_dt.hour % 12 or 12
-        ampm = 'PM' if et_dt.hour >= 12 else 'AM'
-        return f"{h}:{et_dt.minute:02d} {ampm} ET"
+        from zoneinfo import ZoneInfo
+        from datetime import timezone as _tz
+        s = str(ts).replace('Z', '+00:00')  # MLB API uses Z suffix; fromisoformat needs +00:00
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_tz.utc)
+        ct = dt.astimezone(ZoneInfo("America/Chicago"))
+        h = ct.hour % 12 or 12
+        ampm = 'PM' if ct.hour >= 12 else 'AM'
+        suffix = 'CDT' if ct.dst() and ct.dst().seconds else 'CST'
+        return f"{h}:{ct.minute:02d} {ampm} {suffix}"
     except Exception:
         return ""
 
@@ -936,6 +925,11 @@ def fetch_game_predictions(sport: str, game_date: str) -> pd.DataFrame:
             df["game_time"] = None
         conn.close()
 
+        # PP abbreviations differ from our game_lines abbreviations for some NHL teams.
+        # Expand lookup in both directions so either form matches.
+        _PP_TO_STD = {'LA': 'LAK', 'NJ': 'NJD', 'SJ': 'SJS', 'TB': 'TBL'}
+        _STD_TO_PP = {v: k for k, v in _PP_TO_STD.items()}
+
         # Enrich with game_time from prizepicks_lines.db (same source fetch_picks uses)
         try:
             pp_db = os.path.join(PROJECT_ROOT, "shared", "prizepicks_lines.db")
@@ -951,13 +945,47 @@ def fetch_game_predictions(sport: str, game_date: str) -> pd.DataFrame:
                     GROUP BY team
                 """, [game_date, sport.upper()]).fetchall()
                 pp_conn.close()
-                team_times = {row[0].upper(): row[1] for row in time_rows if row[1]}
+                # Build lookup with both PP and standard abbreviations as keys
+                team_times = {}
+                for row in time_rows:
+                    if not row[1]:
+                        continue
+                    pp_abbr = row[0].upper()
+                    team_times[pp_abbr] = row[1]
+                    # Also register under the standard abbreviation if it differs
+                    std_abbr = _PP_TO_STD.get(pp_abbr)
+                    if std_abbr:
+                        team_times[std_abbr] = row[1]
                 if team_times:
                     df["game_time"] = df["home_team"].apply(
                         lambda t: team_times.get(str(t).upper())
                     )
         except Exception:
             pass  # game_time stays None — cards still render without it
+
+        # MLB: PP has no MLB lines so no start_time from above. Fetch from MLB stats API.
+        if sport.upper() == "MLB" and df["game_time"].isna().all():
+            try:
+                import requests as _req
+                resp = _req.get(
+                    f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date}&hydrate=team",
+                    timeout=5
+                )
+                if resp.status_code == 200:
+                    mlb_times = {}  # home_team_abbr -> ISO game time string
+                    for date_entry in resp.json().get("dates", []):
+                        for game in date_entry.get("games", []):
+                            home = game.get("teams", {}).get("home", {}).get("team", {})
+                            abbr = home.get("abbreviation", "").upper()
+                            gt = game.get("gameDate", "")  # UTC ISO: "2026-04-04T17:10:00Z"
+                            if abbr and gt:
+                                mlb_times[abbr] = gt
+                    if mlb_times:
+                        df["game_time"] = df["home_team"].apply(
+                            lambda t: mlb_times.get(str(t).upper())
+                        )
+            except Exception:
+                pass  # still no times — cards render without it
 
         return df
     except Exception:

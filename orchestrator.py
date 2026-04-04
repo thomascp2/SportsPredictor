@@ -160,6 +160,7 @@ class SportConfig:
         self.prizepicks_time = "03:30"   # 3:30 AM - fetch PrizePicks lines (early pass before predictions)
         self.prediction_time = "04:00"   # 4 AM - generate today's predictions
         self.pp_sync_time = "13:00"      # 1 PM - afternoon PP re-sync (full slate posted by now, refresh smart picks)
+        self.pp_sync_time_evening = "17:00"  # 5 PM - evening re-sync (catches late line adds before primetime)
         self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord (after afternoon sync)
         self.hits_blocks_time = "11:00"  # 11 AM - Claude-generated hits/blocks picks (after lineups post)
 
@@ -221,6 +222,7 @@ class SportConfig:
         self.prizepicks_time = "05:30"   # 5:30 AM - fetch PrizePicks lines (early pass before predictions)
         self.prediction_time = "06:00"   # 6 AM - generate today's predictions
         self.pp_sync_time = "12:30"      # 12:30 PM - afternoon PP re-sync (full slate posted by now, refresh smart picks)
+        self.pp_sync_time_evening = "17:00"  # 5 PM - evening re-sync (catches late line adds before primetime)
         self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord (after afternoon sync)
 
         # Full-game prediction pipeline
@@ -286,6 +288,7 @@ class SportConfig:
         self.prizepicks_time = "08:30"   # 8:30 AM - fetch PrizePicks lines
         self.prediction_time = "12:00"   # Noon - lineups post by ~10am CST for most games
         self.pp_sync_time = "15:00"      # 3 PM - refresh lines for evening games
+        self.pp_sync_time_evening = "17:30"  # 5:30 PM - evening re-sync (placeholder — late west coast games)
         self.top_picks_time = "16:00"    # 4 PM - post Discord picks
 
         # Full-game prediction pipeline
@@ -367,6 +370,7 @@ class SportConfig:
         self.prizepicks_time = "09:00"   # 9 AM — fetch PrizePicks golf lines
         self.prediction_time = "10:00"   # 10 AM — tee times posted, generate predictions
         self.pp_sync_time = "12:00"      # Noon — refresh lines as tee times confirm
+        self.pp_sync_time_evening = "15:00"  # 3 PM — evening re-sync (placeholder — late tee times / round updates)
         self.top_picks_time = "13:00"    # 1 PM — post Discord picks
 
         # No full-game pipeline for golf (individual/tournament sport)
@@ -2752,6 +2756,12 @@ class SportsOrchestrator:
                 self.run_pp_sync
             )
 
+        # Evening PP re-sync (catches late line additions before primetime)
+        if PRIZEPICKS_AVAILABLE and hasattr(self.config, 'pp_sync_time_evening'):
+            schedule.every().day.at(self.config.pp_sync_time_evening).do(
+                self.run_pp_sync
+            )
+
         # Daily top 20 picks notification (after afternoon sync)
         schedule.every().day.at(self.config.top_picks_time).do(
             self.run_top_picks_notification
@@ -2805,6 +2815,8 @@ class SportsOrchestrator:
             print(f"   PrizePicks: Daily at {self.config.prizepicks_time}")
         print(f"   Predictions: Daily at {self.config.prediction_time}")
         print(f"   Top 20 picks: Daily at {self.config.top_picks_time}")
+        if PRIZEPICKS_AVAILABLE and hasattr(self.config, 'pp_sync_time_evening'):
+            print(f"   PP evening sync: Daily at {self.config.pp_sync_time_evening}")
         print(f"   Health checks: Every {self.global_config.HEALTH_CHECK_INTERVAL_MINUTES} minutes")
         print(f"   Team Stats: Daily at {self.config.team_stats_time}")
         if hasattr(self.config, 'game_prediction_time'):
@@ -2837,6 +2849,27 @@ class SportsOrchestrator:
 
         if not self.schedule_tasks():
             return
+
+        # Catch-up: if game_prediction_time already passed today and no predictions exist, run now
+        if hasattr(self.config, 'game_prediction_time') and self.config.game_prediction_time:
+            now = datetime.now()
+            sched_h, sched_m = map(int, self.config.game_prediction_time.split(':'))
+            sched_dt = now.replace(hour=sched_h, minute=sched_m, second=0, microsecond=0)
+            today_str = now.strftime('%Y-%m-%d')
+            if now > sched_dt:
+                # Check if game predictions already exist for today
+                try:
+                    conn = sqlite3.connect(str(self.config.db_path))
+                    count = conn.execute(
+                        'SELECT count(*) FROM game_predictions WHERE game_date = ?', (today_str,)
+                    ).fetchone()[0]
+                    conn.close()
+                    if count == 0:
+                        print(f"{self.config.emoji} [CATCH-UP] Game prediction window passed "
+                              f"({self.config.game_prediction_time}) with no predictions — running now...")
+                        self.run_game_prediction_pipeline()
+                except Exception as e:
+                    print(f"{self.config.emoji} [CATCH-UP] Could not check game_predictions: {e}")
 
         try:
             while True:
@@ -3159,7 +3192,7 @@ class SportsOrchestrator:
             print(f"\nResult: Team stats={'OK' if result.get('team_stats') else 'SKIP'}, "
                   f"Elo={'OK' if result.get('elo') else 'SKIP'}")
 
-        if operation in ['game-prediction', 'game-all']:
+        if operation in ['game-prediction', 'game-all', 'all']:
             print("\n" + "="*80)
             print(f"{self.config.emoji} RUNNING: {self.config.sport} Game Prediction Pipeline")
             print("="*80)
@@ -3246,6 +3279,24 @@ def run_all_sports_continuous(sports: list):
                     orchestrator.run_pp_sync
                 )
 
+            if PRIZEPICKS_AVAILABLE and hasattr(orchestrator.config, 'pp_sync_time_evening'):
+                schedule.every().day.at(orchestrator.config.pp_sync_time_evening).do(
+                    orchestrator.run_pp_sync
+                )
+
+            # Game predictions (moneyline/spread/total for dashboard Game Lines tab)
+            if (hasattr(orchestrator.config, 'game_prediction_time')
+                    and orchestrator.config.game_prediction_time):
+                schedule.every().day.at(orchestrator.config.game_prediction_time).do(
+                    orchestrator.run_game_prediction_pipeline
+                )
+
+            if (hasattr(orchestrator.config, 'game_grading_time')
+                    and orchestrator.config.game_grading_time):
+                schedule.every().day.at(orchestrator.config.game_grading_time).do(
+                    orchestrator.run_game_grading
+                )
+
             print(f"{orchestrator.config.emoji} {sport.upper()} scheduled:")
             print(f"   Grading: {orchestrator.config.grading_time}")
             if PRIZEPICKS_AVAILABLE:
@@ -3253,6 +3304,11 @@ def run_all_sports_continuous(sports: list):
             print(f"   Predictions: {orchestrator.config.prediction_time}")
             if PRIZEPICKS_AVAILABLE:
                 print(f"   PP afternoon sync: {orchestrator.config.pp_sync_time}")
+            if PRIZEPICKS_AVAILABLE and hasattr(orchestrator.config, 'pp_sync_time_evening'):
+                print(f"   PP evening sync:   {orchestrator.config.pp_sync_time_evening}")
+            if (hasattr(orchestrator.config, 'game_prediction_time')
+                    and orchestrator.config.game_prediction_time):
+                print(f"   Game Predictions: {orchestrator.config.game_prediction_time}")
             print()
 
         except Exception as e:
@@ -3280,6 +3336,30 @@ def run_all_sports_continuous(sports: list):
     print("  SCHEDULER RUNNING - Press Ctrl+C to stop")
     print("=" * 70)
     print()
+
+    # Catch-up: for each sport, if game_prediction_time already passed today
+    # and no predictions exist yet, run immediately before entering the loop.
+    now = datetime.now()
+    today_str = now.strftime('%Y-%m-%d')
+    for sport, orchestrator in orchestrators.items():
+        if not (hasattr(orchestrator.config, 'game_prediction_time')
+                and orchestrator.config.game_prediction_time):
+            continue
+        try:
+            sched_h, sched_m = map(int, orchestrator.config.game_prediction_time.split(':'))
+            sched_dt = now.replace(hour=sched_h, minute=sched_m, second=0, microsecond=0)
+            if now > sched_dt:
+                conn = sqlite3.connect(str(orchestrator.config.db_path))
+                count = conn.execute(
+                    'SELECT count(*) FROM game_predictions WHERE game_date = ?', (today_str,)
+                ).fetchone()[0]
+                conn.close()
+                if count == 0:
+                    print(f"{orchestrator.config.emoji} [CATCH-UP] Game predictions missing "
+                          f"for {today_str} — running now...")
+                    orchestrator.run_game_prediction_pipeline()
+        except Exception as e:
+            print(f"[CATCH-UP] {sport}: {e}")
 
     try:
         while True:
