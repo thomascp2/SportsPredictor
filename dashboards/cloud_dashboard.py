@@ -1923,6 +1923,31 @@ def main():
 
                     all_bets = game_df.to_dict("records")
 
+                    # Derive spread for each team from the home-side row (negative = favorite)
+                    home_spread_row = next((r for r in all_bets
+                                           if r["bet_type"] == "spread" and r["bet_side"] == "home"), None)
+                    if home_spread_row and home_spread_row.get("line") is not None:
+                        h_sprd = home_spread_row["line"]   # e.g. -18.5 (home fav) or +2.5 (home dog)
+                        a_sprd = -h_sprd
+                        fav_color  = "#f0c040"  # gold for favorite (negative spread)
+                        dog_color  = "#8b949e"  # muted for underdog
+                        away_sprd_str = f"{a_sprd:.1f}"
+                        home_sprd_str = f"{h_sprd:.1f}"
+                        away_clr = fav_color if a_sprd < 0 else dog_color
+                        home_clr = fav_color if h_sprd < 0 else dog_color
+                        # Only show the spread next to the favorite (negative number)
+                        away_label = (f'{away} <span style="color:{away_clr};font-size:13px;font-weight:500">{away_sprd_str}</span>'
+                                      if a_sprd < 0 else away)
+                        home_label = (f'{home} <span style="color:{home_clr};font-size:13px;font-weight:500">{home_sprd_str}</span>'
+                                      if h_sprd < 0 else home)
+                        matchup_html = (
+                            f'<span style="color:{away_clr};font-weight:700">{away_label}</span>'
+                            f'<span style="color:#8b949e"> @ </span>'
+                            f'<span style="color:{home_clr};font-weight:700">{home_label}</span>'
+                        )
+                    else:
+                        matchup_html = f'{away} @ {home}'
+
                     # One row per bet_type — keep the highest-probability side only
                     favorable_rows = []
                     for bt_key in ["moneyline", "spread", "total"]:
@@ -1935,13 +1960,17 @@ def main():
                         bt, bs, prob, edge, pred = r["bet_type"], r["bet_side"], r["probability"], r["edge"], r["prediction"]
                         if bt == "moneyline":
                             lbl = "MONEYLINE"
-                            pick = f"{home if bs == 'home' else away}"
+                            ml_team = home if bs == 'home' else away
+                            ml_odds = r.get("odds_american")
+                            pick = f"{ml_team} {int(ml_odds):+d}" if ml_odds is not None else ml_team
                         elif bt == "spread":
-                            lv = f"{r['line']:+.1f}" if r["line"] else "PK"
+                            lv = f"{r['line']:+.1f}" if r["line"] is not None else "PK"
                             lbl = f"SPREAD {lv}"
-                            pick = f"{'%s' % home if pred == 'WIN' else '%s' % away} covers"
+                            # covers = the bet_side team when pred=WIN, the other team when pred=LOSE
+                            cover_team = home if (bs == 'home') == (pred == 'WIN') else away
+                            pick = f"{cover_team} covers"
                         else:
-                            lv = f"{r['line']:.1f}" if r["line"] else "—"
+                            lv = f"{r['line']:.1f}" if r["line"] is not None else "—"
                             lbl = f"TOTAL {lv}"
                             pick = pred
                         pc = _prob_color(prob)
@@ -1961,7 +1990,7 @@ def main():
                     card = (
                         f'<div style="{_C["card"]}">'
                         f'<div style="{_C["header"]}">'
-                        f'<div><div style="{_C["matchup"]}">{away} @ {home}</div>{time_html}{elo_line}</div>'
+                        f'<div><div style="{_C["matchup"]}">{matchup_html}</div>{time_html}{elo_line}</div>'
                         f'<span style="{badge_style}">{best_tier}</span>'
                         f'</div>'
                         + "".join(row_parts)
