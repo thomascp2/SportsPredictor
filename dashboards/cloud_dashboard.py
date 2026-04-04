@@ -36,7 +36,10 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* ── Design tokens (change here, applies everywhere) ──── */
+    /* ── Google Fonts — JetBrains Mono ──────────────────────────────────────── */
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+    /* ── Design tokens ───────────────────────────────────────────────────────── */
     :root {
         /* Surface / chrome */
         --bg-page:        #0d1117;
@@ -65,134 +68,262 @@ st.markdown("""
         --tier-lean:   #f0883e;
         --tier-pass:   #8b949e;
 
-        /* Font */
+        /* Font — mono everywhere */
         --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+        --lh:        1.45;
+        --lh-tight:  1.25;
     }
 
-    /* ── Layout ─────────────────────────────────────────── */
-    .block-container { padding-top: 1rem; padding-bottom: 1rem; }
+    /* ── Global mono font ────────────────────────────────────────────────────── */
+    /* Target text elements only — never structural div/span/[class*="css"]      */
+    /* Applying line-height to every div breaks Streamlit's dropdown rendering   */
+    html, body { font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace !important; }
+    .stApp, .stMarkdown, .stMarkdown p,
+    .stTextInput input, .stDateInput input,
+    .stSelectbox [data-baseweb="select"] span,
+    .stMultiSelect [data-baseweb="select"] span,
+    button, label, p, li,
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricDelta"] {
+        font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace !important;
+    }
 
-    /* ── Prop tier badge colours ─────────────────────────── */
-    .tier-elite  { color: var(--green);  font-weight: bold; }
+    /* ── Layout ──────────────────────────────────────────────────────────────── */
+    .block-container { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+
+    /* ── Page title / caption ────────────────────────────────────────────────── */
+    /* Use explicit hex — CSS vars don't always resolve in Streamlit's shadow DOM */
+    h1 { font-size: 18px !important; font-weight: 700 !important;
+         letter-spacing: 0.5px !important; text-transform: uppercase !important;
+         color: #e6edf3 !important; }
+    h2 { font-size: 15px !important; font-weight: 700 !important;
+         letter-spacing: 0.4px !important; color: #e6edf3 !important; }
+    /* Scope h3 to markdown only — global h3 rule was garbling Streamlit widget labels */
+    .stMarkdown h3 { font-size: 13px !important; font-weight: 700 !important;
+                     letter-spacing: 0.4px !important; text-transform: uppercase !important;
+                     color: #8b949e !important; }
+    .stCaption, [data-testid="stCaptionContainer"] p {
+        font-size: 11px !important; color: #484f58 !important;
+        letter-spacing: 0.3px !important;
+    }
+
+    /* ── Tabs ────────────────────────────────────────────────────────────────── */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 0px;
+        border-bottom: 1px solid var(--border);
+        background: transparent;
+    }
+    .stTabs [data-baseweb="tab"] {
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.8px !important;
+        padding: 6px 14px !important;
+        border-radius: 0 !important;
+        color: var(--text-muted) !important;
+        border-bottom: 2px solid transparent !important;
+        background: transparent !important;
+    }
+    .stTabs [aria-selected="true"] {
+        color: var(--text-primary) !important;
+        border-bottom: 2px solid var(--blue) !important;
+    }
+
+    /* ── Metrics ─────────────────────────────────────────────────────────────── */
+    [data-testid="stMetricLabel"]  { font-size: 10px !important; text-transform: uppercase !important;
+                                      letter-spacing: 0.6px !important; color: var(--text-dim) !important; }
+    [data-testid="stMetricValue"]  { font-size: 20px !important; font-weight: 700 !important;
+                                      color: var(--text-primary) !important; line-height: var(--lh-tight) !important; }
+    [data-testid="stMetricDelta"]  { font-size: 11px !important; }
+
+    /* ── Buttons ─────────────────────────────────────────────────────────────── */
+    .stButton > button {
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.6px !important;
+        border-radius: 4px !important;
+        border: 1px solid var(--border) !important;
+        background: var(--bg-card) !important;
+        color: var(--text-secondary) !important;
+        padding: 4px 12px !important;
+    }
+    .stButton > button:hover {
+        border-color: var(--blue) !important;
+        color: var(--blue) !important;
+    }
+
+    /* ── Selectbox ───────────────────────────────────────────────────────────── */
+    .stSelectbox [data-baseweb="select"] > div {
+        font-size: 12px !important;
+        border-radius: 4px !important;
+        border-color: #30363d !important;
+        background: #161b22 !important;
+        min-height: 36px !important;
+    }
+    .stSelectbox [data-baseweb="select"] span {
+        font-size: 12px !important;
+        color: #c9d1d9 !important;
+    }
+
+    /* ── Date input — match selectbox exactly ────────────────────────────────── */
+    [data-testid="stDateInput"] [data-baseweb="input"] {
+        font-size: 12px !important;
+        border-radius: 4px !important;
+        border-color: #30363d !important;
+        background: #161b22 !important;
+        min-height: 36px !important;
+    }
+    [data-testid="stDateInput"] input {
+        font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace !important;
+        font-size: 12px !important;
+        color: #c9d1d9 !important;
+        padding: 0 8px !important;
+    }
+    /* Hide the calendar icon so date input is visually plain like a selectbox */
+    [data-testid="stDateInput"] [data-baseweb="input"] svg { display: none !important; }
+
+    /* ── Dataframes ──────────────────────────────────────────────────────────── */
+    [data-testid="stDataFrame"] td, [data-testid="stDataFrame"] th {
+        font-size: 11px !important;
+        line-height: var(--lh-tight) !important;
+    }
+
+    /* ── Progress bars ───────────────────────────────────────────────────────── */
+    .stProgress > div > div { border-radius: 2px !important; }
+
+    /* ── Divider ─────────────────────────────────────────────────────────────── */
+    hr { border-color: var(--border-subtle) !important; margin: 10px 0 !important; }
+
+    /* ── Expander ────────────────────────────────────────────────────────────── */
+    .streamlit-expanderHeader {
+        font-size: 11px !important; font-weight: 600 !important;
+        text-transform: uppercase !important; letter-spacing: 0.5px !important;
+        color: var(--text-muted) !important;
+    }
+
+    /* ── Info / error / warning boxes ───────────────────────────────────────── */
+    .stAlert p { font-size: 12px !important; }
+
+    /* ── Prop tier badge colours (class-based) ───────────────────────────────── */
+    .tier-elite  { color: var(--green);  font-weight: 700; }
     .tier-strong { color: #69f0ae; }
     .tier-good   { color: var(--yellow); }
     .tier-lean   { color: var(--orange); }
 
-    /* ── Game card ───────────────────────────────────────── */
+    /* ── Game / prop card ────────────────────────────────────────────────────── */
     .gl-card {
         background: var(--bg-card);
         border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 14px 18px;
-        margin-bottom: 10px;
-        font-size: 14px;
-        line-height: 1.55;
+        border-radius: 4px;
+        padding: 12px 16px;
+        margin-bottom: 8px;
+        font-size: 12px;
+        line-height: var(--lh);
     }
     .gl-card-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 10px;
-        padding-bottom: 8px;
+        margin-bottom: 8px;
+        padding-bottom: 6px;
         border-bottom: 1px solid var(--border-subtle);
     }
     .gl-matchup {
-        font-size: 15px;
+        font-size: 13px;
         font-weight: 700;
         color: var(--text-primary);
-        letter-spacing: 0.3px;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
     }
     .gl-elo {
-        font-size: 11px;
-        color: var(--text-muted);
+        font-size: 10px;
+        color: var(--text-dim);
         margin-top: 2px;
+        letter-spacing: 0.3px;
     }
     .gl-row {
         display: grid;
         grid-template-columns: 90px 1fr 60px 80px 70px;
         align-items: center;
         gap: 8px;
-        padding: 5px 0;
+        padding: 4px 0;
         border-bottom: 1px solid var(--border-subtle);
     }
     .gl-row:last-child { border-bottom: none; }
     .gl-bet-type {
-        font-size: 11px;
+        font-size: 10px;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
-        color: var(--text-muted);
+        letter-spacing: 0.6px;
+        color: var(--text-dim);
     }
     .gl-pick {
         font-weight: 600;
         color: var(--text-primary);
-        font-size: 13px;
+        font-size: 12px;
     }
     .gl-prob {
         text-align: right;
         color: var(--text-secondary);
-        font-size: 13px;
+        font-size: 12px;
         font-variant-numeric: tabular-nums;
     }
-    .gl-bar-wrap {
-        background: var(--border-subtle);
-        border-radius: 4px;
-        height: 6px;
-        overflow: hidden;
-    }
-    .gl-bar-fill {
-        height: 6px;
-        border-radius: 4px;
-    }
-    .gl-edge-pos { color: var(--green);    font-size: 12px; font-weight: 600; text-align: right; }
-    .gl-edge-neg { color: var(--red);      font-size: 12px; font-weight: 600; text-align: right; }
-    .gl-edge-neu { color: var(--text-muted); font-size: 12px; text-align: right; }
+    .gl-bar-wrap { background: var(--border-subtle); border-radius: 2px; height: 5px; overflow: hidden; }
+    .gl-bar-fill { height: 5px; border-radius: 2px; }
+    .gl-edge-pos { color: var(--green);      font-size: 11px; font-weight: 700; text-align: right; }
+    .gl-edge-neg { color: var(--red);        font-size: 11px; font-weight: 700; text-align: right; }
+    .gl-edge-neu { color: var(--text-muted); font-size: 11px; text-align: right; }
 
-    /* ── Tier badge pills ─────────────────────────────────── */
-    .badge-PRIME  { background:#1a3a2a; color:var(--tier-prime); border:1px solid #2ea043; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
-    .badge-SHARP  { background:#1a2a3a; color:var(--tier-sharp); border:1px solid #388bfd; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
-    .badge-LEAN   { background:#3a2a1a; color:var(--tier-lean);  border:1px solid #d18616; border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
-    .badge-PASS   { background:#2a2a2a; color:var(--tier-pass);  border:1px solid var(--text-dim); border-radius:12px; padding:2px 10px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
+    /* ── Tier badge pills ────────────────────────────────────────────────────── */
+    .badge-PRIME  { background:#1a3a2a; color:var(--tier-prime); border:1px solid #2ea043; border-radius:3px; padding:1px 8px; font-size:10px; font-weight:700; letter-spacing:0.6px; }
+    .badge-SHARP  { background:#1a2a3a; color:var(--tier-sharp); border:1px solid #388bfd; border-radius:3px; padding:1px 8px; font-size:10px; font-weight:700; letter-spacing:0.6px; }
+    .badge-LEAN   { background:#3a2a1a; color:var(--tier-lean);  border:1px solid #d18616; border-radius:3px; padding:1px 8px; font-size:10px; font-weight:700; letter-spacing:0.6px; }
+    .badge-PASS   { background:#222;    color:var(--tier-pass);  border:1px solid var(--text-dim); border-radius:3px; padding:1px 8px; font-size:10px; font-weight:700; letter-spacing:0.6px; }
 
-    /* ── Terminal health monitor ──────────────────────────── */
+    /* ── Terminal health monitor ─────────────────────────────────────────────── */
     .terminal-panel {
         background: var(--bg-page);
         border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 16px 20px;
+        border-radius: 4px;
+        padding: 14px 18px;
         font-family: var(--font-mono);
-        font-size: 12.5px;
-        line-height: 1.75;
+        font-size: 12px;
+        line-height: 1.7;
         color: var(--text-primary);
-        margin-bottom: 12px;
+        margin-bottom: 10px;
     }
-    .terminal-panel .t-sport  { color: var(--blue);    font-weight: 700; font-size: 13px; }
-    .terminal-panel .t-ok     { color: var(--green);   }
-    .terminal-panel .t-warn   { color: var(--orange);  }
-    .terminal-panel .t-err    { color: var(--red);     }
+    .terminal-panel .t-sport  { color: var(--blue);     font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .terminal-panel .t-ok     { color: var(--green);    }
+    .terminal-panel .t-warn   { color: var(--orange);   }
+    .terminal-panel .t-err    { color: var(--red);      }
     .terminal-panel .t-dim    { color: var(--text-dim); }
     .terminal-panel .t-label  { color: var(--text-muted); }
     .terminal-panel .t-val    { color: var(--text-secondary); }
     .terminal-panel .t-sched  { color: #a5d6ff; }
     .terminal-refresh {
-        font-size: 11px;
+        font-size: 10px;
         color: var(--text-dim);
         text-align: right;
-        margin-bottom: 8px;
+        letter-spacing: 0.4px;
+        margin-bottom: 6px;
     }
 
-    /* ── Perf table clean-up ─────────────────────────────── */
+    /* ── Perf table ──────────────────────────────────────────────────────────── */
     .perf-row {
         display: grid;
         grid-template-columns: 100px 70px 70px 90px 80px;
         gap: 0;
-        padding: 7px 12px;
+        padding: 5px 10px;
         border-bottom: 1px solid var(--border-subtle);
-        font-size: 13px;
+        font-size: 12px;
         align-items: center;
     }
-    .perf-row:first-child { border-radius: 8px 8px 0 0; background: var(--bg-card-hover); font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color: var(--text-muted); }
-    .perf-table { background: var(--bg-card); border:1px solid var(--border); border-radius:8px; overflow:hidden; margin-bottom:12px; }
+    .perf-row:first-child { border-radius: 3px 3px 0 0; background: var(--bg-card-hover);
+                             font-weight:700; font-size:10px; text-transform:uppercase;
+                             letter-spacing:0.6px; color: var(--text-muted); }
+    .perf-table { background: var(--bg-card); border:1px solid var(--border); border-radius:4px; overflow:hidden; margin-bottom:10px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -780,22 +911,54 @@ def fetch_game_predictions(sport: str, game_date: str) -> pd.DataFrame:
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(db_path)
-        df = pd.read_sql_query("""
-            SELECT home_team, away_team, bet_type, bet_side, line,
-                   prediction, probability, edge, confidence_tier,
-                   odds_american, implied_probability,
-                   model_type, home_elo, away_elo, elo_diff
-            FROM game_predictions
-            WHERE game_date = ?
-            ORDER BY
-                CASE confidence_tier
-                    WHEN 'SHARP' THEN 1
-                    WHEN 'LEAN' THEN 2
-                    ELSE 3
-                END,
-                edge DESC
-        """, conn, params=(game_date,))
+        try:
+            df = pd.read_sql_query("""
+                SELECT home_team, away_team, bet_type, bet_side, line,
+                       prediction, probability, edge, confidence_tier,
+                       odds_american, implied_probability,
+                       model_type, home_elo, away_elo, elo_diff,
+                       game_time
+                FROM game_predictions
+                WHERE game_date = ?
+                ORDER BY game_time ASC, edge DESC
+            """, conn, params=(game_date,))
+        except Exception:
+            # game_time column may not exist in older DBs
+            df = pd.read_sql_query("""
+                SELECT home_team, away_team, bet_type, bet_side, line,
+                       prediction, probability, edge, confidence_tier,
+                       odds_american, implied_probability,
+                       model_type, home_elo, away_elo, elo_diff
+                FROM game_predictions
+                WHERE game_date = ?
+                ORDER BY edge DESC
+            """, conn, params=(game_date,))
+            df["game_time"] = None
         conn.close()
+
+        # Enrich with game_time from prizepicks_lines.db (same source fetch_picks uses)
+        try:
+            pp_db = os.path.join(PROJECT_ROOT, "shared", "prizepicks_lines.db")
+            if os.path.exists(pp_db):
+                import sqlite3 as _sq2
+                pp_conn = _sq2.connect(pp_db)
+                time_rows = pp_conn.execute("""
+                    SELECT team, MIN(start_time) as start_time
+                    FROM prizepicks_lines
+                    WHERE substr(start_time, 1, 10) = ?
+                      AND league = ?
+                      AND team NOT LIKE '%/%'
+                    GROUP BY team
+                """, [game_date, sport.upper()]).fetchall()
+                pp_conn.close()
+                team_times = {row[0].upper(): row[1] for row in time_rows if row[1]}
+                if team_times:
+                    df["game_time"] = df["home_team"].apply(
+                        lambda t: team_times.get(str(t).upper())
+                    )
+        except Exception:
+            pass  # game_time stays None — cards still render without it
+
         return df
     except Exception:
         return pd.DataFrame()
@@ -1316,8 +1479,15 @@ def fetch_golf_ml_readiness() -> dict:
 
 # ── Main app ──────────────────────────────────────────────────────────────────
 def main():
-    st.title("FreePicks Dashboard")
-    st.caption(f"Last refresh: {datetime.now().strftime('%b %d %Y  %H:%M')}")
+    st.markdown(
+        f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:16px;font-weight:700;'
+        f'letter-spacing:1.5px;text-transform:uppercase;color:#e6edf3;padding:6px 0 0 0;">'
+        f'FreePicks Dashboard</div>'
+        f'<div style="font-family:\'JetBrains Mono\',monospace;font-size:10px;color:#484f58;'
+        f'letter-spacing:0.4px;margin-bottom:10px;">'
+        f'Last refresh: {datetime.now().strftime("%b %d %Y  %H:%M")}</div>',
+        unsafe_allow_html=True,
+    )
 
     sb = get_supabase()
     if sb is None:
@@ -1326,10 +1496,112 @@ def main():
         return
 
     # ── Top-level tabs ────────────────────────────────────────────────────────
-    tab_picks, tab_games, tab_perf, tab_season, tab_hb, tab_golf, tab_system = st.tabs(
-        ["Today's Picks", "Game Lines", "Performance",
+    tab_top, tab_picks, tab_games, tab_perf, tab_season, tab_hb, tab_golf, tab_system = st.tabs(
+        ["Top Plays", "Today's Picks", "Game Lines", "Performance",
          "MLB Season Props", "NHL Hits & Blocks", "Golf", "System"]
     )
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 0 — TOP PLAYS  (default home screen)
+    # ═══════════════════════════════════════════════════════════════════════════
+    with tab_top:
+        tp_date = date.today().isoformat()
+        st.markdown(
+            f'<div style="font-size:13px;color:#8b949e;margin-bottom:16px;">'
+            f'Best picks for <b style="color:#c9d1d9">{tp_date}</b> &nbsp;·&nbsp; '
+            f'Top 6 per sport by edge &nbsp;·&nbsp; T1-ELITE and T2-STRONG only</div>',
+            unsafe_allow_html=True,
+        )
+
+        _tp_tier_style = {
+            "T1-ELITE":  "background:#1a3a2a;color:#3fb950;border:1px solid #2ea043;",
+            "T2-STRONG": "background:#1a2a3a;color:#58a6ff;border:1px solid #388bfd;",
+            "T3-GOOD":   "background:#3a2a1a;color:#f0883e;border:1px solid #d18616;",
+        }
+        _tp_base_badge = "border-radius:10px;padding:2px 9px;font-size:10px;font-weight:700;letter-spacing:0.5px;"
+
+        def _render_top_plays(sport: str, accent: str):
+            df_tp = fetch_picks(
+                sport, tp_date,
+                min_prob=0.0, min_edge=0.0,
+                direction=None, tier_filter=[],
+            )
+            if df_tp.empty:
+                st.caption(f"No {sport} picks available for today.")
+                return
+
+            # Keep only T1-ELITE and T2-STRONG; fall back to top-6 by edge if none qualify
+            elite = df_tp[df_tp["ai_tier"].isin(["T1-ELITE", "T2-STRONG"])].copy() if "ai_tier" in df_tp.columns else pd.DataFrame()
+            top_df = elite if not elite.empty else df_tp.copy()
+            top_df = top_df.sort_values("ai_edge", ascending=False).head(6)
+
+            for _, r in top_df.iterrows():
+                player   = r.get("player_name", "")
+                prop     = str(r.get("prop_type", "")).upper().replace("_", " ")
+                line     = r.get("line", "")
+                pred     = r.get("ai_prediction", "")
+                prob     = float(r.get("ai_probability") or 0)
+                edge     = float(r.get("ai_edge") or 0)
+                odds_t   = str(r.get("odds_type", "standard")).lower()
+                tier     = str(r.get("ai_tier", ""))
+                matchup  = r.get("matchup", "")
+                time_str = r.get("Time", "")
+
+                prob_pct  = f"{prob*100:.1f}%"
+                edge_sign = f"+{edge:.1f}%" if edge >= 0 else f"{edge:.1f}%"
+                edge_col  = "#3fb950" if edge >= 0 else "#f85149"
+                bar_w     = min(int(prob * 100), 100)
+                bar_col   = "#3fb950" if prob >= 0.62 else ("#58a6ff" if prob >= 0.55 else "#f0883e")
+
+                badge_s = _tp_tier_style.get(tier, "background:#222;color:#8b949e;border:1px solid #484f58;")
+                badge_html = f'<span style="{badge_s}{_tp_base_badge}">{tier or "—"}</span>' if tier else ""
+
+                odds_label = {"goblin": "GOBLIN", "demon": "DEMON"}.get(odds_t, "")
+                odds_html  = (
+                    f'<span style="background:#2a1a3a;color:#bc8cff;border:1px solid #7c3aed;'
+                    f'{_tp_base_badge}margin-left:6px;">{odds_label}</span>'
+                ) if odds_label else ""
+
+                sub_line = f"{matchup}" + (f" · {time_str}" if time_str else "")
+
+                card_html = f"""
+<div style="background:#161b22;border:1px solid #30363d;border-radius:10px;
+            padding:12px 16px;margin-bottom:8px;">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
+    <div>
+      <div style="font-size:14px;font-weight:700;color:#e6edf3;">{player}</div>
+      <div style="font-size:11px;color:#8b949e;margin-top:2px;">{sub_line}</div>
+    </div>
+    <div style="display:flex;gap:4px;align-items:center;">{badge_html}{odds_html}</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <span style="font-size:13px;font-weight:600;color:#c9d1d9;min-width:80px;">
+      {pred} {line} {prop}
+    </span>
+    <span style="font-size:13px;color:#c9d1d9;font-variant-numeric:tabular-nums;width:46px;text-align:right;">
+      {prob_pct}
+    </span>
+    <div style="flex:1;background:#21262d;border-radius:4px;height:6px;overflow:hidden;">
+      <div style="width:{bar_w}%;height:6px;background:{bar_col};border-radius:4px;"></div>
+    </div>
+    <span style="font-size:13px;font-weight:700;color:{edge_col};width:52px;text-align:right;">
+      {edge_sign}
+    </span>
+  </div>
+</div>"""
+                st.markdown(card_html, unsafe_allow_html=True)
+
+        nhl_col, nba_col = st.columns(2)
+        with nhl_col:
+            st.markdown('<div style="font-size:15px;font-weight:700;color:#58a6ff;margin-bottom:10px;">NHL</div>', unsafe_allow_html=True)
+            _render_top_plays("NHL", "#58a6ff")
+        with nba_col:
+            st.markdown('<div style="font-size:15px;font-weight:700;color:#3fb950;margin-bottom:10px;">NBA</div>', unsafe_allow_html=True)
+            _render_top_plays("NBA", "#3fb950")
+
+        if st.button("Refresh Top Plays", key="tp_refresh"):
+            st.cache_data.clear()
+            st.rerun()
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TAB 1 — TODAY'S PICKS
@@ -1590,7 +1862,21 @@ def main():
 
             def _render_game_cards(df):
                 tier_order = {"PRIME": 0, "SHARP": 1, "LEAN": 2, "PASS": 3}
-                for (home, away), game_df in df.groupby(["home_team", "away_team"]):
+
+                # Build per-matchup game_time for sorting
+                has_time = "game_time" in df.columns
+                matchup_times = {}
+                if has_time:
+                    for (h, a), gd in df.groupby(["home_team", "away_team"]):
+                        gt = gd["game_time"].dropna()
+                        matchup_times[(h, a)] = gt.iloc[0] if len(gt) else "99:99:99"
+
+                # Sort matchups by game_time ascending
+                all_matchups = list(df.groupby(["home_team", "away_team"]).groups.keys())
+                all_matchups.sort(key=lambda k: str(matchup_times.get(k, "99:99:99") or "99:99:99"))
+
+                for (home, away) in all_matchups:
+                    game_df = df[(df["home_team"] == home) & (df["away_team"] == away)]
                     best_tier = min(game_df["confidence_tier"].unique(),
                                     key=lambda t: tier_order.get(t, 9))
                     badge_style = _C["badge"].get(best_tier, _C["badge"]["PASS"])
@@ -1601,42 +1887,53 @@ def main():
                     if len(h_elo) and len(a_elo):
                         elo_line = f'<div style="{_C["elo"]}">Elo: {int(h_elo.iloc[0])} ({home}) vs {int(a_elo.iloc[0])} ({away})</div>'
 
-                    sorted_bets = game_df.sort_values(
-                        "bet_type",
-                        key=lambda s: s.map({"moneyline": 0, "spread": 1, "total": 2})
-                    )
-                    rows = sorted_bets.to_dict("records")
+                    # Game time in header
+                    gt_raw = matchup_times.get((home, away)) if has_time else None
+                    time_html = ""
+                    if gt_raw and gt_raw != "99:99:99":
+                        time_html = f'<div style="{_C["elo"]}">{_fmt_time(gt_raw)}</div>'
+
+                    all_bets = game_df.to_dict("records")
+
+                    # One row per bet_type — keep the highest-probability side only
+                    favorable_rows = []
+                    for bt_key in ["moneyline", "spread", "total"]:
+                        candidates = [r for r in all_bets if r["bet_type"] == bt_key]
+                        if candidates:
+                            favorable_rows.append(max(candidates, key=lambda r: r["probability"]))
+
                     row_parts = []
-                    for i, r in enumerate(rows):
+                    for i, r in enumerate(favorable_rows):
                         bt, bs, prob, edge, pred = r["bet_type"], r["bet_side"], r["probability"], r["edge"], r["prediction"]
                         if bt == "moneyline":
-                            lbl = f"ML &middot; {bs.title()}"
-                            pick = f"{home if bs == 'home' else away} {pred}"
+                            lbl = "MONEYLINE"
+                            pick = f"{home if bs == 'home' else away}"
                         elif bt == "spread":
                             lv = f"{r['line']:+.1f}" if r["line"] else "PK"
-                            lbl = f"Spread {lv}"
-                            pick = f"{'Home' if pred == 'WIN' else 'Away'} covers"
+                            lbl = f"SPREAD {lv}"
+                            pick = f"{'%s' % home if pred == 'WIN' else '%s' % away} covers"
                         else:
-                            lv = f"{r['line']:.1f}" if r["line"] else "&mdash;"
-                            lbl = f"Total {lv}"
+                            lv = f"{r['line']:.1f}" if r["line"] else "—"
+                            lbl = f"TOTAL {lv}"
                             pick = pred
                         pc = _prob_color(prob)
                         ec = _edge_color(edge)
-                        row_style = _C["row_last"] if i == len(rows) - 1 else _C["row"]
+                        row_style = _C["row_last"] if i == len(favorable_rows) - 1 else _C["row"]
+                        bar_html = f'<div style="{_C["bar_bg"]}"><div style="width:{int(prob*100)}%;height:5px;background:{pc};border-radius:2px;"></div></div>'
                         row_parts.append(
                             f'<div style="{row_style}">'
                             f'<span style="{_C["label"]}">{lbl}</span>'
                             f'<span style="{_C["pick"]}">{pick}</span>'
                             f'<span style="{_C["pct"]}">{prob*100:.1f}%</span>'
-                            f'<div style="{_C["bar_bg"]}"><div style="width:{int(prob*100)}%;height:7px;background:{pc};border-radius:4px;"></div></div>'
-                            f'<span style="width:52px;text-align:right;font-size:13px;font-weight:600;color:{ec};">{edge*100:+.1f}%</span>'
+                            f'{bar_html}'
+                            f'<span style="width:52px;text-align:right;font-size:12px;font-weight:700;color:{ec};">{edge*100:+.1f}%</span>'
                             f'</div>'
                         )
 
                     card = (
                         f'<div style="{_C["card"]}">'
                         f'<div style="{_C["header"]}">'
-                        f'<div><div style="{_C["matchup"]}">{away} @ {home}</div>{elo_line}</div>'
+                        f'<div><div style="{_C["matchup"]}">{away} @ {home}</div>{time_html}{elo_line}</div>'
                         f'<span style="{badge_style}">{best_tier}</span>'
                         f'</div>'
                         + "".join(row_parts)
@@ -2060,7 +2357,8 @@ A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 
             conf_map = {"All": "VERY LOW", "MEDIUM+": "MEDIUM", "HIGH only": "HIGH"}
             conf_filter = conf_map[conf_sel]
         with sf4:
-            if st.button("Refresh projections", use_container_width=True, key="sp_refresh"):
+            st.markdown('<div style="height:27px"></div>', unsafe_allow_html=True)
+            if st.button("Refresh", use_container_width=True, key="sp_refresh"):
                 st.cache_data.clear()
                 st.rerun()
 
@@ -2696,18 +2994,11 @@ A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 
     # TAB — SYSTEM HEALTH  (live orchestrator monitor)
     # ═══════════════════════════════════════════════════════════════════════════
     with tab_system:
-        # Auto-refresh every 60 seconds via HTML meta tag
-        st.markdown(
-            '<meta http-equiv="refresh" content="60">',
-            unsafe_allow_html=True,
-        )
-
         now_str = datetime.now().strftime("%H:%M:%S")
         sys_r1, sys_r2 = st.columns([3, 1])
         sys_r1.markdown("### Orchestrator Health Monitor")
         sys_r2.markdown(
-            f'<div class="terminal-refresh">Auto-refreshes every 60s &nbsp;|&nbsp; '
-            f'Last loaded: {now_str}</div>',
+            f'<div class="terminal-refresh">Last loaded: {now_str}</div>',
             unsafe_allow_html=True,
         )
 
