@@ -9,7 +9,7 @@ import { supabase, getTodayDate } from '../services/supabase';
  */
 export function useFreePicks() {
   const {
-    props, userPicks, sport, loading, error, todayStats,
+    props, userPicks, sport, loading, error, todayStats, lastFetchedAt,
     setSport, fetchTodayProps, fetchUserPicks, makePick, refreshAll,
   } = usePicksStore();
 
@@ -82,6 +82,7 @@ export function useFreePicks() {
     loading,
     error,
     todayStats,
+    lastFetchedAt,
     isAuthenticated: !!session?.user,
     profile,
     setSport,

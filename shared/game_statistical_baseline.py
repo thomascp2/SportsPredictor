@@ -272,9 +272,11 @@ class GameStatisticalPredictor:
         predicted = f.get("gf_predicted_total", self.params["avg_total"])
 
         # Adjust for park/weather (MLB)
+        # NOTE: gf_predicted_total from MLBGameFeatureExtractor already incorporates
+        # park_runs_factor (it multiplies the stat-based total by park_runs at feature
+        # extraction time). Do NOT apply park_runs again here — that would double it.
+        # Only apply weather adjustments (temperature, wind) which are NOT baked in.
         if self.sport == "mlb":
-            park_runs = f.get("gf_park_runs_factor", 1.0)
-            predicted *= park_runs
 
             # Temperature effect (warmer = more runs)
             temp = f.get("gf_temperature", 72)

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -28,6 +28,7 @@ export function PlayScreen() {
     loading,
     error,
     todayStats,
+    lastFetchedAt,
     isAuthenticated,
     profile,
     setSport,
@@ -38,6 +39,18 @@ export function PlayScreen() {
   const { items: watchlistItems } = useWatchlistStore();
   const [watchlistFilter, setWatchlistFilter] = useState<string | null>(null);
   const [selectedProp, setSelectedProp] = useState<DailyProp | null>(null);
+  const [minutesSinceFetch, setMinutesSinceFetch] = useState<number | null>(null);
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    if (!lastFetchedAt) return;
+    const update = () => {
+      setMinutesSinceFetch(Math.floor((Date.now() - lastFetchedAt.getTime()) / 60000));
+    };
+    update();
+    tickRef.current = setInterval(update, 30000);
+    return () => { if (tickRef.current) clearInterval(tickRef.current); };
+  }, [lastFetchedAt]);
 
   const filteredProps = watchlistFilter
     ? props.filter(p => p.player_name === watchlistFilter)
@@ -81,6 +94,11 @@ export function PlayScreen() {
           <Text style={styles.statsText}>
             {todayStats.hits} hits / {todayStats.total} picks today
             {todayStats.pending > 0 ? ` (${todayStats.pending} pending)` : ''}
+          </Text>
+        )}
+        {minutesSinceFetch !== null && (
+          <Text style={styles.freshnessText}>
+            Updated {minutesSinceFetch === 0 ? 'just now' : `${minutesSinceFetch}m ago`}
           </Text>
         )}
       </View>
@@ -174,6 +192,11 @@ const styles = StyleSheet.create({
     color: '#888',
     fontSize: 12,
     marginTop: 4,
+  },
+  freshnessText: {
+    color: '#555',
+    fontSize: 11,
+    marginTop: 2,
   },
   listContent: {
     paddingBottom: 20,

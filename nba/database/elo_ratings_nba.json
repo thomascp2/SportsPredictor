@@ -1,9 +1,9 @@
 {
   "sport": "nba",
   "season": null,
-  "games_processed": 511,
-  "last_updated": "2025-01-06",
-  "saved_at": "2026-03-25 22:27:06",
+  "games_processed": 82,
+  "last_updated": "2026-04-04",
+  "saved_at": "2026-04-05 21:59:40",
   "config": {
     "k_factor": 20,
     "home_advantage": 100,
@@ -12,217 +12,216 @@
     "season_regression": 0.25
   },
   "ratings": {
-    "ATL": 1536.0,
-    "BOS": 1351.1,
-    "BKN": 1642.7,
-    "CHA": 1731.1,
-    "CHI": 1511.5,
-    "CLE": 1241.4,
-    "DAL": 1475.3,
-    "DEN": 1425.7,
-    "DET": 1486.4,
-    "GSW": 1467.6,
-    "HOU": 1383.9,
-    "IND": 1495.8,
-    "LAC": 1448.7,
-    "LAL": 1471.1,
-    "MEM": 1419.8,
-    "MIA": 1496.5,
-    "MIL": 1471.8,
-    "MIN": 1503.1,
-    "NOP": 1700.4,
-    "NYK": 1400.9,
-    "OKC": 1200.6,
-    "ORL": 1496.2,
-    "PHI": 1558.0,
-    "PHX": 1552.1,
-    "POR": 1628.3,
-    "SAC": 1468.0,
-    "SAS": 1463.2,
-    "TOR": 1657.4,
-    "UTA": 1622.2,
-    "WAS": 1693.2
+    "CHA": 1542.6,
+    "SAC": 1455.8,
+    "CLE": 1558.3,
+    "ORL": 1479.7,
+    "NYK": 1512.9,
+    "NOP": 1415.4,
+    "DET": 1584.3,
+    "IND": 1509.2,
+    "LAC": 1502.5,
+    "BOS": 1610.3,
+    "ATL": 1592.3,
+    "MIA": 1464.5,
+    "MEM": 1405.9,
+    "HOU": 1579.5,
+    "OKC": 1557.3,
+    "CHI": 1427.9,
+    "TOR": 1555.7,
+    "DEN": 1558.5,
+    "UTA": 1435.4,
+    "GSW": 1453.4,
+    "WAS": 1418.2,
+    "POR": 1533.0,
+    "DAL": 1418.3,
+    "LAL": 1525.6,
+    "BKN": 1427.2,
+    "MIL": 1397.4,
+    "SAS": 1582.3,
+    "MIN": 1472.9,
+    "PHI": 1523.7
   },
   "recent_history": [
     {
-      "date": "2024-11-02",
-      "home": "CHA",
-      "away": "BOS",
-      "score": "113-103",
+      "date": "2026-04-02",
+      "home": "POR",
+      "away": "NOP",
+      "score": "118-106",
       "delta": 9.8,
-      "home_elo": 1523.7,
-      "away_elo": 1426.6
+      "home_elo": 1533.0,
+      "away_elo": 1424.7
     },
     {
-      "date": "2024-11-02",
-      "home": "PHI",
-      "away": "MEM",
-      "score": "124-107",
-      "delta": 12.5,
-      "home_elo": 1553.9,
-      "away_elo": 1479.1
-    },
-    {
-      "date": "2024-11-02",
-      "home": "TOR",
-      "away": "SAC",
-      "score": "128-131",
-      "delta": -18.6,
-      "home_elo": 1537.3,
-      "away_elo": 1492.7
-    },
-    {
-      "date": "2024-11-02",
-      "home": "HOU",
-      "away": "GSW",
-      "score": "127-121",
-      "delta": 9.7,
-      "home_elo": 1486.2,
-      "away_elo": 1422.0
-    },
-    {
-      "date": "2024-11-02",
-      "home": "MIL",
-      "away": "CLE",
-      "score": "114-113",
-      "delta": 2.5,
-      "home_elo": 1577.7,
-      "away_elo": 1387.5
-    },
-    {
-      "date": "2024-11-02",
-      "home": "SAS",
-      "away": "MIN",
-      "score": "103-113",
-      "delta": -25.5,
-      "home_elo": 1498.2,
-      "away_elo": 1508.9
-    },
-    {
-      "date": "2024-11-02",
-      "home": "WAS",
-      "away": "MIA",
-      "score": "118-98",
-      "delta": 16.0,
-      "home_elo": 1507.9,
-      "away_elo": 1480.5
-    },
-    {
-      "date": "2024-11-02",
-      "home": "DEN",
-      "away": "UTA",
-      "score": "103-129",
-      "delta": -26.4,
-      "home_elo": 1496.0,
-      "away_elo": 1598.6
-    },
-    {
-      "date": "2024-11-02",
-      "home": "PHX",
-      "away": "POR",
-      "score": "97-103",
-      "delta": -17.4,
-      "home_elo": 1438.1,
-      "away_elo": 1541.8
-    },
-    {
-      "date": "2024-11-02",
+      "date": "2026-04-02",
       "home": "LAC",
-      "away": "OKC",
-      "score": "105-92",
-      "delta": 9.8,
-      "home_elo": 1510.9,
-      "away_elo": 1399.9
+      "away": "SAS",
+      "score": "99-118",
+      "delta": -25.4,
+      "home_elo": 1502.5,
+      "away_elo": 1591.2
     },
     {
-      "date": "2024-11-03",
+      "date": "2026-04-03",
+      "home": "CHA",
+      "away": "IND",
+      "score": "129-108",
+      "delta": 17.9,
+      "home_elo": 1526.8,
+      "away_elo": 1525.0
+    },
+    {
+      "date": "2026-04-03",
+      "home": "PHI",
+      "away": "MIN",
+      "score": "115-103",
+      "delta": 12.3,
+      "home_elo": 1541.0,
+      "away_elo": 1484.1
+    },
+    {
+      "date": "2026-04-03",
       "home": "BKN",
-      "away": "DET",
-      "score": "106-92",
-      "delta": 18.6,
-      "home_elo": 1506.1,
-      "away_elo": 1543.5
-    },
-    {
-      "date": "2024-11-03",
-      "home": "NOP",
       "away": "ATL",
-      "score": "126-111",
-      "delta": 15.3,
-      "home_elo": 1541.4,
-      "away_elo": 1522.7
+      "score": "107-141",
+      "delta": -26.7,
+      "home_elo": 1450.2,
+      "away_elo": 1569.3
     },
     {
-      "date": "2024-11-03",
+      "date": "2026-04-03",
+      "home": "MEM",
+      "away": "TOR",
+      "score": "96-128",
+      "delta": -27.7,
+      "home_elo": 1429.8,
+      "away_elo": 1531.8
+    },
+    {
+      "date": "2026-04-03",
+      "home": "MIL",
+      "away": "BOS",
+      "score": "101-133",
+      "delta": -21.9,
+      "home_elo": 1416.3,
+      "away_elo": 1591.4
+    },
+    {
+      "date": "2026-04-03",
       "home": "DAL",
       "away": "ORL",
-      "score": "85-108",
-      "delta": -27.1,
-      "home_elo": 1455.1,
-      "away_elo": 1536.8
+      "score": "127-138",
+      "delta": -26.0,
+      "home_elo": 1441.8,
+      "away_elo": 1456.2
     },
     {
-      "date": "2024-11-04",
-      "home": "CLE",
-      "away": "MIL",
-      "score": "114-116",
-      "delta": -8.0,
-      "home_elo": 1379.5,
-      "away_elo": 1585.7
+      "date": "2026-04-03",
+      "home": "CHA",
+      "away": "IND",
+      "score": "129-108",
+      "delta": 15.8,
+      "home_elo": 1542.6,
+      "away_elo": 1509.2
     },
     {
-      "date": "2024-11-04",
-      "home": "WAS",
-      "away": "GSW",
-      "score": "125-112",
-      "delta": 10.1,
-      "home_elo": 1518.0,
-      "away_elo": 1411.9
+      "date": "2026-04-03",
+      "home": "PHI",
+      "away": "MIN",
+      "score": "115-103",
+      "delta": 11.2,
+      "home_elo": 1552.2,
+      "away_elo": 1472.9
     },
     {
-      "date": "2024-11-04",
-      "home": "DET",
-      "away": "LAL",
-      "score": "103-115",
-      "delta": -27.8,
-      "home_elo": 1515.7,
-      "away_elo": 1507.5
-    },
-    {
-      "date": "2024-11-04",
-      "home": "ATL",
-      "away": "BOS",
-      "score": "123-93",
-      "delta": 11.6,
-      "home_elo": 1534.3,
-      "away_elo": 1415.0
-    },
-    {
-      "date": "2024-11-04",
+      "date": "2026-04-03",
       "home": "BKN",
-      "away": "MEM",
-      "score": "104-106",
-      "delta": -14.4,
-      "home_elo": 1491.7,
-      "away_elo": 1493.5
+      "away": "ATL",
+      "score": "107-141",
+      "delta": -23.0,
+      "home_elo": 1427.2,
+      "away_elo": 1592.3
     },
     {
-      "date": "2024-11-04",
-      "home": "MIA",
-      "away": "SAC",
-      "score": "111-110",
-      "delta": 5.8,
-      "home_elo": 1486.3,
-      "away_elo": 1486.9
+      "date": "2026-04-03",
+      "home": "NYK",
+      "away": "CHI",
+      "score": "136-96",
+      "delta": 14.5,
+      "home_elo": 1512.9,
+      "away_elo": 1427.9
     },
     {
-      "date": "2024-11-04",
-      "home": "CHI",
+      "date": "2026-04-03",
+      "home": "HOU",
       "away": "UTA",
-      "score": "135-126",
-      "delta": 16.9,
-      "home_elo": 1535.6,
-      "away_elo": 1581.7
+      "score": "140-106",
+      "delta": 10.5,
+      "home_elo": 1579.5,
+      "away_elo": 1435.4
+    },
+    {
+      "date": "2026-04-03",
+      "home": "MEM",
+      "away": "TOR",
+      "score": "96-128",
+      "delta": -23.9,
+      "home_elo": 1405.9,
+      "away_elo": 1555.7
+    },
+    {
+      "date": "2026-04-03",
+      "home": "MIL",
+      "away": "BOS",
+      "score": "101-133",
+      "delta": -18.9,
+      "home_elo": 1397.4,
+      "away_elo": 1610.3
+    },
+    {
+      "date": "2026-04-03",
+      "home": "DAL",
+      "away": "ORL",
+      "score": "127-138",
+      "delta": -23.5,
+      "home_elo": 1418.3,
+      "away_elo": 1479.7
+    },
+    {
+      "date": "2026-04-03",
+      "home": "SAC",
+      "away": "NOP",
+      "score": "117-113",
+      "delta": 9.3,
+      "home_elo": 1455.8,
+      "away_elo": 1415.4
+    },
+    {
+      "date": "2026-04-04",
+      "home": "MIA",
+      "away": "WAS",
+      "score": "152-136",
+      "delta": 13.9,
+      "home_elo": 1464.5,
+      "away_elo": 1418.2
+    },
+    {
+      "date": "2026-04-04",
+      "home": "DEN",
+      "away": "SAS",
+      "score": "136-134",
+      "delta": 8.9,
+      "home_elo": 1558.5,
+      "away_elo": 1582.3
+    },
+    {
+      "date": "2026-04-04",
+      "home": "PHI",
+      "away": "DET",
+      "score": "93-116",
+      "delta": -28.5,
+      "home_elo": 1523.7,
+      "away_elo": 1584.3
     }
   ]
 }

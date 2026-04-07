@@ -39,6 +39,18 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 
+# ── Encoding guard ───────────────────────────────────────────────────��────────
+# Windows defaults to cp1252 which can't encode accented player names (e.g.
+# Porzingis, Jokic, Doncic).  Force UTF-8 on stdout/stderr for this process
+# AND set PYTHONIOENCODING so every subprocess we spawn inherits it.
+os.environ.setdefault('PYTHONIOENCODING', 'utf-8:replace')
+os.environ.setdefault('PYTHONUTF8', '1')
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+# ─────────────────────────────────────────────────────────────────────────────
+
 # Optional: schedule library for continuous mode
 try:
     import schedule
@@ -1272,6 +1284,8 @@ class SportsOrchestrator:
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 timeout=300,  # 5 minute timeout
                 cwd=str(self.config.project_root)
             )
@@ -2803,6 +2817,10 @@ class SportsOrchestrator:
             # are missing (e.g. orchestrator restarted after 11 AM), run immediately.
             self._catchup_hits_blocks()
 
+        # Startup catch-up for the main prediction pipeline (P6):
+        # If the orchestrator restarts after prediction_time and today's DB is empty, run now.
+        self._catchup_main_pipeline()
+
         # Weekly SZLN ML refresh (MLB only — season-long lines change slowly)
         if self.config.sport == "MLB" and hasattr(self.config, 'szln_refresh_time'):
             schedule.every().monday.at(self.config.szln_refresh_time).do(
@@ -2990,6 +3008,38 @@ class SportsOrchestrator:
         except Exception as e:
             print(f"[GAME GRADE] Error: {e}")
             return {"success": False, "error": str(e)}
+
+    def _catchup_main_pipeline(self):
+        """
+        If the orchestrator starts after the scheduled prediction_time and today's
+        prop predictions are missing (count=0 in SQLite), run the full prediction
+        pipeline immediately so overnight downtime doesn't silently skip the day.
+
+        Pattern mirrors _catchup_hits_blocks — check time, check DB, run if needed.
+        """
+        now = datetime.now()
+        sched_h, sched_m = map(int, self.config.prediction_time.split(':'))
+        sched_mins = sched_h * 60 + sched_m
+        now_mins = now.hour * 60 + now.minute
+        if now_mins < sched_mins:
+            return  # haven't reached scheduled time yet — normal schedule will handle it
+
+        today = now.strftime('%Y-%m-%d')
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            count = conn.execute(
+                'SELECT COUNT(*) FROM predictions WHERE game_date = ?', (today,)
+            ).fetchone()[0]
+            conn.close()
+            if count > 0:
+                return  # already ran today
+        except Exception as e:
+            print(f"{self.config.emoji} [CATCH-UP] Could not check predictions DB: {e}")
+            return  # don't run blind if we can't verify
+
+        print(f"{self.config.emoji} [CATCH-UP] Startup after prediction window "
+              f"({self.config.prediction_time}) with 0 predictions for {today} — running now...")
+        self.run_daily_prediction_pipeline()
 
     def _catchup_hits_blocks(self):
         """

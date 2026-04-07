@@ -209,9 +209,10 @@ class SmartPickSelector:
         Falls back to standard leg values when sigma_distance is 0 (no standard line found).
         """
         if sigma_distance == 0.0 and odds_type != 'standard':
-            # No standard line found for comparison — use historical static values
-            fallback = {'standard': 0.56, 'goblin': 0.76, 'demon': 0.45}
-            return fallback.get(odds_type, 0.56)
+            # No standard line found for comparison — use exact static break-evens.
+            # Must stay in sync with gsd_module/shared/odds.py BREAK_EVEN_MAP.
+            fallback = {'standard': 110 / 210, 'goblin': 320 / 420, 'demon': 100 / 220}
+            return fallback.get(odds_type, 110 / 210)
         lv = self.estimate_leg_value(odds_type, sigma_distance)
         total_lv = max(1.0, min(6.0, n_picks * lv))
         payout = self._interpolate_payout(total_lv)
@@ -395,9 +396,29 @@ class SmartPickSelector:
             from prizepicks_client import PrizePicksIngestion
             ingestion = PrizePicksIngestion()
             result = ingestion.run_ingestion([self.sport])
-            return result.get('total_lines', 0)
+            count = result.get('total_lines', 0)
+            if count == 0:
+                msg = (f"[{self.sport}] PP line fetch returned 0 lines. "
+                       f"API may be down, blocked, or no lines posted yet. "
+                       f"Smart picks will be empty until lines are available.")
+                print(f"[WARN] {msg}")
+                if DISCORD_WEBHOOK_URL:
+                    try:
+                        requests.post(DISCORD_WEBHOOK_URL,
+                                      json={"content": f":warning: **{self.sport} PP LINE FETCH: 0 LINES**\n{msg}"},
+                                      timeout=5)
+                    except Exception:
+                        pass
+            return count
         except Exception as e:
             print(f"Warning: Could not fetch fresh lines: {e}")
+            if DISCORD_WEBHOOK_URL:
+                try:
+                    requests.post(DISCORD_WEBHOOK_URL,
+                                  json={"content": f":x: **{self.sport} PP LINE FETCH FAILED**\n`{e}`"},
+                                  timeout=5)
+                except Exception:
+                    pass
             return 0
 
     def _is_initial_match(self, full_name: str, abbrev_name: str) -> bool:
@@ -528,9 +549,16 @@ class SmartPickSelector:
             if key not in pred_lookup:
                 continue
 
-            # Get the prediction with features
-            # Use the first one (they should all have same parameters for same player+prop)
-            pred = pred_lookup[key][0]
+            # Get the prediction with features.
+            # NHL/NBA: all predictions for same player+prop share the same statistical
+            # parameters — use the highest-prob row (index 0, sorted descending).
+            # MLB: each prediction is at a specific line; pick the row whose line
+            # is closest to the PP line so stored probability maps to the right threshold.
+            if self.sport == 'MLB':
+                pred = min(pred_lookup[key],
+                           key=lambda p: abs((p.get('line') or 0) - pp['line']))
+            else:
+                pred = pred_lookup[key][0]
             prop_type = pp['prop_type']
 
             # Team verification - skip if player changed teams (trade, etc.)
@@ -601,6 +629,18 @@ class SmartPickSelector:
                 recent_avg = mean_shots
                 # Baseline: use season average
                 baseline_prob_over = self.normal_prob_over(season_avg, season_std, pp['line']) if season_avg > 0 else pp_prob_over
+            elif self.sport == 'MLB':
+                # MLB: probability is pre-computed per specific line in the prediction DB.
+                # Use the stored probability from the closest-line prediction (selected above).
+                stored_prob = pred.get('probability')
+                stored_dir = pred.get('prediction')  # 'OVER' or 'UNDER'
+                if stored_prob is None or stored_prob <= 0:
+                    continue
+                # Convert stored directional probability to P(OVER)
+                pp_prob_over = stored_prob if stored_dir == 'OVER' else 1.0 - stored_prob
+                our_param = stored_prob
+                recent_avg = 0
+                baseline_prob_over = pp_prob_over  # no separate baseline for MLB
             else:
                 # NBA: All props use Normal distribution
                 mean = pred.get('mean') or pred.get('f_l10_avg')
@@ -621,16 +661,21 @@ class SmartPickSelector:
             sigma_distance = 0.0
             if pp['odds_type'] != 'standard' and std_dev > 0:
                 std_line = standard_lines_by_player.get((pp['player_name'].lower(), prop_type))
-                if not std_line:
-                    # No standard line exists for this player/prop — can't compute σ-distance
-                    # or verify the payout math, so skip entirely rather than guess.
-                    continue
-                sigma_distance = (pp['line'] - std_line) / std_dev
-                # Quality gates: skip junk variants
-                if pp['odds_type'] == 'goblin' and sigma_distance >= -0.3:
-                    continue  # Nearly same as standard but with 84%+ break-even — skip
-                if pp['odds_type'] == 'demon' and sigma_distance >= 1.5:
-                    continue  # Too far above standard to be achievable — skip
+                if std_line:
+                    sigma_distance = (pp['line'] - std_line) / std_dev
+                    # Quality gates: skip junk variants (requires standard line for σ-reference)
+                    if pp['odds_type'] == 'goblin' and sigma_distance >= -0.3:
+                        continue  # Nearly same as standard but with 84%+ break-even — skip
+                    if pp['odds_type'] == 'demon' and sigma_distance >= 1.5:
+                        continue  # Too far above standard to be achievable — skip
+                else:
+                    # No standard line exists for this player/prop — can't compute σ-distance.
+                    # For goblin: allow with σ=0; compute_break_even() falls back to static
+                    # BE=0.7619, so the pick must still clear a 76% OVER threshold.
+                    # For demon: skip — without a σ-reference we can't verify the line isn't
+                    # unreachably far above standard (σ>=1.5 gate can't fire).
+                    if pp['odds_type'] == 'demon':
+                        continue
 
             matched += 1
 
@@ -668,6 +713,16 @@ class SmartPickSelector:
             # The threes model learned to predict UNDER 100% of the time; OVER predictions are
             # always wrong because PP sets three-pointer lines high enough that UNDER always wins.
             if prop_type == 'threes' and prediction == 'OVER':
+                continue
+
+            # Suppress degenerate OVER props confirmed by backtesting (2026-04-05 RCA audit):
+            #   steals OVER:       97.2% actual OVER rate — PP line far too low, not a real edge
+            #   blocked_shots OVER: 94.5% actual OVER rate — same line-mismatch artifact
+            #   fantasy OVER:      25.1% hit rate — catastrophically miscalibrated, model/line broken
+            #   turnovers OVER:    47.5% hit rate — below standard break-even (52.4%)
+            # These are not model signals; they reflect broken PP line-setting or degenerate models.
+            # Re-evaluate at start of next season when lines reset.
+            if prediction == 'OVER' and prop_type in ('steals', 'blocked_shots', 'fantasy', 'turnovers'):
                 continue
 
             # Dynamic break-even derived from σ-distance and PAYOUTS table
@@ -727,7 +782,22 @@ class SmartPickSelector:
 
             smart_picks.append(pick)
 
-        print(f"[{self.sport}] Matched {matched} PP lines to predictions")
+        total_pp = len(pp_lines)
+        unmatched = total_pp - matched
+        unmatched_rate = unmatched / total_pp if total_pp > 0 else 0
+        print(f"[{self.sport}] Matched {matched}/{total_pp} PP lines to predictions "
+              f"({unmatched} unmatched, {unmatched_rate:.0%})")
+        if total_pp > 10 and unmatched_rate > 0.20:
+            msg = (f"[{self.sport}] High unmatched PP line rate: {unmatched}/{total_pp} "
+                   f"({unmatched_rate:.0%}). Name matching or prediction coverage may be degraded.")
+            print(f"[WARN] {msg}")
+            if DISCORD_WEBHOOK_URL:
+                try:
+                    requests.post(DISCORD_WEBHOOK_URL,
+                                  json={"content": f":warning: **{self.sport} UNMATCHED LINES: {unmatched_rate:.0%}**\n{msg}"},
+                                  timeout=5)
+                except Exception:
+                    pass
         print(f"[{self.sport}] Found {len(smart_picks)} picks with edge >= {min_edge}%")
 
         # Dedup: for each (player, prop, odds_type), keep only the highest-edge variant.
@@ -755,59 +825,42 @@ class SmartPickSelector:
         # Sport-specific prop types
         if self.sport == 'NHL':
             props = ('shots', 'points', 'goals', 'assists', 'pp_points', 'hits', 'blocked_shots')
+        elif self.sport == 'MLB':
+            props = ('strikeouts', 'outs_recorded', 'pitcher_walks', 'hits_allowed', 'earned_runs',
+                     'hits', 'total_bases', 'home_runs', 'rbis', 'runs',
+                     'stolen_bases', 'walks', 'batter_strikeouts', 'hrr')
         else:
-            # NBA has many more props
+            # NBA
             props = ('points', 'rebounds', 'assists', 'threes', 'pra',
                      'pts_rebs', 'pts_asts', 'rebs_asts', 'steals',
                      'blocked_shots', 'turnovers', 'blks+stls', 'fantasy')
 
         prop_placeholders = ','.join(['?' for _ in props])
 
-        # Match by game date (from start_time) rather than fetch_date
-        # This handles cases where lines are fetched day before the game
+        # Match by game date (from start_time) rather than fetch_date.
+        # Always take the LATEST ingested row per (player, prop, odds_type) using MAX(id).
+        # PP changes lines mid-day by creating a new projection_id, which would leave both
+        # old and new rows in the DB if we used SELECT DISTINCT. Taking MAX(id) ensures we
+        # always serve the current line, never stale ones.
         query = f'''
-            SELECT DISTINCT player_name, prop_type, line, odds_type, team
-            FROM prizepicks_lines
-            WHERE substr(start_time, 1, 10) = ?
-            AND league = ?
-            AND odds_type IN ({placeholders})
-            AND prop_type IN ({prop_placeholders})
+            SELECT p.player_name, p.prop_type, p.line, p.odds_type, p.team
+            FROM prizepicks_lines p
+            INNER JOIN (
+                SELECT player_name, prop_type, odds_type, MAX(id) AS max_id
+                FROM prizepicks_lines
+                WHERE substr(start_time, 1, 10) = ?
+                  AND league = ?
+                  AND odds_type IN ({placeholders})
+                  AND prop_type IN ({prop_placeholders})
+                GROUP BY player_name, prop_type, odds_type
+            ) latest ON p.id = latest.max_id
         '''
 
         params = [game_date, self.sport] + odds_types + list(props)
         rows = conn.execute(query, params).fetchall()
         conn.close()
 
-        all_rows = [dict(row) for row in rows]
-
-        # Enforce platform rule: max 1 standard line per (player, prop).
-        # PP's API sometimes returns multiple projections all labeled 'standard'
-        # for the same player+prop (alt lines). Keep the median standard line —
-        # it's most likely to be the real board line; outliers are de-facto goblin/demon.
-        from collections import defaultdict
-        std_by_key = defaultdict(list)
-        for r in all_rows:
-            if r['odds_type'] == 'standard':
-                std_by_key[(r['player_name'], r['prop_type'])].append(r)
-
-        seen_std = set()
-        deduped = []
-        for r in all_rows:
-            if r['odds_type'] != 'standard':
-                deduped.append(r)
-                continue
-            key = (r['player_name'], r['prop_type'])
-            if key in seen_std:
-                continue
-            candidates = sorted(std_by_key[key], key=lambda x: x['line'])
-            if len(candidates) > 1:
-                print(f"[PP] Multiple STD lines for {r['player_name']} {r['prop_type']}: "
-                      f"{[c['line'] for c in candidates]} — keeping median")
-            keeper = candidates[len(candidates) // 2]   # median (rounds down for even count)
-            deduped.append(keeper)
-            seen_std.add(key)
-
-        return deduped
+        return [dict(row) for row in rows]
 
     def _get_predictions_with_params(self, game_date: str) -> List[Dict]:
         """Get our predictions with statistical parameters extracted from features"""

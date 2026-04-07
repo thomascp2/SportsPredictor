@@ -161,12 +161,9 @@ def _fetch_espn_odds(sport: str, game_date: str) -> List[Dict]:
         # Try getting odds from scoreboard first (NBA has them inline)
         odds_data = _extract_scoreboard_odds(comp)
 
-        # For NHL/MLB: ALWAYS fetch summary for moneylines (scoreboard lacks them)
-        # For NBA: only fetch summary if scoreboard had no odds at all
-        needs_summary = (
-            (sport in ("nhl", "mlb") and odds_data.get("home_ml") is None) or
-            (sport == "nba" and odds_data["over_under"] is None)
-        )
+        # Always fetch summary when moneylines are missing — the scoreboard
+        # gives over/under but rarely provides moneylines for any sport.
+        needs_summary = odds_data.get("home_ml") is None and espn_id
 
         if needs_summary and espn_id:
             summary_odds = _fetch_summary_odds(session, base, espn_id)
@@ -180,14 +177,18 @@ def _fetch_espn_odds(sport: str, game_date: str) -> List[Dict]:
         home_prob = _moneyline_to_prob(odds_data.get("home_ml"))
         away_prob = _moneyline_to_prob(odds_data.get("away_ml"))
 
-        # If we have spread but no moneylines, estimate from spread
+        # If we have spread but no moneylines, estimate from spread.
+        # Convention: spread is from the home team's perspective.
+        #   negative spread = home team is favored (e.g. -9.5 means home -9.5)
+        #   positive spread = away team is favored (e.g. +9.5 means home +9.5)
+        # So home_prob increases as spread decreases (more negative = bigger home favorite).
         if home_prob is None and odds_data.get("spread") is not None:
             spread = odds_data["spread"]
             # Quick approximation: each point of spread ~ 3% probability
             if sport == "nba":
-                home_prob = round(max(0.15, min(0.85, 0.50 + spread * 0.03)), 4)
+                home_prob = round(max(0.15, min(0.85, 0.50 - spread * 0.03)), 4)
             elif sport == "nhl":
-                home_prob = round(max(0.20, min(0.80, 0.50 + spread * 0.10)), 4)
+                home_prob = round(max(0.20, min(0.80, 0.50 - spread * 0.10)), 4)
             elif sport == "mlb":
                 # MLB spread is typically run line (1.5), use ML for prob
                 home_prob = 0.50

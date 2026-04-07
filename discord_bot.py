@@ -320,7 +320,7 @@ def _fetch_top_picks_for_parlay(sport: str, game_date: str, pool_size: int = 10)
             WHERE game_date = ?
               AND f_insufficient_data = 0
               AND f_games_played >= 5
-              AND probability BETWEEN 0.56 AND 0.95
+              AND probability BETWEEN 0.5238 AND 0.95
             GROUP BY player_name
             HAVING probability = MAX(probability)
             ORDER BY probability DESC
@@ -343,7 +343,7 @@ def _fetch_top_picks_for_parlay(sport: str, game_date: str, pool_size: int = 10)
                    probability, features_json
             FROM predictions
             WHERE game_date = ?
-              AND probability BETWEEN 0.56 AND 0.95
+              AND probability BETWEEN 0.5238 AND 0.95
             ORDER BY probability DESC
         """, (game_date,))
         rows = cursor.fetchall()

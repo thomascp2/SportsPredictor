@@ -373,14 +373,29 @@ class ESPNGolfApi:
         }
 
     def _infer_current_round(self, competition: dict):
-        """Guess the current round number from the competitors' round count."""
+        """
+        Infer the current round number from competitors' linescore data.
+
+        ESPN pre-populates future rounds as linescores with value=0, so simply
+        counting linescores overstates the current round (e.g., returns 3 on
+        Friday when round 2 is actually in progress). We instead look at the
+        highest period that has a non-zero score from any competitor.
+        """
         competitors = competition.get("competitors", [])
         if not competitors:
             return 1
-        max_rounds = max(
-            len(c.get("linescores", [])) for c in competitors
-        )
-        return max(1, max_rounds)
+        max_active_round = 0
+        for c in competitors:
+            for ls in c.get("linescores", []):
+                period = ls.get("period", 0)
+                raw_value = ls.get("value")
+                try:
+                    val = float(raw_value) if raw_value is not None else 0.0
+                    if val > 0 and period:
+                        max_active_round = max(max_active_round, int(period))
+                except (ValueError, TypeError):
+                    pass
+        return max(1, max_active_round)
 
     @staticmethod
     def _parse_score(value: str):

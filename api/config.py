@@ -43,11 +43,16 @@ LEG_VALUES = {
     'demon': 1.5,
 }
 
-# Break-even rates by odds type
+# Break-even rates by odds type — exact fractions, single source of truth for the API.
+# Import these everywhere instead of hardcoding. Must stay in sync with
+# gsd_module/shared/odds.py BREAK_EVEN_MAP and smart_pick_selector.py.
+# standard: 110/210 = 0.52381 (NOT 0.56 — that was a pre-Mar-8-2026 bug; overstated edge by 3.6pp)
+# goblin:   320/420 = 0.76190 (NOT 0.76)
+# demon:    100/220 = 0.45455 (NOT 0.45)
 BREAK_EVEN_RATES = {
-    'goblin': 0.76,
-    'standard': 0.56,
-    'demon': 0.45,
+    'standard': 110 / 210,  # 0.52381
+    'goblin':   320 / 420,  # 0.76190
+    'demon':    100 / 220,  # 0.45455
 }
 
 # API settings

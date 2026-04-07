@@ -8,20 +8,20 @@ title FreePicks Orchestrator
 cd /d C:\Users\thoma\SportsPredictor
 
 :: Discord webhooks
-SET DISCORD_WEBHOOK_URL=***REMOVED***
-SET NHL_DISCORD_WEBHOOK=***REMOVED***
-SET NBA_DISCORD_WEBHOOK=***REMOVED***
-SET MLB_DISCORD_WEBHOOK=***REMOVED***
+SET DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/1477417873252159619/***REDACTED_DISCORD_WEBHOOK_1***
+SET NHL_DISCORD_WEBHOOK=https://discord.com/api/webhooks/1486934114069250168/***REDACTED_DISCORD_WEBHOOK_4***
+SET NBA_DISCORD_WEBHOOK=https://discord.com/api/webhooks/1486934228300992534/***REDACTED_DISCORD_WEBHOOK_3***
+SET MLB_DISCORD_WEBHOOK=https://discord.com/api/webhooks/1486934321557274695/***REDACTED_DISCORD_WEBHOOK_2***
 :: NHL Hits & Blocks — dedicated channel webhook
-SET NHL_HITS_BLOCKS_WEBHOOK=***REMOVED***
+SET NHL_HITS_BLOCKS_WEBHOOK=https://discord.com/api/webhooks/1486458242526740501/***REDACTED_DISCORD_WEBHOOK_5***
 
 :: Discord bot token
-SET DISCORD_BOT_TOKEN=***REMOVED***
+SET DISCORD_BOT_TOKEN=***REDACTED_DISCORD_BOT_TOKEN***
 
 :: AI API keys
-SET XAI_API_KEY=***REMOVED***
-SET ODDS_API_KEY=***REMOVED***
-:: SET ANTHROPIC_API_KEY=sk-ant-...   <- add your key here when ready
+SET XAI_API_KEY=***REDACTED_XAI_KEY***
+SET ODDS_API_KEY=***REDACTED_ODDS_API_KEY***
+:: SET ANTHROPIC_API_KEY=***REDACTED_ANTHROPIC_KEY***
 
 echo.
 echo =====================================================

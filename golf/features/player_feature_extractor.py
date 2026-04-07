@@ -207,6 +207,7 @@ class PlayerFeatureExtractor:
                 WHERE player_name = ?
                   AND game_date < ?
                   AND round_score IS NOT NULL
+                  AND round_score >= 58
                 ORDER BY game_date DESC, round_number DESC
                 LIMIT ?
                 """,

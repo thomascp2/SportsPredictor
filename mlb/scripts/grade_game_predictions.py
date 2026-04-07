@@ -43,7 +43,17 @@ def fetch_final_scores(db_path: str, game_date: str) -> int:
     tables = [r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
 
-    score_table = "games" if "games" in tables else "game_context"
+    # Prefer game_context (has correct game_ids matching MLB API gamePk).
+    # Fall back to games table only if game_context has no data for this date.
+    gc_count = 0
+    if "game_context" in tables:
+        try:
+            gc_count = conn.execute(
+                "SELECT COUNT(*) FROM game_context WHERE game_date = ?", (game_date,)
+            ).fetchone()[0]
+        except Exception:
+            pass
+    score_table = "game_context" if gc_count > 0 else ("games" if "games" in tables else "game_context")
 
     # Check which games need scores
     try:
@@ -69,6 +79,22 @@ def fetch_final_scores(db_path: str, game_date: str) -> int:
             print(f"  [MLB] All {existing} games already have scores for {game_date}")
         return existing
 
+    # Build team ID → abbreviation map (MLB Stats API no longer embeds
+    # abbreviation in the schedule response — must fetch separately).
+    team_id_to_abbr = {}
+    try:
+        teams_url = "https://statsapi.mlb.com/api/v1/teams?sportId=1&season=2026"
+        teams_req = urllib.request.Request(teams_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(teams_req, timeout=15) as tresp:
+            teams_data = json.loads(tresp.read())
+        for t in teams_data.get("teams", []):
+            tid = t.get("id")
+            abbr = t.get("abbreviation") or t.get("teamCode", "").upper()
+            if tid and abbr:
+                team_id_to_abbr[tid] = abbr
+    except Exception as e:
+        print(f"  [MLB] Could not fetch team abbreviations: {e}")
+
     # Fetch from MLB Stats API
     updated = 0
     try:
@@ -89,33 +115,54 @@ def fetch_final_scores(db_path: str, game_date: str) -> int:
                 home_info = teams.get("home", {})
                 away_info = teams.get("away", {})
 
-                home_abbr = home_info.get("team", {}).get("abbreviation", "")
-                away_abbr = away_info.get("team", {}).get("abbreviation", "")
+                # Use team ID lookup — abbreviation is no longer in schedule response
+                home_id = home_info.get("team", {}).get("id")
+                away_id = away_info.get("team", {}).get("id")
+                home_abbr = team_id_to_abbr.get(home_id, "")
+                away_abbr = team_id_to_abbr.get(away_id, "")
+                game_pk = str(game.get("gamePk", ""))
                 home_score = home_info.get("score")
                 away_score = away_info.get("score")
 
                 if home_score is not None and away_score is not None:
-                    # Try updating in both possible tables
-                    for table in [score_table]:
+                    rows_updated = 0
+                    for table in [score_table, "games"]:
+                        if table not in tables:
+                            continue
                         try:
-                            # Check if home_score column exists
                             cols = [r[1] for r in
                                     conn.execute(f"PRAGMA table_info({table})").fetchall()]
                             if "home_score" not in cols:
                                 continue
 
-                            conn.execute(f"""
-                                UPDATE {table}
-                                SET home_score = ?, away_score = ?
-                                WHERE game_date = ?
-                                  AND home_team = ? AND away_team = ?
-                            """, (home_score, away_score,
-                                  game_date, home_abbr, away_abbr))
+                            # Primary match: game_id (gamePk) — most reliable
+                            if game_pk and "game_id" in cols:
+                                cur = conn.execute(f"""
+                                    UPDATE {table}
+                                    SET home_score = ?, away_score = ?,
+                                        status = 'final'
+                                    WHERE game_id = ?
+                                """, (home_score, away_score, game_pk))
+                                rows_updated += cur.rowcount
+
+                            # Fallback: team abbreviation match
+                            if home_abbr and away_abbr:
+                                cur = conn.execute(f"""
+                                    UPDATE {table}
+                                    SET home_score = ?, away_score = ?,
+                                        status = 'final'
+                                    WHERE game_date = ?
+                                      AND home_team = ? AND away_team = ?
+                                      AND home_score IS NULL
+                                """, (home_score, away_score,
+                                      game_date, home_abbr, away_abbr))
+                                rows_updated += cur.rowcount
                         except Exception:
                             pass
 
-                    updated += 1
-                    print(f"    {away_abbr} {away_score} @ {home_abbr} {home_score}")
+                    if rows_updated > 0:
+                        updated += 1
+                        print(f"    {away_abbr or away_id} {away_score} @ {home_abbr or home_id} {home_score}")
 
     except Exception as e:
         print(f"  [MLB] API error: {e}")

@@ -197,6 +197,14 @@ def run_grading(target_date: str):
                     )
                     skipped += 1
                     continue
+                # Guard against ESPN pre-populated future rounds (value=0) and
+                # partial rounds where score is below the all-time PGA Tour record.
+                if actual_value is None or actual_value < 58:
+                    logger.debug(
+                        f"Skipping {player_name} R{round_num}: invalid score={actual_value} (round not complete)"
+                    )
+                    skipped += 1
+                    continue
                 outcome = grade_round_score(prediction, line, actual_value)
 
             elif prop_type == "make_cut":
@@ -279,6 +287,12 @@ def also_store_round_logs(target_date: str):
                 round_num = round_data.get("round")
                 score = round_data.get("score")
                 if not round_num or score is None:
+                    continue
+                # Skip rounds with invalid scores:
+                # - score=0: ESPN pre-populates future rounds with value=0
+                # - score<58: partial/incomplete rounds (PGA Tour record is 58)
+                # - negative: ESPN returned vs-par instead of gross score
+                if score < 58:
                     continue
                 # Skip the current active round for players still on the course
                 if player_status == "STATUS_IN_PROGRESS" and round_num == current_round:

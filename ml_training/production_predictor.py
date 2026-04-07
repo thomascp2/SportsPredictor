@@ -47,14 +47,35 @@ class ProductionPredictor:
         self.registry = ModelRegistry(registry_dir)
         self._model_cache = {}  # Cache loaded models for performance
 
-        # Confidence tier thresholds (match statistical engine)
-        self.tier_thresholds = [
-            ('T1-ELITE', 0.75),
-            ('T2-STRONG', 0.70),
-            ('T3-GOOD', 0.65),
-            ('T4-LEAN', 0.55),
-            ('T5-FADE', 0.0)
-        ]
+        # Break-even rates by odds type (exact fractions — no approximations).
+        # Tiers are assigned by edge above break-even, NOT raw probability.
+        # A goblin pick at 77% raw probability has edge=(0.77-0.7619)*100=+0.81pp → T4-LEAN,
+        # NOT T1-ELITE. Using raw probability for tiers was the pre-Mar-8 bug (fixed in
+        # smart_pick_selector.py); this file now matches that fix.
+        # NOTE: smart_pick_selector.py is the authoritative tier source for Supabase/display.
+        # These tiers are used for intermediate logging and non-Supabase consumers only.
+        self._break_evens = {
+            'standard': 110 / 210,  # 0.52381
+            'goblin':   320 / 420,  # 0.76190
+            'demon':    100 / 220,  # 0.45455
+        }
+
+    def _is_model_degenerate(self, metadata) -> bool:
+        """Return True if model is degenerate (predicts one class with near-certainty).
+
+        Degenerate models were observed in NBA threes (Brier=0.0000 after Mar-15 retrain).
+        They pass accuracy thresholds on skewed data but are useless in production — one
+        direction wins 100% of the time and the model just memorised that.
+
+        Thresholds (conservative):
+          - Brier score < 0.01: outputs near-0 or near-1 probabilities exclusively
+          - Test accuracy > 0.98: almost certainly fit to a degenerate class distribution
+        """
+        if metadata.test_brier_score is not None and metadata.test_brier_score < 0.01:
+            return True
+        if metadata.test_accuracy is not None and metadata.test_accuracy > 0.98:
+            return True
+        return False
 
     def _get_cached_model(self, sport: str, prop_type: str, line: float) -> Dict:
         """Get model from cache or load it"""
@@ -84,7 +105,8 @@ class ProductionPredictor:
         prop_type: str,
         line: float,
         features: Dict,
-        statistical_prediction: Dict = None
+        statistical_prediction: Dict = None,
+        odds_type: str = 'standard'
     ) -> Dict:
         """
         Generate ML prediction for a single instance.
@@ -110,6 +132,19 @@ class ProductionPredictor:
         scaler = cached['scaler']
         metadata = cached['metadata']
 
+        # Degeneracy check: refuse to use a model that predicts one class with near-certainty.
+        # Falls back to statistical prediction if provided; raises otherwise.
+        if self._is_model_degenerate(metadata):
+            print(f"[M4-GUARD] Degenerate model detected: {sport} {prop_type} @ {line} "
+                  f"(Brier={metadata.test_brier_score:.4f}, acc={metadata.test_accuracy:.1%}). "
+                  f"Falling back to statistical prediction.")
+            if statistical_prediction:
+                return statistical_prediction
+            raise ValueError(
+                f"Degenerate model: {sport} {prop_type} @ {line} — "
+                f"Brier={metadata.test_brier_score:.4f}. No statistical fallback provided."
+            )
+
         # Prepare features in correct order
         feature_vector = self._prepare_features(features, metadata.feature_names)
 
@@ -126,7 +161,7 @@ class ProductionPredictor:
         confidence_prob = prob_over if prediction == 'OVER' else (1 - prob_over)
 
         # Assign confidence tier
-        confidence_tier = self._assign_confidence_tier(confidence_prob)
+        confidence_tier = self._assign_confidence_tier(confidence_prob, odds_type)
 
         # Get expected value from features (lambda for points, mean for shots)
         expected_value = features.get('lambda_param', features.get('mean_shots', line))
@@ -152,7 +187,8 @@ class ProductionPredictor:
         line: float,
         features: Dict,
         statistical_prediction: Dict,
-        ml_weight: float = 0.6
+        ml_weight: float = 0.6,
+        odds_type: str = 'standard'
     ) -> Dict:
         """
         Generate ensemble prediction combining ML and statistical models.
@@ -169,6 +205,14 @@ class ProductionPredictor:
             Ensemble prediction dict
         """
         if not self.is_model_available(sport, prop_type, line):
+            return statistical_prediction
+
+        # Degeneracy check before ensemble: degenerate models corrupt the blend.
+        # Fall back to pure statistical rather than polluting ensemble_prob_over.
+        cached = self._get_cached_model(sport, prop_type, line)
+        if self._is_model_degenerate(cached['metadata']):
+            print(f"[M4-GUARD] Degenerate model in ensemble: {sport} {prop_type} @ {line} — "
+                  f"using statistical-only prediction.")
             return statistical_prediction
 
         # Get ML prediction
@@ -193,7 +237,7 @@ class ProductionPredictor:
         # Determine final prediction
         prediction = 'OVER' if ensemble_prob_over > 0.5 else 'UNDER'
         confidence_prob = ensemble_prob_over if prediction == 'OVER' else (1 - ensemble_prob_over)
-        confidence_tier = self._assign_confidence_tier(confidence_prob)
+        confidence_tier = self._assign_confidence_tier(confidence_prob, odds_type)
 
         return {
             'prediction': prediction,
@@ -212,7 +256,8 @@ class ProductionPredictor:
         sport: str,
         prop_type: str,
         line: float,
-        features_list: List[Dict]
+        features_list: List[Dict],
+        odds_type: str = 'standard'
     ) -> List[Dict]:
         """
         Generate predictions for multiple instances efficiently.
@@ -234,6 +279,12 @@ class ProductionPredictor:
         scaler = cached['scaler']
         metadata = cached['metadata']
 
+        if self._is_model_degenerate(metadata):
+            raise ValueError(
+                f"[M4-GUARD] Degenerate model: {sport} {prop_type} @ {line} "
+                f"(Brier={metadata.test_brier_score:.4f}). Cannot batch-predict."
+            )
+
         # Prepare all feature vectors
         feature_matrix = []
         for features in features_list:
@@ -253,7 +304,7 @@ class ProductionPredictor:
         for i, (features, prob_over) in enumerate(zip(features_list, probs_over)):
             prediction = 'OVER' if prob_over > 0.5 else 'UNDER'
             confidence_prob = prob_over if prediction == 'OVER' else (1 - prob_over)
-            confidence_tier = self._assign_confidence_tier(confidence_prob)
+            confidence_tier = self._assign_confidence_tier(confidence_prob, odds_type)
 
             expected_value = features.get('lambda_param', features.get('mean_shots', line))
 
@@ -304,11 +355,23 @@ class ProductionPredictor:
 
         return np.array(feature_vector)
 
-    def _assign_confidence_tier(self, confidence_prob: float) -> str:
-        """Assign confidence tier based on probability"""
-        for tier, threshold in self.tier_thresholds:
-            if confidence_prob >= threshold:
-                return tier
+    def _assign_confidence_tier(self, confidence_prob: float, odds_type: str = 'standard') -> str:
+        """Assign confidence tier based on edge above break-even (not raw probability).
+
+        Args:
+            confidence_prob: Directional confidence (P(predicted direction winning)).
+            odds_type: 'standard', 'goblin', or 'demon' — determines break-even.
+        """
+        break_even = self._break_evens.get(odds_type, self._break_evens['standard'])
+        edge = (confidence_prob - break_even) * 100
+        if edge >= 19:
+            return 'T1-ELITE'
+        if edge >= 14:
+            return 'T2-STRONG'
+        if edge >= 9:
+            return 'T3-GOOD'
+        if edge >= 0:
+            return 'T4-LEAN'
         return 'T5-FADE'
 
     def clear_cache(self):

@@ -18,8 +18,12 @@ PROJECT_ROOT = NBA_ROOT.parent  # Go up to SportsPredictor/ directory
 # NBA Database path (in nba/database/)
 DB_PATH = str(NBA_ROOT / "database" / "nba_predictions.db")
 
-# Learning mode settings (Weeks 2-9)
-LEARNING_MODE = False
+# Learning mode settings
+# REVERTED TO STATISTICAL MODE (2026-04-05): NBA ML retrain (Mar 15) trained on concept-drifted
+# data — UNDER hit rate collapsed from 83% to 47% post-retrain. Statistical model (rolling
+# success-rate features) naturally tracks real-world hit rates and was profitable pre-ML.
+# Re-enable LEARNING_MODE = False only after clean retrain with filtered training data.
+LEARNING_MODE = True
 PROBABILITY_CAP = (0.0, 1.0)  # No cap — ML models provide calibrated probabilities
 MODEL_TYPE = "statistical_only"  # No ML until Week 8+
 

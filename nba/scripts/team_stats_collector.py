@@ -30,6 +30,8 @@ except ImportError:
     DB_PATH = os.path.join(SCRIPT_DIR, "..", "database", "nba_predictions.db")
 
 SEASON = "2025-2026"
+# Only include games from this date onward — prevents mixing old-season data.
+SEASON_START_DATE = "2025-10-01"
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -127,8 +129,13 @@ def ensure_tables(conn):
 
 # ── Data aggregation ──────────────────────────────────────────────────────────
 
-def get_team_games(conn, team, as_of_date=None, last_n=None):
-    """Fetch game results for a team."""
+def get_team_games(conn, team, as_of_date=None, last_n=None, season_start=None):
+    """Fetch game results for a team.
+
+    Args:
+        season_start: earliest date to include (e.g. '2025-10-01' for 2025-26).
+                      Prevents mixing old-season data with current-season stats.
+    """
     query = """
         SELECT game_date,
                CASE WHEN home_team = ? THEN 1 ELSE 0 END as is_home,
@@ -139,6 +146,10 @@ def get_team_games(conn, team, as_of_date=None, last_n=None):
           AND home_score IS NOT NULL AND away_score IS NOT NULL
     """
     params = [team, team, team, team, team]
+
+    if season_start:
+        query += " AND game_date >= ?"
+        params.append(season_start)
 
     if as_of_date:
         query += " AND game_date <= ?"
@@ -194,7 +205,7 @@ def get_team_player_aggregates(conn, team, as_of_date=None, last_n_games=None):
     return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
 
-def get_opponent_scoring(conn, team, as_of_date=None, last_n_games=None):
+def get_opponent_scoring(conn, team, as_of_date=None, last_n_games=None, season_start=None):
     """Get opponent scoring for defensive stats."""
     query = """
         SELECT game_date,
@@ -204,6 +215,10 @@ def get_opponent_scoring(conn, team, as_of_date=None, last_n_games=None):
           AND home_score IS NOT NULL AND away_score IS NOT NULL
     """
     params = [team, team, team]
+
+    if season_start:
+        query += " AND game_date >= ?"
+        params.append(season_start)
 
     if as_of_date:
         query += " AND game_date <= ?"
@@ -308,9 +323,14 @@ def update_team(conn, team, as_of_date=None):
     windows = {"L5": 5, "L10": 10, "L20": 20, "season": None}
 
     for window_name, last_n in windows.items():
-        games = get_team_games(conn, team, as_of_date, last_n)
+        # Always scope to current season to avoid mixing old-season data.
+        # L5/L10/L20 windows are already bounded by last_n, but season window
+        # would otherwise pull in all historical games across multiple years.
+        games = get_team_games(conn, team, as_of_date, last_n,
+                               season_start=SEASON_START_DATE)
         player_aggs = get_team_player_aggregates(conn, team, as_of_date, last_n)
-        opp_points = get_opponent_scoring(conn, team, as_of_date, last_n)
+        opp_points = get_opponent_scoring(conn, team, as_of_date, last_n,
+                                          season_start=SEASON_START_DATE)
         stats = calculate_window_stats(games, player_aggs, opp_points)
 
         if not stats:

@@ -10,6 +10,7 @@ interface PicksState {
   loading: boolean;
   error: string | null;
   todayStats: { total: number; hits: number; pending: number };
+  lastFetchedAt: Date | null; // when props were last successfully fetched from Supabase
 
   setSport: (sport: Sport) => void;
   fetchTodayProps: () => Promise<void>;
@@ -25,6 +26,7 @@ export const usePicksStore = create<PicksState>((set, get) => ({
   loading: false,
   error: null,
   todayStats: { total: 0, hits: 0, pending: 0 },
+  lastFetchedAt: null,
 
   setSport: (sport: Sport) => {
     set({ sport });
@@ -46,7 +48,7 @@ export const usePicksStore = create<PicksState>((set, get) => ({
         .order('ai_edge', { ascending: false, nullsFirst: false });
 
       if (error) throw error;
-      set({ props: (data || []) as DailyProp[] });
+      set({ props: (data || []) as DailyProp[], lastFetchedAt: new Date() });
     } catch (error) {
       set({ error: (error as Error).message });
     } finally {

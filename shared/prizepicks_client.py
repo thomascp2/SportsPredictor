@@ -52,7 +52,7 @@ class PrizePicksAPI:
         'NHL': 8,
         'NBA': 7,
         'NFL': 9,
-        'MLB': 3,  # Verify when MLB season starts
+        'MLB': 2,
         'CFB': 15,
         'CBB': 20,
     }
@@ -92,6 +92,7 @@ class PrizePicksAPI:
         'Strikeouts': 'strikeouts',
         'Pitcher Strikeouts': 'strikeouts',
         'Outs Recorded': 'outs_recorded',
+        'Pitching Outs': 'outs_recorded',  # PP renamed stat (same thing)
         'Walks Allowed': 'pitcher_walks',
         'Walks': 'pitcher_walks',          # Context: pitcher projection
         'Hits Allowed': 'hits_allowed',

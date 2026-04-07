@@ -336,10 +336,29 @@ class DataLoader:
             FROM predictions p
             INNER JOIN prediction_outcomes o ON p.id = o.prediction_id
             WHERE p.prop_type = ? AND p.line = ?
+            -- Exclude rows where grading failed (actual_value=0 makes every OVER a false MISS
+            -- and every UNDER a false HIT, poisoning the training labels).
+            AND o.actual_value > 0
+            -- Exclude known contaminated window: Jan 18-26 2026 combo props had grading bug
+            -- where actual_value was written as 0.0 for all pts_asts/pts_rebs/rebs_asts/
+            -- steals/turnovers rows. Belt-and-suspenders with the actual_value > 0 filter above.
+            AND NOT (
+                p.game_date BETWEEN '2026-01-18' AND '2026-01-26'
+                AND p.prop_type IN ('pts_asts', 'pts_rebs', 'rebs_asts', 'steals', 'turnovers')
+            )
             ORDER BY p.game_date
         """
 
         df = pd.read_sql_query(query, conn, params=(prop_type, line))
+
+        # Data quality assertion: warn loudly if any zero actual_values slipped through
+        # (would indicate a new grading bug not covered by the filter above).
+        if len(df) > 0:
+            zero_pct = (df['actual_value'] == 0).mean()
+            if zero_pct > 0.01:
+                print(f"[WARN] _load_nba_data: {zero_pct:.1%} rows still have actual_value=0 "
+                      f"for {prop_type} O{line} after filtering. Check grading pipeline for new failures.")
+
         return df
     
     def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
@@ -395,10 +414,7 @@ class ModelTrainer:
         X = df[feature_cols].copy()
         y = df['target'].copy()
 
-        # Fill NaN with median (conservative approach)
-        X = X.fillna(X.median())
-
-        # Temporal split: Train → Val → Cal → Test
+        # Temporal split FIRST — NaN fill must use train-set median only (no leakage).
         n = len(df)
         train_end = int(n * (1 - self.config.test_size - self.config.val_size - self.config.cal_size))
         val_end   = int(n * (1 - self.config.test_size - self.config.cal_size))
@@ -408,6 +424,14 @@ class ModelTrainer:
         X_val   = X.iloc[train_end:val_end]
         X_cal   = X.iloc[val_end:cal_end]
         X_test  = X.iloc[cal_end:]
+
+        # Fill NaN using ONLY the training set median — apply uniformly to all splits.
+        # Using per-split median would leak val/cal/test distribution into imputed values.
+        train_median = X_train.median()
+        X_train = X_train.fillna(train_median)
+        X_val   = X_val.fillna(train_median)
+        X_cal   = X_cal.fillna(train_median)
+        X_test  = X_test.fillna(train_median)
 
         y_train = y.iloc[:train_end]
         y_val   = y.iloc[train_end:val_end]
@@ -919,6 +943,19 @@ def train_model(
         max(pct_over, pct_under) > 0.95
         and (test_metrics['brier'] < 0.05 or len(y_test) < 50)
     )
+
+    # NBA drift gate (2026-04-05 RCA audit): if the model predicts UNDER < 25% of the time
+    # on the test set, it has over-corrected toward OVER — almost certainly due to concept
+    # drift or contaminated training labels. Block deployment and require manual review.
+    # (The Mar-15-2026 retrain produced pct_under ~30% and drove live UNDER accuracy to 47%.)
+    if sport.lower() == 'nba' and not is_degenerate and pct_under < 0.25:
+        is_degenerate = True
+        print(
+            f"\n[DRIFT GATE] {sport.upper()} {prop_type} O{line}: model predicts UNDER only "
+            f"{pct_under:.1%} of time on test set (min threshold: 25%). "
+            f"Possible concept drift or poisoned training data. Model blocked from registry. "
+            f"Investigate training window or revert to LEARNING_MODE=True."
+        )
 
     if is_degenerate:
         warning_msg = (

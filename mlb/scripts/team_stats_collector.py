@@ -36,6 +36,7 @@ except ImportError:
     DB_PATH = os.path.join(SCRIPT_DIR, "..", "database", "mlb_predictions.db")
 
 SEASON = "2026"
+SEASON_START_DATE = "2026-03-27"  # MLB Opening Day 2026 — filter games table to current season only
 
 # MLB Stats API
 MLB_API_BASE = "https://statsapi.mlb.com/api/v1"
@@ -130,8 +131,14 @@ def ensure_tables(conn):
 
 # ── Data from games table ────────────────────────────────────────────────────
 
-def get_team_games(conn, team, as_of_date=None, last_n=None):
-    """Fetch game results for a team from games table."""
+def get_team_games(conn, team, as_of_date=None, last_n=None, season_start=SEASON_START_DATE):
+    """Fetch game results for a team from games table.
+
+    Args:
+        season_start: Only include games on/after this date. Prevents mixing
+                      prior-season data with current season (same bug that corrupted
+                      NBA team stats before the 2026-04-05 fix).
+    """
     # Check if games table exists and has the right columns
     cursor = conn.execute("SELECT sql FROM sqlite_master WHERE name='games' AND type='table'")
     schema_row = cursor.fetchone()
@@ -151,8 +158,9 @@ def get_team_games(conn, team, as_of_date=None, last_n=None):
             FROM games
             WHERE (home_team = ? OR away_team = ?)
               AND home_score IS NOT NULL AND away_score IS NOT NULL
+              AND game_date >= ?
         """
-        params = [team, team, team, team, team]
+        params = [team, team, team, team, team, season_start]
     else:
         return []
 
@@ -173,7 +181,8 @@ def get_team_games(conn, team, as_of_date=None, last_n=None):
     return rows
 
 
-def get_team_player_aggregates(conn, team, as_of_date=None, last_n_games=None):
+def get_team_player_aggregates(conn, team, as_of_date=None, last_n_games=None,
+                                season_start=SEASON_START_DATE):
     """Aggregate player stats per game from player_game_logs."""
     # Check if table has data
     cursor = conn.execute("SELECT COUNT(*) FROM player_game_logs WHERE team = ?", (team,))
@@ -194,9 +203,9 @@ def get_team_player_aggregates(conn, team, as_of_date=None, last_n_games=None):
                SUM(CASE WHEN player_type = 'pitcher' THEN walks_allowed ELSE 0 END) as total_bb_pitching,
                SUM(CASE WHEN player_type = 'pitcher' THEN hits_allowed ELSE 0 END) as total_hits_allowed
         FROM player_game_logs
-        WHERE team = ?
+        WHERE team = ? AND game_date >= ?
     """
-    params = [team]
+    params = [team, season_start]
 
     if as_of_date:
         query += " AND game_date <= ?"

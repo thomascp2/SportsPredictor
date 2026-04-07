@@ -24,7 +24,11 @@ sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.absp
 try:
     from project_config import BREAK_EVEN as _PROJECT_BREAK_EVEN
 except ImportError:
-    _PROJECT_BREAK_EVEN = {"standard": 0.56, "goblin": 0.76, "demon": 0.45}
+    # Exact fractions — must stay in sync with gsd_module/shared/odds.py BREAK_EVEN_MAP.
+    # standard: 110/210 = 0.52381 (NOT 0.56 — that was the pre-Mar-8-2026 bug value)
+    # goblin:   320/420 = 0.76190
+    # demon:    100/220 = 0.45455
+    _PROJECT_BREAK_EVEN = {"standard": 110 / 210, "goblin": 320 / 420, "demon": 100 / 220}
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -374,9 +378,22 @@ def _fmt_time(ts):
 def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
                 direction: Optional[str], tier_filter: list) -> pd.DataFrame:
     """
-    Load today's smart picks directly from SQLite via SmartPickSelector.
-    SQLite is the authoritative source for picks — Supabase sync can have
-    stale or degenerate probability values before the migration is applied.
+    Load today's smart picks directly from SQLite via SmartPickSelector (primary).
+    Supabase is the fallback for Streamlit Cloud where local SQLite is unavailable.
+
+    WHY SQLite is primary (verified 2026-04-06):
+    - MLB has 0 is_smart_pick=True rows in Supabase (pp-sync never sets the flag for MLB),
+      so Supabase-primary silently returns an empty picks list for every MLB game day.
+    - Golf is entirely absent from Supabase (0 rows).
+    - Supabase daily_props accumulates stale rows from superseded PP lines on upsert
+      (unique key is game_date+player+prop+line, so old lines linger when PP adjusts),
+      making Supabase counts inflate over time (~10-15% more rows than SQLite per day).
+    - SmartPickSelector always reads the live SQLite prediction DB + today's PP lines,
+      so it reflects the latest pp-sync output without stale accumulation.
+    - Supabase free tier is ~85% full (~290k rows); SQLite stays local and doesn't count.
+
+    Revert history: was briefly flipped to Supabase-primary on 2026-04-06; reverted
+    same day after data audit showed MLB picks disappeared from the dashboard.
     """
     import sys
     from pathlib import Path
@@ -403,9 +420,11 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
         try:
             r = (sb.table("daily_props")
                    .select("player_name,team,opponent,prop_type,line,odds_type,"
-                           "ai_prediction,ai_probability,ai_edge,game_time")
+                           "ai_prediction,ai_probability,ai_edge,ai_tier,"
+                           "ai_ev_4leg,game_time")
                    .eq("sport", sport)
                    .eq("game_date", game_date)
+                   .eq("is_smart_pick", True)
                    .neq("status", "cancelled")
                    .lt("ai_probability", 0.95)
                    .gte("ai_edge", min_edge)
@@ -420,6 +439,9 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
         for p in sb_rows:
             if direction and p.get("ai_prediction") != direction:
                 continue
+            tier = p.get("ai_tier") or "—"
+            if tier_filter and tier not in tier_filter:
+                continue
             rows.append({
                 "player_name":    p.get("player_name", ""),
                 "team":           p.get("team", ""),
@@ -430,8 +452,8 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
                 "ai_prediction":  p.get("ai_prediction", ""),
                 "ai_probability": float(p.get("ai_probability") or 0),
                 "ai_edge":        float(p.get("ai_edge") or 0),
-                "ai_tier":        "—",
-                "ai_ev_4leg":     None,
+                "ai_tier":        tier,
+                "ai_ev_4leg":     p.get("ai_ev_4leg"),
                 "game_time":      p.get("game_time"),
                 "matchup":        f"{p.get('team','')} vs {p.get('opponent','')}",
             })
@@ -440,7 +462,9 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
         df = pd.DataFrame(rows)
         df["Prob"]     = (df["ai_probability"] * 100).round(1).astype(str) + "%"
         df["Edge"]     = df["ai_edge"].round(1).apply(lambda x: f"+{x}%" if x >= 0 else f"{x}%")
-        df["EV 4-leg"] = "—"
+        df["EV 4-leg"] = df["ai_ev_4leg"].apply(
+            lambda x: f"+{x*100:.1f}%" if x and x > 0 else ("---" if not x else f"{x*100:.1f}%")
+        )
         df["Line"]     = df["ai_prediction"] + " " + df["line"].astype(str)
         df["Prop"]     = df["prop_type"].str.upper().str.replace("_", " ")
         df["Matchup"]  = df["matchup"]
@@ -611,7 +635,7 @@ def render_line_cards(all_lines_df: pd.DataFrame, qualifying_df: pd.DataFrame):
                     edge_str = f"+{edge:.1f}%" if edge >= 0 else f"{edge:.1f}%"
                     text = f"{r['line']} {abbrev} · {r['ai_prediction']} {prob*100:.0f}% {edge_str}"
 
-                    be = _BREAK_EVEN.get(r["odds_type"], 0.56)
+                    be = _BREAK_EVEN.get(r["odds_type"], 110 / 210)
                     is_rec = (player, prop, r["line"]) in qual_keys
 
                     if is_rec:
@@ -1843,7 +1867,10 @@ def main():
             games_count = len(gdf[["home_team", "away_team"]].drop_duplicates())
             prime_sharp_count = len(gdf[gdf["confidence_tier"].isin(["PRIME", "SHARP"])])
             avg_edge = gdf["edge"].mean() * 100 if not gdf.empty else 0
-            avg_prob = gdf["probability"].mean() * 100 if not gdf.empty else 0
+            # Avg prob: only the favorable side per bet (prob >= 0.50) — avoids
+            # the complementary-pair cancellation that gives a flat 50%.
+            fav = gdf[gdf["probability"] >= 0.50]
+            avg_prob = fav["probability"].mean() * 100 if not fav.empty else 50.0
 
             sm1, sm2, sm3, sm4 = st.columns(4)
             sm1.metric("Games", games_count)
@@ -1962,7 +1989,7 @@ def main():
                             lbl = "MONEYLINE"
                             ml_team = home if bs == 'home' else away
                             ml_odds = r.get("odds_american")
-                            pick = f"{ml_team} {int(ml_odds):+d}" if ml_odds is not None else ml_team
+                            pick = f"{ml_team} {int(ml_odds):+d}" if ml_odds is not None and ml_odds == ml_odds else ml_team
                         elif bt == "spread":
                             lv = f"{r['line']:+.1f}" if r["line"] is not None else "PK"
                             lbl = f"SPREAD {lv}"
@@ -2320,7 +2347,7 @@ def main():
                         if len(sub) >= 5:
                             hr = sub["hit"].mean() * 100
                             avg_prob = sub["ai_probability"].mean() * 100
-                            be = _BREAK_EVEN.get(ot, 0.56) * 100
+                            be = _BREAK_EVEN.get(ot, 110 / 210) * 100
                             ot_rows.append({
                                 "Line type": ot.capitalize(),
                                 "n": len(sub),

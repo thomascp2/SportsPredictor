@@ -267,7 +267,8 @@ class SupabaseSync:
                 ).execute()
                 synced += 1
             except Exception as e:
-                print(f"[SYNC ERROR] {row_dict['player_name']}: {e}")
+                pname_ascii = row_dict['player_name'].encode('ascii', 'replace').decode('ascii')
+                print(f"[SYNC ERROR] {pname_ascii}: {e}")
 
         print(f"[SYNC] Synced {synced}/{len(rows)} {sport_upper} grading results")
 
@@ -337,7 +338,8 @@ class SupabaseSync:
                 }, on_conflict='game_date,player_name,prop_type,line').execute()
                 synced += 1
             except Exception as e:
-                print(f"[SYNC ERROR] {pick.player_name}: {e}")
+                pname_ascii = pick.player_name.encode('ascii', 'replace').decode('ascii')
+                print(f"[SYNC ERROR] {pname_ascii}: {e}")
 
         print(f"[SYNC] Synced {synced}/{len(picks)} {sport_upper} smart picks")
         return {'synced': synced, 'total': len(picks), 'sport': sport_upper}
@@ -539,16 +541,23 @@ class SupabaseSync:
         and award points after grading sync completes.
         """
         print(f"[SYNC] Triggering user pick grading for {game_date}...")
-        try:
-            result = self.client.functions.invoke(
-                'grade-user-picks',
-                invoke_options={'body': {'game_date': game_date, 'sport': sport}}
-            )
-            print(f"[SYNC] User grading triggered: {result}")
-            return {'success': True, 'result': result}
-        except Exception as e:
-            print(f"[SYNC ERROR] User grading failed: {e}")
-            return {'success': False, 'error': str(e)}
+        last_error = None
+        for attempt in range(1, 3):  # 2 attempts: immediate + 1 retry after 60s
+            try:
+                result = self.client.functions.invoke(
+                    'grade-user-picks',
+                    invoke_options={'body': {'game_date': game_date, 'sport': sport}}
+                )
+                print(f"[SYNC] User grading triggered (attempt {attempt}): {result}")
+                return {'success': True, 'result': result}
+            except Exception as e:
+                last_error = e
+                if attempt < 2:
+                    print(f"[SYNC] User grading attempt {attempt} failed: {e} — retrying in 60s...")
+                    import time
+                    time.sleep(60)
+        print(f"[SYNC ERROR] User grading failed after 2 attempts: {last_error}")
+        return {'success': False, 'error': str(last_error)}
 
     def _sync_model_performance(self, sport: str, game_date: str, rows: list):
         """Sync daily model performance summary to model_performance table."""

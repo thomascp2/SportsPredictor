@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, Query, HTTPException
 
-from api.config import DB_PATHS
+from api.config import DB_PATHS, BREAK_EVEN_RATES
 
 router = APIRouter()
 
@@ -316,8 +316,9 @@ async def realized_edge(
     conn = get_db_connection(sport)
     cursor = conn.cursor()
 
-    # Static break-even per odds_type (4-pick parlay benchmark)
-    BREAK_EVEN = {'standard': 0.562, 'goblin': 0.760, 'demon': 0.447}
+    # Break-even per odds_type — imported from api.config (single source of truth).
+    # Do NOT hardcode these values here; they must match smart_pick_selector and supabase_sync.
+    BREAK_EVEN = BREAK_EVEN_RATES
 
     try:
         cutoff = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
@@ -364,10 +365,10 @@ async def realized_edge(
             odds_type = row[1] or 'standard'
             total = row[2]
             hits = row[3] or 0
-            avg_pred = row[4] or 0.56
+            avg_pred = row[4] or 0.5  # neutral midpoint fallback — not a break-even proxy
 
             hit_rate = hits / total if total > 0 else 0
-            break_even = BREAK_EVEN.get(odds_type, 0.562)
+            break_even = BREAK_EVEN.get(odds_type, BREAK_EVEN_RATES['standard'])
             predicted_edge = (avg_pred - break_even) * 100
             realized_edge_val = (hit_rate - break_even) * 100
 

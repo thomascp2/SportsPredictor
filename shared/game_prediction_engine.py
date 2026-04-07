@@ -279,19 +279,44 @@ class GamePredictionEngine:
                 except Exception as e:
                     pass  # Fall back to statistical only
 
-            # Blend ML + statistical (60/40 when ML available)
+            # Blend ML + statistical when ML available.
+            # IMPORTANT: both sides must be in the same probability space before blending.
+            # ml_prob is already P(OVER) when bet_side=="over", P(UNDER) when bet_side=="under"
+            # (set via raw_prob[1] vs raw_prob[0] above). sp.probability must match that space.
+            # Convert sp.probability to the same direction as ml_prob before blending.
+            #
+            # Blend weights by sport:
+            #   NHL game lines: 20% ML / 80% stats — NHL game-line ML models are immature;
+            #                   stats-heavy blend reduces overfit noise. (was 60/40 before 2026-04-06)
+            #   All other sports: 60% ML / 40% stats (default)
             if ml_prob is not None:
-                final_prob = 0.60 * ml_prob + 0.40 * sp.probability
+                if sp.bet_side == 'under':
+                    # ml_prob is P(UNDER); sp.probability is also P(UNDER) — same space, no conversion needed.
+                    stat_prob_aligned = sp.probability
+                else:
+                    # ml_prob is P(OVER); sp.probability is P(OVER) — same space.
+                    stat_prob_aligned = sp.probability
+                if self.sport == "nhl":
+                    ml_weight = 0.20  # NHL game lines: lean heavily on stats (was 0.60)
+                else:
+                    ml_weight = 0.60
+                final_prob = ml_weight * ml_prob + (1 - ml_weight) * stat_prob_aligned
                 model_type = model_type
             else:
                 final_prob = sp.probability
 
             # Recalculate edge
-            implied = features.get("gf_home_implied_prob", 0.50)
-            if sp.bet_side == "away":
-                implied = 1.0 - implied
+            # Spread bets: always -110 both sides → break-even = 0.5238
+            # Total bets:  always -110 both sides → break-even = 0.50 (symmetric)
+            # Moneyline:   use actual market implied probability
+            if sp.bet_type == "spread":
+                implied = 0.5238
             elif sp.bet_side in ["over", "under"]:
-                implied = 0.50  # Assume -110 both sides for totals
+                implied = 0.50
+            else:  # moneyline
+                implied = features.get("gf_home_implied_prob", 0.50)
+                if sp.bet_side == "away":
+                    implied = 1.0 - implied
 
             edge = final_prob - implied
 
@@ -359,6 +384,20 @@ class GamePredictionEngine:
 
         saved = 0
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Delete any existing predictions for these game/bet combos before inserting.
+        # The table PK is auto-increment so INSERT OR REPLACE appends instead of replacing.
+        # We must delete first to avoid duplicate rows when re-running with --force.
+        seen_games = set()
+        for p in predictions:
+            key = (p["game_date"], p["home_team"], p["away_team"])
+            seen_games.add(key)
+        for (gd, ht, at) in seen_games:
+            conn.execute("""
+                DELETE FROM game_predictions
+                WHERE game_date = ? AND home_team = ? AND away_team = ?
+            """, (gd, ht, at))
+        conn.commit()
 
         for p in predictions:
             try:
