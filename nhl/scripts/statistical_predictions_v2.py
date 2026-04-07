@@ -25,6 +25,7 @@ Status: PRODUCTION READY (Data Collection Phase)
 
 import sqlite3
 import json
+import unicodedata
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple
 import sys
@@ -567,22 +568,30 @@ class StatisticalPredictionEngine:
             else:
                 return 'T5-FADE'
     
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        """Strip diacritics at write time so DB always stores ASCII names."""
+        return ''.join(
+            c for c in unicodedata.normalize('NFD', name)
+            if unicodedata.category(c) != 'Mn'
+        )
+
     def _save_prediction(self, prediction_data: Dict):
         """Save prediction to database WITH FEATURES"""
         try:
             features_dict = prediction_data.get('features', {})
             features_json = json.dumps(features_dict) if features_dict else None
-            
+
             self.cursor.execute("""
                 INSERT INTO predictions (
-                    game_date, player_name, team, opponent, 
-                    prop_type, line, prediction, probability, 
-                    confidence_tier, expected_value, model_version, prediction_batch_id, 
+                    game_date, player_name, team, opponent,
+                    prop_type, line, prediction, probability,
+                    confidence_tier, expected_value, model_version, prediction_batch_id,
                     features_json, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 prediction_data['game_date'],
-                prediction_data['player_name'],
+                self._normalize_name(prediction_data['player_name']),
                 prediction_data['team'],
                 prediction_data['opponent'],
                 prediction_data['prop_type'],

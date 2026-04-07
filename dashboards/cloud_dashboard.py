@@ -1548,9 +1548,9 @@ def main():
         return
 
     # ── Top-level tabs ────────────────────────────────────────────────────────
-    tab_top, tab_picks, tab_games, tab_perf, tab_season, tab_hb, tab_golf, tab_system = st.tabs(
+    tab_top, tab_picks, tab_games, tab_perf, tab_season, tab_hb, tab_golf, tab_statbot, tab_system = st.tabs(
         ["Top Plays", "Today's Picks", "Game Lines", "Performance",
-         "MLB Season Props", "NHL Hits & Blocks", "Golf", "System"]
+         "MLB Season Props", "NHL Hits & Blocks", "Golf", "StatBot", "System"]
     )
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -2425,23 +2425,26 @@ A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 
         STAT_LABELS = {v: k for k, v in ALL_STATS.items()}
         stat_options = ['All'] + list(ALL_STATS.values())
 
-        sf1, sf2, sf3, sf4 = st.columns([2, 1, 1, 1])
+        sf1, sf2, sf3, sf4, sf5 = st.columns([2, 1, 1, 1, 1])
         with sf1:
             stat_sel_label = st.selectbox("Stat", stat_options,
-                                          key="sp_stat", label_visibility="visible")
+                                          key="sp_stat", label_visibility="collapsed")
             stat_sel = STAT_LABELS.get(stat_sel_label) if stat_sel_label != 'All' else None
         with sf2:
             ptype_sel = st.selectbox("Player type", ["All", "Batters", "Pitchers"],
-                                     key="sp_ptype")
+                                     key="sp_ptype", label_visibility="collapsed")
             ptype_map = {"Batters": "batter", "Pitchers": "pitcher", "All": None}
             ptype_filter = ptype_map[ptype_sel]
         with sf3:
             conf_sel = st.selectbox("Min confidence", ["All", "MEDIUM+", "HIGH only"],
-                                    key="sp_conf")
+                                    key="sp_conf", label_visibility="collapsed")
             conf_map = {"All": "VERY LOW", "MEDIUM+": "MEDIUM", "HIGH only": "HIGH"}
             conf_filter = conf_map[conf_sel]
         with sf4:
-            st.markdown('<div style="height:27px"></div>', unsafe_allow_html=True)
+            sort_col_outer = st.selectbox("Sort by", ["Projection", "Player", "Confidence"],
+                                          key="sp_sort_outer", label_visibility="collapsed")
+        with sf5:
+            st.markdown("<br>", unsafe_allow_html=True)
             if st.button("Refresh", use_container_width=True, key="sp_refresh"):
                 st.cache_data.clear()
                 st.rerun()
@@ -2499,10 +2502,8 @@ A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 
                     lambda c: CONF_BADGE.get(c, c)
                 )
 
-                sort_col = st.selectbox("Sort by", ["Projection", "Player", "Confidence"],
-                                        key="sp_sort")
-                asc = sort_col == "Player"
-                display_df = display_df.sort_values(sort_col, ascending=asc)
+                asc = sort_col_outer == "Player"
+                display_df = display_df.sort_values(sort_col_outer, ascending=asc)
 
                 st.dataframe(display_df, use_container_width=True,
                              hide_index=True, height=500)
@@ -3077,6 +3078,209 @@ A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 
     # ═══════════════════════════════════════════════════════════════════════════
     # TAB — SYSTEM HEALTH  (live orchestrator monitor)
     # ═══════════════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB — STATBOT  (Natural Language DB Query via Grok)
+    # ═══════════════════════════════════════════════════════════════════════════
+    with tab_statbot:
+        import os as _os_sb
+        import json as _json_sb
+        import sqlite3 as _sqlite3_sb
+        from pathlib import Path as _Path_sb
+
+        _STATBOT_SCHEMA = """You are StatBot — a SQL assistant for the SportsPredictor database system.
+Translate natural language questions into SQLite queries.
+Return ONLY valid JSON: {"db": "NBA|NHL|MLB", "sql": "SELECT ...", "note": "one-line plain English explanation"}
+
+SEASON NOTE: "this season" or current season = game_date >= '2025-10-01'. All dates stored as 'YYYY-MM-DD'.
+TODAY = date('now') in SQLite.
+
+=== NBA DATABASE ===
+player_game_logs:
+  game_id TEXT, game_date TEXT, player_name TEXT, team TEXT, opponent TEXT, home_away TEXT,
+  minutes REAL, points INT, rebounds INT, assists INT, steals INT, blocks INT,
+  turnovers INT, threes_made INT, fga INT, fgm INT, fta INT, ftm INT,
+  plus_minus INT, pra INT (points+rebounds+assists), stocks INT (steals+blocks)
+predictions:
+  game_date TEXT, player_name TEXT, team TEXT, opponent TEXT, home_away TEXT,
+  prop_type TEXT, line REAL, prediction TEXT (OVER/UNDER), probability REAL, model_version TEXT
+prediction_outcomes:
+  game_date TEXT, player_name TEXT, prop_type TEXT, line REAL,
+  prediction TEXT (OVER/UNDER), actual_value REAL, outcome TEXT (HIT/MISS), profit REAL
+
+=== NHL DATABASE ===
+player_game_logs:
+  game_id TEXT, game_date TEXT, player_name TEXT, team TEXT, opponent TEXT,
+  is_home INT (1=home 0=away), goals INT, assists INT, points INT,
+  shots_on_goal INT, hits INT, blocked_shots INT, toi_seconds INT,
+  plus_minus INT, pim INT (penalty minutes)
+predictions:
+  game_date TEXT, player_name TEXT, team TEXT, opponent TEXT, prop_type TEXT,
+  line REAL, prediction TEXT (OVER/UNDER), probability REAL,
+  confidence_tier TEXT (T1-ELITE/T2-STRONG/T3-GOOD/T4-LEAN/T5-FADE)
+prediction_outcomes:
+  game_date TEXT, player_name TEXT, prop_type TEXT, line REAL,
+  prediction TEXT (OVER/UNDER), actual_value REAL, outcome TEXT (HIT/MISS)
+
+=== MLB DATABASE ===
+player_game_logs:
+  game_id TEXT, game_date TEXT, player_name TEXT, team TEXT, opponent TEXT,
+  home_away TEXT, player_type TEXT (batter/pitcher),
+  innings_pitched REAL, strikeouts_pitched INT, hits_allowed INT, earned_runs INT,
+  at_bats INT, hits INT, home_runs INT, rbis INT, runs INT,
+  stolen_bases INT, strikeouts_batter INT, total_bases INT
+predictions:
+  game_date TEXT, player_name TEXT, team TEXT, prop_type TEXT, line REAL,
+  prediction TEXT (OVER/UNDER), probability REAL
+prediction_outcomes:
+  game_date TEXT, player_name TEXT, prop_type TEXT, line REAL,
+  prediction TEXT (OVER/UNDER), actual_value REAL, outcome TEXT (HIT/MISS)
+
+QUERY PATTERNS:
+- Player name matching: LIKE '%lastname%' for partial matches
+- "this season" always add: AND game_date >= '2025-10-01'
+- pra column exists directly in NBA player_game_logs
+- For hit rates: COUNT CASE WHEN outcome='HIT' / COUNT(*) * 100.0
+"""
+
+        _SB_DB_PATHS = {
+            "NBA": str(_Path_sb(__file__).parent.parent / "nba" / "database" / "nba_predictions.db"),
+            "NHL": str(_Path_sb(__file__).parent.parent / "nhl" / "database" / "nhl_predictions_v2.db"),
+            "MLB": str(_Path_sb(__file__).parent.parent / "mlb" / "database" / "mlb_predictions.db"),
+        }
+
+        def _sb_get_client():
+            xai_key = _os_sb.environ.get("XAI_API_KEY", "")
+            if not xai_key:
+                # try loading from .env
+                env_file = _Path_sb(__file__).parent.parent / ".env"
+                if env_file.exists():
+                    for line in env_file.read_text().splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, _, v = line.partition("=")
+                            if k.strip() == "XAI_API_KEY":
+                                xai_key = v.strip()
+                                break
+            if not xai_key:
+                return None
+            try:
+                from openai import OpenAI
+                return OpenAI(api_key=xai_key, base_url="https://api.x.ai/v1")
+            except ImportError:
+                return None
+
+        def _sb_query(db_key: str, sql: str):
+            path = _SB_DB_PATHS.get(db_key.upper())
+            if not path or not _Path_sb(path).exists():
+                return None, f"Database '{db_key}' not found"
+            conn = _sqlite3_sb.connect(path)
+            conn.row_factory = _sqlite3_sb.Row
+            try:
+                rows = conn.execute(sql).fetchall()
+                conn.close()
+                if not rows:
+                    return pd.DataFrame(), None
+                cols = list(rows[0].keys())
+                data = [[r[c] for c in cols] for r in rows[:200]]
+                return pd.DataFrame(data, columns=cols), None
+            except Exception as e:
+                conn.close()
+                return None, str(e)
+
+        st.subheader("StatBot — Natural Language DB Query")
+        st.caption("Ask anything about NBA, NHL, or MLB player stats, predictions, or hit rates. Powered by Grok.")
+
+        if "statbot_history" not in st.session_state:
+            st.session_state.statbot_history = []
+
+        # display history
+        for msg in st.session_state.statbot_history:
+            with st.chat_message(msg["role"]):
+                if msg["role"] == "assistant":
+                    if msg.get("note"):
+                        st.markdown(f"*{msg['note']}*")
+                    if msg.get("sql"):
+                        st.code(f"[{msg['db']}] {msg['sql']}", language="sql")
+                    if msg.get("df") is not None and not msg["df"].empty:
+                        st.dataframe(msg["df"], use_container_width=True, hide_index=True)
+                    elif msg.get("error"):
+                        st.error(msg["error"])
+                    elif msg.get("df") is not None:
+                        st.info("No results found.")
+                else:
+                    st.markdown(msg["content"])
+
+        sb_client = _sb_get_client()
+        if not sb_client:
+            st.warning("XAI_API_KEY not found. StatBot requires Grok access. Set XAI_API_KEY in .env or environment.")
+        else:
+            user_q = st.chat_input("Ask a question about the data...", key="statbot_input")
+            if user_q:
+                st.session_state.statbot_history.append({"role": "user", "content": user_q})
+                with st.chat_message("user"):
+                    st.markdown(user_q)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        try:
+                            resp = sb_client.chat.completions.create(
+                                model="grok-3-mini",
+                                messages=[
+                                    {"role": "system", "content": _STATBOT_SCHEMA},
+                                    {"role": "user", "content": user_q},
+                                ],
+                                temperature=0,
+                            )
+                            raw = resp.choices[0].message.content.strip()
+                            if raw.startswith("```"):
+                                raw = raw.split("```")[1]
+                                if raw.startswith("json"):
+                                    raw = raw[4:]
+                            result = _json_sb.loads(raw.strip())
+                            db  = result.get("db", "NBA").upper()
+                            sql = result.get("sql", "")
+                            note = result.get("note", "")
+
+                            if note:
+                                st.markdown(f"*{note}*")
+                            if sql:
+                                st.code(f"[{db}] {sql}", language="sql")
+
+                            df, err = _sb_query(db, sql)
+                            if err:
+                                st.error(f"SQL Error: {err}")
+                                st.session_state.statbot_history.append({
+                                    "role": "assistant", "note": note, "db": db, "sql": sql,
+                                    "df": None, "error": f"SQL Error: {err}"
+                                })
+                            elif df is not None:
+                                if not df.empty:
+                                    st.dataframe(df, use_container_width=True, hide_index=True)
+                                    st.caption(f"{len(df)} row(s) returned.")
+                                else:
+                                    st.info("No results found.")
+                                st.session_state.statbot_history.append({
+                                    "role": "assistant", "note": note, "db": db, "sql": sql,
+                                    "df": df, "error": None
+                                })
+                        except _json_sb.JSONDecodeError:
+                            st.error("Could not parse AI response. Try rephrasing.")
+                            st.session_state.statbot_history.append({
+                                "role": "assistant", "note": "", "db": "", "sql": "",
+                                "df": None, "error": "Could not parse AI response."
+                            })
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                            st.session_state.statbot_history.append({
+                                "role": "assistant", "note": "", "db": "", "sql": "",
+                                "df": None, "error": str(e)
+                            })
+
+        if st.session_state.statbot_history:
+            if st.button("Clear history", key="statbot_clear"):
+                st.session_state.statbot_history = []
+                st.rerun()
+
     with tab_system:
         now_str = datetime.now().strftime("%H:%M:%S")
         sys_r1, sys_r2 = st.columns([3, 1])

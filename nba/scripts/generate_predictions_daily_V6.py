@@ -18,6 +18,7 @@ Based on original generate_predictions_daily.py with PP integration.
 """
 
 import sqlite3
+import unicodedata
 from datetime import datetime, timedelta
 import sys
 import os
@@ -545,9 +546,18 @@ class NBADailyPredictorV6:
 
         return players
 
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        """Strip diacritics at write time so DB always stores ASCII names."""
+        return ''.join(
+            c for c in unicodedata.normalize('NFD', name)
+            if unicodedata.category(c) != 'Mn'
+        )
+
     def _save_prediction(self, conn, game_id, game_date, player_name, team, opponent,
                         home_away, prop_type, line, result):
         """Save prediction to database."""
+        player_name = self._normalize_name(player_name)
         cursor = conn.cursor()
 
         features = result.get('features', {})

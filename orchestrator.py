@@ -27,6 +27,7 @@ Usage:
     python sports_orchestrator.py --sport all --mode test  # Test both sports
 """
 
+import asyncio
 import os
 import sys
 import time
@@ -124,6 +125,15 @@ try:
 except ImportError:
     SUPABASE_SYNC_AVAILABLE = False
     print("NOTE: Supabase sync not available. Cloud sync disabled.")
+
+# Optional: Turso Sync (redundant cloud sync)
+try:
+    from sync.turso_sync import sync_predictions as _turso_sync_predictions
+    from sync.turso_sync import sync_smart_picks as _turso_sync_smart_picks
+    from sync.turso_sync import sync_grading as _turso_sync_grading
+    TURSO_SYNC_AVAILABLE = True
+except ImportError:
+    TURSO_SYNC_AVAILABLE = False
 
 # Optional: Pre-game intel (Grok injury/availability sweep)
 try:
@@ -768,6 +778,17 @@ class SportsOrchestrator:
                     warnings.append(f"Supabase sync failed: {str(e)}")
                     print(f"[SYNC ERROR] {e}")
 
+            # Turso redundant sync (runs after Supabase, non-blocking)
+            if success and TURSO_SYNC_AVAILABLE:
+                try:
+                    print(f"\n[TURSO] Syncing predictions to Turso...")
+                    asyncio.run(_turso_sync_predictions(self.config.sport.lower(), target_date))
+                    asyncio.run(_turso_sync_smart_picks(self.config.sport.lower(), target_date))
+                    print(f"[TURSO] Sync complete.")
+                except Exception as e:
+                    warnings.append(f"Turso sync failed (non-fatal): {str(e)}")
+                    print(f"[TURSO ERROR] {e}")
+
             return PipelineResult(
                 success=success,
                 timestamp=datetime.now().isoformat(),
@@ -910,6 +931,13 @@ class SportsOrchestrator:
                             f"Grading ran but **0 results synced to Supabase**.\n"
                             f"Mobile app will show stale data. Check sync logs."
                         )
+
+                    # Turso redundant grading sync
+                    if TURSO_SYNC_AVAILABLE:
+                        try:
+                            asyncio.run(_turso_sync_grading(self.config.sport.lower(), yesterday))
+                        except Exception as te:
+                            print(f"[TURSO ERROR] Grading sync failed (non-fatal): {te}")
                 except Exception as e:
                     warnings.append(f"Supabase grading sync failed: {str(e)}")
                     print(f"[SYNC ERROR] {e}")
@@ -2274,6 +2302,14 @@ class SportsOrchestrator:
                   f"{smart_sync.get('synced', 0)} smart picks, "
                   f"{odds_sync.get('updated', 0)} odds corrections, "
                   f"{time_sync.get('updated', 0)} game times")
+
+            # Turso redundant sync (non-blocking)
+            if TURSO_SYNC_AVAILABLE:
+                try:
+                    asyncio.run(_turso_sync_predictions(self.config.sport.lower(), target_date))
+                    asyncio.run(_turso_sync_smart_picks(self.config.sport.lower(), target_date))
+                except Exception as te:
+                    print(f"[TURSO ERROR] pp-sync Turso failed (non-fatal): {te}")
 
             return {
                 'success': True,

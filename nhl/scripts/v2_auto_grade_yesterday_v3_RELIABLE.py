@@ -21,6 +21,7 @@ This script:
 """
 
 import sqlite3
+import unicodedata
 import requests
 import sys
 import shutil
@@ -128,6 +129,11 @@ def fetch_with_retry(url: str, max_retries: int = 3, backoff: int = 30) -> reque
 # CORE GRADING FUNCTIONS (from original script)
 # ============================================================================
 
+def _normalize_name(name: str) -> str:
+    """Strip diacritics so DB stores ASCII-only player names."""
+    return ''.join(c for c in unicodedata.normalize('NFD', name) if unicodedata.category(c) != 'Mn')
+
+
 def save_player_game_logs_to_db(conn, game_id: str, game_date: str, player_stats_by_team: dict):
     """
     Save player stats to player_game_logs table
@@ -148,7 +154,8 @@ def save_player_game_logs_to_db(conn, game_id: str, game_date: str, player_stats
         is_home = 1 if team_type == 'home' else 0
         team_stats = player_stats_by_team.get(team_type, {})
         
-        for player_name, stats in team_stats.items():
+        for _raw_name, stats in team_stats.items():
+            player_name = _normalize_name(_raw_name)
             try:
                 # Calculate binary outcomes for feature extraction
                 points = stats.get('points', 0)

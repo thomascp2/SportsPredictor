@@ -44,7 +44,17 @@ from pathlib import Path
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _SCRIPTS_DIR = Path(__file__).parent
 _NHL_ROOT    = _SCRIPTS_DIR.parent
+_PROJECT_ROOT = _NHL_ROOT.parent
 DB_PATH      = str(_NHL_ROOT / "database" / "hits_blocks.db")
+
+# ── Auto-load .env so script works standalone (without start_orchestrator.bat) ──
+_env_file = _PROJECT_ROOT / ".env"
+if _env_file.exists():
+    for _line in _env_file.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _, _v = _line.partition("=")
+            os.environ.setdefault(_k.strip(), _v.strip())
 
 # ── xAI / Grok ────────────────────────────────────────────────────────────────
 GROK_API_URL  = "https://api.x.ai/v1/chat/completions"

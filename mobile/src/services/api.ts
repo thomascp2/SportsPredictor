@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { API_BASE_URL } from '../utils/constants';
 import { supabase } from './supabase';
+import { fetchPlayerHistoryFromTurso } from './turso';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -189,6 +190,113 @@ export interface AdminResponse {
 export type SortOption = 'edge' | 'probability' | 'game_time' | 'team' | 'player' | 'tier';
 
 // API Functions
+/**
+ * Fetch smart picks from Supabase daily_props directly.
+ * Works anywhere (no local FastAPI server required).
+ * Returns picks for today with the core SmartPick fields.
+ */
+async function fetchSmartPicksFromSupabase(
+  sport: string,
+  options: {
+    minEdge?: number;
+    minProb?: number;
+    tier?: string;
+    oddsType?: string;
+    prediction?: string;
+    team?: string;
+    sortBy?: SortOption;
+  } = {}
+): Promise<SmartPicksResponse> {
+  const sportUpper = sport.toUpperCase();
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+
+  const LEG_VALUE: Record<string, number> = { goblin: 0.5, standard: 1.0, demon: 1.5 };
+
+  let query = supabase
+    .from('daily_props')
+    .select(
+      'player_name,team,opponent,prop_type,line,odds_type,game_time,matchup,' +
+      'ai_prediction,ai_probability,ai_edge,ai_tier,ai_ev_2leg,ai_ev_3leg,ai_ev_4leg'
+    )
+    .eq('sport', sportUpper)
+    .eq('game_date', todayStr)
+    .eq('is_smart_pick', true)
+    .order('ai_edge', { ascending: false })
+    .limit(1000);
+
+  if (options.minEdge) query = query.gte('ai_edge', options.minEdge);
+  if (options.minProb) query = query.gte('ai_probability', options.minProb);
+  if (options.tier) query = query.eq('ai_tier', options.tier);
+  if (options.oddsType) query = query.eq('odds_type', options.oddsType);
+  if (options.prediction) query = query.eq('ai_prediction', options.prediction);
+  if (options.team) query = query.eq('team', options.team);
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const rows = data || [];
+
+  // Map Supabase columns to SmartPick shape
+  let picks: SmartPick[] = rows.map((r: any) => ({
+    player_name: r.player_name,
+    team: r.team,
+    opponent: r.opponent,
+    prop_type: r.prop_type,
+    pp_line: r.line,
+    pp_probability: r.ai_probability ?? 0,
+    prediction: r.ai_prediction as 'OVER' | 'UNDER',
+    edge: r.ai_edge ?? 0,
+    tier: r.ai_tier ?? 'T4-LEAN',
+    pp_odds_type: r.odds_type ?? 'standard',
+    leg_value: LEG_VALUE[r.odds_type ?? 'standard'] ?? 1.0,
+    our_line: r.line,          // best approximation — model line not stored in Supabase
+    our_probability: r.ai_probability ?? 0,
+    ev_2leg: r.ai_ev_2leg ?? 0,
+    ev_3leg: r.ai_ev_3leg ?? 0,
+    ev_4leg: r.ai_ev_4leg ?? 0,
+    ev_5leg: 0,
+    ev_6leg: 0,
+    game_time: r.game_time ?? undefined,
+    matchup: r.matchup ?? undefined,
+    // Fields not in Supabase — default to 0
+    sigma_distance: 0,
+    parlay_score: 0,
+    line_movement: 0,
+    movement_agrees: false,
+    calibration_correction: 0,
+  }));
+
+  // Client-side sort when sortBy differs from default edge sort
+  if (options.sortBy && options.sortBy !== 'edge') {
+    picks = picks.sort((a, b) => {
+      if (options.sortBy === 'probability') return b.pp_probability - a.pp_probability;
+      if (options.sortBy === 'player') return a.player_name.localeCompare(b.player_name);
+      if (options.sortBy === 'team') return a.team.localeCompare(b.team);
+      if (options.sortBy === 'tier') return a.tier.localeCompare(b.tier);
+      return 0;
+    });
+  }
+
+  const avgEdge = picks.length > 0 ? picks.reduce((s, p) => s + p.edge, 0) / picks.length : 0;
+  const avgProb = picks.length > 0 ? picks.reduce((s, p) => s + p.pp_probability, 0) / picks.length : 0;
+  const byTier: Record<string, number> = {};
+  for (const p of picks) byTier[p.tier] = (byTier[p.tier] ?? 0) + 1;
+
+  return {
+    success: true,
+    date: todayStr,
+    sport: sportUpper,
+    total_picks: picks.length,
+    picks,
+    summary: {
+      avg_probability: Math.round(avgProb * 100) / 100,
+      avg_edge: Math.round(avgEdge * 100) / 100,
+      by_tier: byTier,
+    },
+  };
+}
+
 export async function fetchSmartPicks(
   sport: string,
   options: {
@@ -203,21 +311,28 @@ export async function fetchSmartPicks(
     groupByGame?: boolean;
   } = {}
 ): Promise<SmartPicksResponse> {
-  const response = await api.get<SmartPicksResponse>('/picks/today', {
-    params: {
-      sport,
-      min_edge: options.minEdge ?? 0,
-      min_prob: options.minProb ?? 0.5,
-      tier: options.tier,
-      odds_type: options.oddsType,
-      prediction: options.prediction,
-      team: options.team,
-      hide_started: options.hideStarted ?? true,
-      sort_by: options.sortBy ?? 'edge',
-      group_by_game: options.groupByGame ?? false,
-    },
-  });
-  return response.data;
+  // Try local FastAPI first (home WiFi / dev), fall back to Supabase (works anywhere)
+  try {
+    const response = await api.get<SmartPicksResponse>('/picks/today', {
+      params: {
+        sport,
+        min_edge: options.minEdge ?? 0,
+        min_prob: options.minProb ?? 0.5,
+        tier: options.tier,
+        odds_type: options.oddsType,
+        prediction: options.prediction,
+        team: options.team,
+        hide_started: options.hideStarted ?? true,
+        sort_by: options.sortBy ?? 'edge',
+        group_by_game: options.groupByGame ?? false,
+      },
+      timeout: 5000,  // shorter timeout so fallback kicks in quickly
+    });
+    return response.data;
+  } catch (_localErr) {
+    // Local FastAPI unreachable — use Supabase directly
+    return fetchSmartPicksFromSupabase(sport, options);
+  }
 }
 
 export async function fetchPicksByGame(sport: string): Promise<SmartPicksResponse> {
@@ -266,28 +381,51 @@ export async function fetchPlayerHistory(
   since.setDate(since.getDate() - 90);
   const sinceStr = `${since.getFullYear()}-${String(since.getMonth()+1).padStart(2,'0')}-${String(since.getDate()).padStart(2,'0')}`;
 
-  let query = supabase
-    .from('daily_props')
-    .select('game_date,prop_type,line,odds_type,ai_prediction,actual_value,opponent')
-    .eq('player_name', playerName)
-    .eq('sport', sportUpper)
-    .gte('game_date', sinceStr)
-    .order('game_date', { ascending: false })
-    .limit(500);
+  // Fetch from Turso (cloud-hosted, works off home WiFi).
+  // Falls back to Supabase daily_props if Turso credentials are not configured.
+  let rows: Array<{
+    game_date: string;
+    prop_type: string;
+    line: number;
+    odds_type?: string;
+    ai_prediction?: string;
+    actual_value: number | null;
+    opponent: string;
+  }>;
 
-  // Filter to lines within ±8 of today's PP line to exclude junk model lines (e.g. U40.5 for bench players)
-  // Fall back to is_smart_pick filter when line is unknown
-  if (ppLine != null) {
-    query = query.gte('line', ppLine - 8).lte('line', ppLine + 8);
-  } else {
-    query = query.eq('is_smart_pick', true);
+  try {
+    const tursoRows = await fetchPlayerHistoryFromTurso(playerName, sportUpper, sinceStr, ppLine);
+    // Map Turso field names to the shape the rest of this function expects
+    rows = tursoRows.map((r) => ({
+      game_date: r.game_date,
+      prop_type: r.prop_type,
+      line: r.line,
+      odds_type: 'standard',   // odds_type not in Turso predictions table; default to standard
+      ai_prediction: r.prediction,
+      actual_value: r.actual_value,
+      opponent: r.opponent,
+    }));
+  } catch (_tursoErr) {
+    // Turso unavailable (missing credentials or network) — fall back to Supabase
+    let query = supabase
+      .from('daily_props')
+      .select('game_date,prop_type,line,odds_type,ai_prediction,actual_value,opponent')
+      .eq('player_name', playerName)
+      .eq('sport', sportUpper)
+      .gte('game_date', sinceStr)
+      .order('game_date', { ascending: false })
+      .limit(500);
+
+    if (ppLine != null) {
+      query = query.gte('line', ppLine - 8).lte('line', ppLine + 8);
+    } else {
+      query = query.eq('is_smart_pick', true);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    rows = data || [];
   }
-
-  const { data, error } = await query;
-
-  if (error) throw error;
-
-  const rows = data || [];
 
   // Deduplicate: one entry per (game_date, prop_type) — actual_value is the same
   // across all line variants for the same game, so we prefer graded rows.

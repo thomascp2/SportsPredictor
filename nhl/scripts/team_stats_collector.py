@@ -31,6 +31,7 @@ except ImportError:
     DB_PATH = os.path.join(SCRIPT_DIR, "..", "database", "nhl_predictions_v2.db")
 
 SEASON = "2025-2026"
+SEASON_START_DATE = "2025-10-01"  # Only use 2025-26 games for stats
 
 # ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -88,7 +89,7 @@ def ensure_tables(conn):
 
 # ── Data aggregation from games table ─────────────────────────────────────────
 
-def get_team_games(conn, team, as_of_date=None, last_n=None):
+def get_team_games(conn, team, as_of_date=None, last_n=None, season_start=SEASON_START_DATE):
     """
     Fetch game results for a team, optionally filtered.
 
@@ -103,9 +104,10 @@ def get_team_games(conn, team, as_of_date=None, last_n=None):
         WHERE (home_team = ? OR away_team = ?)
           AND home_score IS NOT NULL
           AND away_score IS NOT NULL
-          AND game_state = 'FINAL'
+          AND (game_state = 'FINAL' OR game_state = 'OFF')
+          AND game_date >= ?
     """
-    params = [team, team, team, team, team]
+    params = [team, team, team, team, team, season_start]
 
     if as_of_date:
         query += " AND game_date <= ?"
@@ -282,7 +284,7 @@ def update_team(conn, team, as_of_date=None):
 
 def update_season_totals(conn, team):
     """Update the existing team_stats table with season totals."""
-    games = get_team_games(conn, team)
+    games = get_team_games(conn, team, season_start=SEASON_START_DATE)
     player_aggs = get_team_player_aggregates(conn, team)
     stats = calculate_window_stats(games, player_aggs)
 
@@ -309,14 +311,14 @@ def update_season_totals(conn, team):
 
 
 def get_all_teams(conn):
-    """Get all teams that have played games."""
+    """Get all teams that have played games this season."""
     cursor = conn.execute("""
         SELECT DISTINCT team FROM (
-            SELECT home_team as team FROM games
+            SELECT home_team as team FROM games WHERE game_date >= ?
             UNION
-            SELECT away_team as team FROM games
+            SELECT away_team as team FROM games WHERE game_date >= ?
         ) ORDER BY team
-    """)
+    """, (SEASON_START_DATE, SEASON_START_DATE))
     return [r[0] for r in cursor.fetchall()]
 
 
