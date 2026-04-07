@@ -36,7 +36,7 @@ except ImportError:
 
 from sync.config import (
     SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
-    NHL_DB_PATH, NBA_DB_PATH, MLB_DB_PATH, SYNC_BATCH_SIZE
+    NHL_DB_PATH, NBA_DB_PATH, MLB_DB_PATH, GOLF_DB_PATH, SYNC_BATCH_SIZE
 )
 
 # Correct break-even constants (fix for confirmed production bug: 0.56 was wrong)
@@ -59,6 +59,7 @@ class SupabaseSync:
             'nhl': os.path.normpath(NHL_DB_PATH),
             'nba': os.path.normpath(NBA_DB_PATH),
             'mlb': os.path.normpath(MLB_DB_PATH),
+            'golf': os.path.normpath(GOLF_DB_PATH),
         }
 
     def sync_predictions(self, sport: str, game_date: Optional[str] = None) -> Dict:
@@ -76,6 +77,13 @@ class SupabaseSync:
             game_date = date.today().isoformat()
 
         sport_upper = sport.upper()
+
+        # Golf has no Supabase presence (dashboard reads SQLite directly).
+        # Skip to avoid column-mismatch errors (no team/opponent in golf predictions).
+        if sport.lower() == 'golf':
+            print(f"[SYNC] Skipping Supabase prediction sync for GOLF (SQLite-only sport)")
+            return {'synced': 0, 'sport': 'GOLF', 'skipped': True}
+
         db_path = self.db_paths[sport.lower()]
         print(f"[SYNC] Syncing {sport_upper} predictions for {game_date}...")
 
@@ -342,7 +350,31 @@ class SupabaseSync:
                 print(f"[SYNC ERROR] {pname_ascii}: {e}")
 
         print(f"[SYNC] Synced {synced}/{len(picks)} {sport_upper} smart picks")
-        return {'synced': synced, 'total': len(picks), 'sport': sport_upper}
+
+        # Write is_smart_pick=1 and ai_tier back to the local SQLite predictions table.
+        # This is required for MLB and Golf, which have no Supabase rows — the dashboard
+        # reads SQLite directly for those sports. Also keeps NHL/NBA SQLite in sync.
+        sqlite_updated = 0
+        db_path = self.db_paths.get(sport.lower())
+        if db_path and picks:
+            try:
+                conn = sqlite3.connect(db_path)
+                c = conn.cursor()
+                for pick in picks:
+                    local_name = pick.local_player_name if pick.local_player_name else pick.player_name
+                    c.execute(
+                        "UPDATE predictions SET is_smart_pick=1, ai_tier=? "
+                        "WHERE game_date=? AND player_name=? AND prop_type=?",
+                        (pick.tier, game_date, local_name, pick.prop_type),
+                    )
+                    sqlite_updated += c.rowcount
+                conn.commit()
+                conn.close()
+                print(f"[SYNC] SQLite write-back: {sqlite_updated} prediction rows flagged is_smart_pick=1")
+            except Exception as e:
+                print(f"[SYNC WARN] SQLite write-back failed: {e}")
+
+        return {'synced': synced, 'sqlite_updated': sqlite_updated, 'total': len(picks), 'sport': sport_upper}
 
     def sync_odds_types(self, sport: str, game_date: Optional[str] = None) -> Dict:
         """

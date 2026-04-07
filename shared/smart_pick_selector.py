@@ -290,8 +290,8 @@ class SmartPickSelector:
         """
         try:
             conn = sqlite3.connect(str(self.pred_db_path))
-            if self.sport in ('NBA', 'MLB'):
-                # NBA/MLB: probability lives in predictions table — join to get it
+            if self.sport in ('NBA', 'MLB', 'GOLF'):
+                # NBA/MLB/GOLF: probability lives in predictions table — join to get it
                 rows = conn.execute("""
                     SELECT
                         o.prop_type,
@@ -343,6 +343,8 @@ class SmartPickSelector:
             self.pred_db_path = self.root / 'nhl' / 'database' / 'nhl_predictions_v2.db'
         elif sport.lower() == 'mlb':
             self.pred_db_path = self.root / 'mlb' / 'database' / 'mlb_predictions.db'
+        elif sport.lower() == 'golf':
+            self.pred_db_path = self.root / 'golf' / 'database' / 'golf_predictions.db'
         else:
             self.pred_db_path = self.root / 'nba' / 'database' / 'nba_predictions.db'
 
@@ -868,7 +870,15 @@ class SmartPickSelector:
         conn.row_factory = sqlite3.Row
 
         # Different query based on sport (NHL/MLB use features_json; NBA uses f_* columns)
-        if self.sport in ('NHL', 'MLB'):
+        if self.sport == 'GOLF':
+            # Golf predictions have no team/opponent columns
+            rows = conn.execute('''
+                SELECT player_name, '' AS team, '' AS opponent, prop_type, line,
+                       prediction, probability, features_json
+                FROM predictions
+                WHERE game_date = ?
+            ''', (game_date,)).fetchall()
+        elif self.sport in ('NHL', 'MLB'):
             rows = conn.execute('''
                 SELECT player_name, team, opponent, prop_type, line,
                        prediction, probability, features_json
@@ -889,8 +899,8 @@ class SmartPickSelector:
         for row in rows:
             pred = dict(row)
 
-            if self.sport in ('NHL', 'MLB'):
-                # NHL/MLB: Extract parameters from features_json
+            if self.sport in ('NHL', 'MLB', 'GOLF'):
+                # NHL/MLB/GOLF: Extract parameters from features_json
                 try:
                     features = json.loads(row['features_json'])
                     # For points (Poisson) — try legacy key then canonical
