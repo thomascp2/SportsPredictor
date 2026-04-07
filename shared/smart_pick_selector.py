@@ -17,12 +17,24 @@ import math
 import argparse
 import requests
 import os
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
 from fuzzywuzzy import fuzz
+
+
+def _strip_diacritics(name: str) -> str:
+    """Normalize player names to ASCII by stripping diacritical marks.
+    'Tim Stützle' -> 'Tim Stutzle', 'Luka Dončić' -> 'Luka Doncic'.
+    Used on BOTH sides of the PP<->prediction matching so encodings can't cause misses.
+    """
+    return ''.join(
+        c for c in unicodedata.normalize('NFD', name)
+        if unicodedata.category(c) != 'Mn'
+    )
 
 # Discord webhook URL — must be set via environment variable (never hardcode)
 DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
@@ -492,18 +504,20 @@ class SmartPickSelector:
         calibration = self._load_calibration()
 
         # Build lookup: (player_lower, prop_type) → standard line, for σ-distance
+        # Use normalized keys so diacritic variants (Stützle/Stutzle) always match.
         standard_lines_by_player = {
-            (r['player_name'].lower(), r['prop_type']): r['line']
+            (_strip_diacritics(r['player_name']).lower(), r['prop_type']): r['line']
             for r in pp_lines if r['odds_type'] == 'standard'
         }
 
         # Build lookup by player + prop.
+        # Keys use diacritic-stripped lowercase so 'Stützle' and 'Stutzle' hash the same.
         # Sort each group by probability descending so [0] is always the most
         # confident prediction. This prevents probability inversion when multiple
         # prediction rows exist for the same player+prop (e.g. duplicate STD lines).
         pred_lookup = {}
         for pred in predictions:
-            key = (pred['player_name'].lower(), pred['prop_type'])
+            key = (_strip_diacritics(pred['player_name']).lower(), pred['prop_type'])
             if key not in pred_lookup:
                 pred_lookup[key] = []
             pred_lookup[key].append(pred)
@@ -517,13 +531,14 @@ class SmartPickSelector:
 
         for pp in pp_lines:
             # Try to find our prediction for this player+prop
-            key = (pp['player_name'].lower(), pp['prop_type'])
+            # Strip diacritics so PP 'Stutzle' matches our DB 'Stützle'
+            key = (_strip_diacritics(pp['player_name']).lower(), pp['prop_type'])
 
             # If no exact match, try proper fuzzy matching with high threshold
             if key not in pred_lookup:
                 best_match_key = None
                 best_match_score = 0
-                pp_name_lower = pp['player_name'].lower()
+                pp_name_lower = _strip_diacritics(pp['player_name']).lower()
 
                 for pred_key in pred_lookup.keys():
                     # Only consider same prop type
@@ -662,7 +677,7 @@ class SmartPickSelector:
             # Compute σ-distance for goblin/demon variants and apply quality gates
             sigma_distance = 0.0
             if pp['odds_type'] != 'standard' and std_dev > 0:
-                std_line = standard_lines_by_player.get((pp['player_name'].lower(), prop_type))
+                std_line = standard_lines_by_player.get((_strip_diacritics(pp['player_name']).lower(), prop_type))
                 if std_line:
                     sigma_distance = (pp['line'] - std_line) / std_dev
                     # Quality gates: skip junk variants (requires standard line for σ-reference)
