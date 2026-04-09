@@ -308,7 +308,7 @@ class SportConfig:
         self.grading_time = "08:00"      # 8 AM - grade yesterday's games
         self.retrain_time = "08:30"      # 8:30 AM Sunday - weekly ML retrain
         self.prizepicks_time = "08:30"   # 8:30 AM - fetch PrizePicks lines
-        self.prediction_time = "12:00"   # Noon - lineups post by ~10am CST for most games
+        self.prediction_time = "10:00"   # 10 AM - some games start 11 AM CST; lineups post ~10am CST
         self.pp_sync_time = "15:00"      # 3 PM - refresh lines for evening games
         self.pp_sync_time_evening = "17:30"  # 5:30 PM - evening re-sync (placeholder — late west coast games)
         self.top_picks_time = "16:00"    # 4 PM - post Discord picks

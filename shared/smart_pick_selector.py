@@ -94,6 +94,11 @@ class SmartPick:
     # Rest / fatigue signal
     days_rest: int = 3              # Player's days since last game (0 = back-to-back)
 
+    # Situational intelligence (advisory only -- NEVER modifies DB predictions)
+    situation_flag: str = 'NORMAL'      # DEAD_RUBBER | REDUCED_STAKES | HIGH_STAKES | USAGE_BOOST | NORMAL
+    situation_modifier: float = 0.0     # Advisory delta (-0.15 to +0.05)
+    situation_notes: str = ''           # e.g. "LAL 4-seed locked, 4 games left -- Doncic/Reaves out"
+
     def __post_init__(self):
         # Cap probability at 95% - no model can be 100% certain
         if self.pp_probability > 0.95:
@@ -361,6 +366,8 @@ class SmartPickSelector:
             self.pred_db_path = self.root / 'nba' / 'database' / 'nba_predictions.db'
 
         self.pp_db_path = self.root / 'shared' / 'prizepicks_lines.db'
+        self._intel = None      # PreGameIntel instance (loaded on demand)
+        self.game_date = None   # Set to target date inside get_smart_picks()
 
     def poisson_prob_over(self, lambda_param: float, line: float) -> float:
         """
@@ -481,6 +488,15 @@ class SmartPickSelector:
         """
         if game_date is None:
             game_date = date.today().isoformat()
+
+        self.game_date = game_date
+
+        if self._intel is None:
+            try:
+                from pregame_intel import PreGameIntel
+                self._intel = PreGameIntel()
+            except Exception:
+                self._intel = None  # Advisory only -- never blocks picks
 
         if odds_types is None:
             odds_types = ['standard', 'goblin']  # Skip demon by default (too risky)
@@ -770,6 +786,24 @@ class SmartPickSelector:
             except Exception:
                 pass
 
+            # Situational intelligence -- advisory only, never touches DB
+            situation_flag = 'NORMAL'
+            situation_modifier = 0.0
+            situation_notes = ''
+            try:
+                if self._intel:
+                    pick_team = pp.get('team', '') or pred.get('team', '')
+                    s_flag, s_mod = self._intel.get_situation_flag(
+                        pp['player_name'], pick_team, self.sport.lower(), self.game_date
+                    )
+                    situation_flag     = s_flag
+                    situation_modifier = s_mod
+                    situation_notes    = self._intel.get_situation_notes(
+                        pp['player_name'], pick_team, self.sport.lower(), self.game_date
+                    )
+            except Exception:
+                pass  # Never block pick generation
+
             # Create SmartPick - PP team is authoritative (handles recent trades)
             pick = SmartPick(
                 player_name=pp['player_name'],
@@ -795,6 +829,9 @@ class SmartPickSelector:
                 movement_agrees=movement_agrees,
                 calibration_correction=calib_correction,
                 days_rest=days_rest,
+                situation_flag=situation_flag,
+                situation_modifier=situation_modifier,
+                situation_notes=situation_notes,
             )
 
             smart_picks.append(pick)
@@ -846,6 +883,8 @@ class SmartPickSelector:
             props = ('strikeouts', 'outs_recorded', 'pitcher_walks', 'hits_allowed', 'earned_runs',
                      'hits', 'total_bases', 'home_runs', 'rbis', 'runs',
                      'stolen_bases', 'walks', 'batter_strikeouts', 'hrr')
+        elif self.sport == 'GOLF':
+            props = ('round_score', 'make_cut')
         else:
             # NBA
             props = ('points', 'rebounds', 'assists', 'threes', 'pra',
@@ -873,7 +912,9 @@ class SmartPickSelector:
             ) latest ON p.id = latest.max_id
         '''
 
-        params = [game_date, self.sport] + odds_types + list(props)
+        # PrizePicks stores golf lines under league='PGA' (not 'GOLF')
+        league_name = 'PGA' if self.sport == 'GOLF' else self.sport
+        params = [game_date, league_name] + odds_types + list(props)
         rows = conn.execute(query, params).fetchall()
         conn.close()
 

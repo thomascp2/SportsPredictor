@@ -40,8 +40,10 @@ BACKUPS_DIR = str(MLB_ROOT / "backups")
 # SYSTEM SETTINGS
 # ============================================================================
 
-LEARNING_MODE = False         # False = use best available model (statistical now, ML later)
-MODEL_TYPE = "statistical_only"   # Will switch to "ensemble" when ML models ready
+LEARNING_MODE = True          # True = data collection / statistical-only mode
+                              # Set False once ML models are trained AND wired into
+                              # generate_predictions_daily.py via ProductionPredictor
+MODEL_TYPE = "statistical_only"   # Will switch to "ensemble" when ML models are wired up
 PROBABILITY_CAP = (0.0, 1.0)      # No cap during ML calibration phase
 TIMEZONE = "America/Chicago"      # CST
 SEASON = "2026"

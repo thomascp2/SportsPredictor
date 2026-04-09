@@ -319,10 +319,13 @@ class PrizePicksAPI:
 
         projections = self.parse_projections(response)
 
-        # Filter by sport (in case API returned mixed results)
+        # Filter by sport (in case API returned mixed results).
+        # PrizePicks uses 'PGA' as the league name for golf; accept both.
+        SPORT_LEAGUE_ALIASES = {'GOLF': {'GOLF', 'PGA'}}
+        accepted_names = SPORT_LEAGUE_ALIASES.get(sport.upper(), {sport.upper()})
         sport_projections = [
             p for p in projections
-            if p['league'].upper() == sport.upper()
+            if p['league'].upper() in accepted_names
         ]
 
         print(f"   [OK] Found {len(sport_projections)} {sport} lines")

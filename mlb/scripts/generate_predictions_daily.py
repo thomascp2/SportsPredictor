@@ -33,6 +33,7 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / 'features'))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'ml_training'))
 
 from mlb_config import (
     DB_PATH, BACKUPS_DIR, CORE_PROPS, PITCHER_PROPS, BATTER_PROPS,
@@ -42,6 +43,13 @@ from mlb_config import (
 )
 from fetch_game_schedule import GameScheduleFetcher
 from statistical_predictions import MLBStatisticalEngine
+
+# ML Model Integration (optional — falls back to statistical if no models trained yet)
+try:
+    from production_predictor import ProductionPredictor
+    ML_AVAILABLE = True
+except ImportError:
+    ML_AVAILABLE = False
 from pitcher_feature_extractor import PitcherFeatureExtractor
 from batter_feature_extractor import BatterFeatureExtractor
 from opponent_feature_extractor import OpponentFeatureExtractor
@@ -66,6 +74,22 @@ class MLBDailyPredictor:
         self.batter_feats     = BatterFeatureExtractor(self.db_path)
         self.opponent_feats   = OpponentFeatureExtractor(self.db_path)
         self.context_feats    = GameContextExtractor(self.db_path)
+
+        # ML predictor — wraps statistical with trained models where available
+        self.ml_predictor = None
+        if ML_AVAILABLE:
+            try:
+                registry_dir = Path(__file__).parent.parent.parent / 'ml_training' / 'model_registry'
+                self.ml_predictor = ProductionPredictor(str(registry_dir))
+                mlb_models = self.ml_predictor.list_available_models('mlb')
+                if mlb_models:
+                    print(f"[ML] {len(mlb_models)} MLB ML models loaded")
+                else:
+                    print("[ML] No MLB models in registry — using statistical predictor")
+                    self.ml_predictor = None
+            except Exception as e:
+                print(f"[ML] Could not load ML predictor: {e}")
+                self.ml_predictor = None
 
     def generate_predictions(self, target_date: str) -> Dict:
         """
@@ -250,6 +274,14 @@ class MLBDailyPredictor:
                     if not pred:
                         continue
 
+                    # ML ensemble blend if a trained model exists for this combo
+                    if (self.ml_predictor and
+                            self.ml_predictor.is_model_available('mlb', prop_type, line)):
+                        pred = self.ml_predictor.predict_ensemble(
+                            'mlb', prop_type, line,
+                            pred.get('features', {}), pred
+                        )
+
                     # Goblin/demon lines only allow OVER on PrizePicks — skip UNDER
                     if pred['prediction'] == 'UNDER' and is_over_only_line(prop_type, line):
                         continue
@@ -329,6 +361,14 @@ class MLBDailyPredictor:
 
                     if not pred:
                         continue
+
+                    # ML ensemble blend if a trained model exists for this combo
+                    if (self.ml_predictor and
+                            self.ml_predictor.is_model_available('mlb', prop_type, line)):
+                        pred = self.ml_predictor.predict_ensemble(
+                            'mlb', prop_type, line,
+                            pred.get('features', {}), pred
+                        )
 
                     # Goblin/demon lines only allow OVER on PrizePicks — skip UNDER
                     if pred['prediction'] == 'UNDER' and is_over_only_line(prop_type, line):
