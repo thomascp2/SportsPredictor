@@ -83,3 +83,8 @@ nba/data/nba_schedule_cache.json
 
 # Worktrees (managed by git, not source)
 .claude/worktrees/
+
+# TUI terminal — Rust build artifacts and large media
+tui-terminal/target/
+tui-terminal/**/*.gif
+tui-terminal/Bookmark Archive*/
