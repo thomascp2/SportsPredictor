@@ -42,6 +42,21 @@ backups/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+~/
+
+# Session notes / local docs (not source code)
+*.docx
+Full Status Report*.txt
+GSD Guide*.txt
+GSD Phase*.txt
+ML Training*.txt
+NBA Calibration*.txt
+NBA regression*.txt
+PrizePicks Integrity*.txt
+Train MLB*.txt
+plan *.txt
+getting back*.txt
 
 # Secrets
 .env

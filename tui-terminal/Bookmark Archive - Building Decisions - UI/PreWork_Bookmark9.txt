@@ -1,0 +1,52 @@
+center scoreboard view
+-need scrolldown or collapse games so we can see all games. Maybe just a hot key to page down or next page in a paginated view? 
+--see attached image as were only showing a handful at the moment and its cut off at the bottom. 
+--maybe filtering by sport as well?
+-need to have our full game predictions integrated or added as a separate view. 
+-we do like this view with the games and player props in each game a lot though, it just needs to be cleaned up a little.
+--the player prop type isn't long enough to understand what it is that we're predicting. for Alec Burleson it says 'UTS' for a prop line. 
+---what is UTS? Is this Hitter Outs or something i do not know. This is just an example but there are others:
+----Casey Mize UNS, Casey Mize DED, Jack Leiter RUNS (maybe this is pitcher runs allowed. just confirm please)
+-----Note: Casey Mize is a pitcher for the Detroit Tigers (MLB) and not on the Detroit Red Wings (NHL), but more on that below.  
+-mismatches between team and player
+--what is Ranger Suarez doing in the BOS-TBL NHL game? 
+--also Tyson Foerester/Porter Martone in MLB game? 
+---investigate team abbreviations in scoreboard center screen--it looks like this could be from Team Abbreviation crossover between teams like Philadelphia Phillies (MLB and Philadelphia Flyers (NHL)?
+
+right sidebar watchlist
+-we like this a lot, but can we toggle this with a static non scrolling view of the scoreboard? that was we can have the player props in the center view then toggle to see the scoreboard? or the game predicitons in the center view and the scores on the side? 
+
+center screen injury report
+center screen injury report is better but still have sentences that just stop mid sentence. find a way to rewrite the status sentence to be readable. 
+left sidebar injuries should just have the league, team, player, status. 
+-so instead of: "MLB Blake Walston 60-Day-IL -- Arizona placed Walston (elbow" 
+--it would be "MLB Arizona Blake Walston 60-Day-IL"
+
+We have a lot of blank real estate in the Scoreboard center view with the player props beneath the games. 
+-it only occupies about 40% of the center screen. ideas?
+
+standard player prop view
+-two missing characters on top of the scroll bar resulting to [??] which looks sloppy.
+-we need more context for the prop
+--we see props like 'RECORD' for MLB pitchers which should be recorded outs. it doesn't have to be this long, but 'RECORD' doesn't give much clarity.
+---MLB Eugenio Suarez 0.5 'STRIKE' - I think this is hitter strikeouts? 
+---MLB Kyle Leahy 4.5 'ALLOWE' should be HITS ALLOWED?
+---NHL Fraser Minten 1.5 'HIT' should be 'HITS?
+-Column Header says 'Spor' instead of Sport. 
+--Hide UD, Kalshi and Disc columns as these are not in use at the moment and all rows result to '--'.
+--Add Team if possible and easy. 
+
+Left side Intel still showing old/stale INTEL section below INTEL FEED (Desmond Bane, not real gemini call).
+INTEL FEED is cutting off mis sentence as well. 
+-Jack Leiter intel returned: 
+	"Jack M. 
+  	  21:36 Leiter's recent form weak; allowed 7+ earned runs in last start; tough matchup t"
+--This is no bueno. We don't need the sentence to be much longer than this in terms of character limit, just to be a complete sentence. 
+-Yandy Diaz intel returned: 
+	"Yandy M. [DÍAZ]
+  	  21:41 Díaz healthy, low strikeout rate; solid form vs. moderate pitcher today."
+--This is a good sentence, but the Name says Yandy M.? Then in brackets it says [DIAZ]. Just needs cleanup. 
+--Also as intel feed gets more crowded because of more calls, we see the sentences being cut off mid-sentence. 
+-Bobby Witt Jr. intel returned: 
+	"Witt M. [JR.]
+ 	  21:50 Witt Jr. is healthy, in strong form with low strikeouts; favorable matchup today"

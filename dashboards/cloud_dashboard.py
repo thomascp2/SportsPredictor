@@ -749,7 +749,7 @@ def fetch_recent_results(sport: str, start_date: str, end_date: str) -> pd.DataF
                .gte("game_date", start_date)
                .lte("game_date", end_date)
                .not_.is_("result", "null")
-               .gt("actual_value", 0)   # exclude DNP/ungraded rows (actual_value=0)
+               .not_.is_("actual_value", "null")  # exclude ungraded rows; keep actual_value=0 (valid UNDER hits)
                .order("game_date", desc=False)
                .range(offset, offset + page_size - 1)
                .execute())
@@ -2140,6 +2140,204 @@ def main():
         _render_picks_section("NBA", nba_date, "nba")
 
     # ═══════════════════════════════════════════════════════════════════════════
+    # MLB ML MODEL COMPARISON HELPER
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _render_mlb_ml_comparison(target_date: str) -> None:
+        """
+        Side-by-side comparison of XGBoost ML predictions vs the current
+        statistical model for the 6 props the ML module covers.
+
+        Reads:
+          - DuckDB mlb_feature_store/data/mlb.duckdb  (ml_predictions table)
+          - SQLite mlb/database/mlb_predictions.db    (predictions table)
+
+        Uses Poisson CDF to convert ML predicted_value -> P(OVER line) so
+        it's directly comparable to the stat model probability column.
+        """
+        import os as _os2
+        import sqlite3 as _sq3
+        from pathlib import Path as _Path
+
+        _ROOT = _Path(_os2.path.dirname(_os2.path.dirname(_os2.path.abspath(__file__))))
+        _DUCK = _ROOT / "mlb_feature_store" / "data" / "mlb.duckdb"
+        _STAT = _ROOT / "mlb" / "database" / "mlb_predictions.db"
+
+        ML_PROPS = {"hits", "total_bases", "home_runs", "strikeouts", "walks", "outs_recorded"}
+        PROP_LINES = {
+            "hits":          [0.5, 1.5, 2.5],
+            "total_bases":   [1.5, 2.5, 3.5],
+            "home_runs":     [0.5, 1.5],
+            "strikeouts":    [3.5, 4.5, 5.5, 6.5, 7.5],
+            "walks":         [1.5, 2.5],
+            "outs_recorded": [14.5, 17.5],
+        }
+
+        # ── Poisson P(OVER) ─────────────────────────────────────────────────
+        def _p_over(mu: float, line: float) -> float:
+            try:
+                from scipy.stats import poisson
+                return float(1.0 - poisson.cdf(int(line), mu=max(mu, 0)))
+            except Exception:
+                return float("nan")
+
+        # ── Load ML predictions ─────────────────────────────────────────────
+        ml_df = pd.DataFrame()
+        if _DUCK.exists():
+            try:
+                import duckdb as _ddb
+                _dc = _ddb.connect(str(_DUCK), read_only=True)
+                ml_df = _dc.execute(f"""
+                    SELECT player_name, prop, predicted_value
+                    FROM ml_predictions
+                    WHERE game_date = '{target_date}'
+                """).fetchdf()
+                _dc.close()
+            except Exception as _e:
+                st.warning(f"ML predictions unavailable: {_e}")
+        else:
+            st.info("MLB feature store not found — run mlb_feature_store/ml/predict_to_db.py to populate.")
+            return
+
+        if ml_df.empty:
+            st.info(
+                f"No ML predictions for {target_date}. "
+                f"Run: `python -m ml.predict_to_db --date {target_date}` from mlb_feature_store/"
+            )
+            return
+
+        # ── Load stat model predictions ─────────────────────────────────────
+        stat_df = pd.DataFrame()
+        if _STAT.exists():
+            try:
+                _sc = _sq3.connect(str(_STAT))
+                stat_df = pd.read_sql_query(f"""
+                    SELECT player_name, prop_type AS prop, line,
+                           prediction, ROUND(probability * 100, 1) AS stat_prob_pct,
+                           COALESCE(odds_type, 'standard') AS odds_type
+                    FROM predictions
+                    WHERE game_date = '{target_date}'
+                      AND prop_type IN ('hits','total_bases','home_runs',
+                                        'strikeouts','walks','outs_recorded')
+                """, _sc)
+                _sc.close()
+            except Exception as _e:
+                st.warning(f"Stat model DB unavailable: {_e}")
+
+        # ── Filters ─────────────────────────────────────────────────────────
+        mf1, mf2, mf3 = st.columns([2, 2, 1])
+        with mf1:
+            prop_opts = ["All"] + sorted(ML_PROPS)
+            sel_prop = st.selectbox("Prop", prop_opts, key="mlcmp_prop", label_visibility="collapsed")
+        with mf2:
+            if not ml_df.empty and "player_name" in ml_df.columns:
+                players_opts = ["All players"] + sorted(
+                    ml_df["player_name"].dropna().unique().tolist()
+                )
+                sel_player = st.selectbox("Player", players_opts, key="mlcmp_player",
+                                          label_visibility="collapsed")
+            else:
+                sel_player = "All players"
+        with mf3:
+            show_disagree = st.checkbox("Disagreements only", key="mlcmp_disagree")
+
+        # ── Build comparison rows ────────────────────────────────────────────
+        rows = []
+        for _, ml_row in ml_df.iterrows():
+            prop = ml_row["prop"]
+            if sel_prop != "All" and prop != sel_prop:
+                continue
+            pname = ml_row.get("player_name") or "Unknown"
+            if sel_player != "All players" and pname != sel_player:
+                continue
+            mu = float(ml_row["predicted_value"]) if pd.notna(ml_row["predicted_value"]) else 0.0
+
+            for line in PROP_LINES.get(prop, []):
+                ml_pover = _p_over(mu, line)
+                ml_pred  = "OVER" if ml_pover >= 0.5 else "UNDER"
+
+                # Match stat model row (same player + prop + line)
+                stat_prob_pct = None
+                stat_pred_dir = None
+                if not stat_df.empty:
+                    match = stat_df[
+                        (stat_df["player_name"] == pname) &
+                        (stat_df["prop"] == prop) &
+                        (stat_df["line"].astype(float) == float(line))
+                    ]
+                    if not match.empty:
+                        stat_prob_pct = float(match.iloc[0]["stat_prob_pct"])
+                        stat_pred_dir = match.iloc[0]["prediction"]
+
+                agree = None
+                if stat_pred_dir:
+                    agree = "YES" if ml_pred == stat_pred_dir else "NO"
+
+                if show_disagree and agree != "NO":
+                    continue
+
+                rows.append({
+                    "Player":       pname,
+                    "Prop":         prop,
+                    "Line":         line,
+                    "ML Expected":  round(mu, 3),
+                    "ML P(Over)%":  round(ml_pover * 100, 1),
+                    "ML Pred":      ml_pred,
+                    "Stat Prob%":   stat_prob_pct,
+                    "Stat Pred":    stat_pred_dir,
+                    "Agree":        agree,
+                })
+
+        if not rows:
+            st.info("No comparison data available — check filters or run predict_to_db.py.")
+            return
+
+        cmp_df = pd.DataFrame(rows).sort_values(
+            ["Player", "Prop", "Line"], ignore_index=True
+        )
+
+        # Summary metrics
+        total_rows    = len(cmp_df)
+        agree_rows    = cmp_df[cmp_df["Agree"] == "YES"]
+        disagree_rows = cmp_df[cmp_df["Agree"] == "NO"]
+        no_stat_rows  = cmp_df[cmp_df["Stat Pred"].isna()]
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("ML Predictions",  total_rows)
+        mc2.metric("Stat Model Matched", total_rows - len(no_stat_rows))
+        mc3.metric("Agreement",  f"{len(agree_rows)}" if not agree_rows.empty else "—")
+        mc4.metric("Disagree",   f"{len(disagree_rows)}", delta=f"-{len(disagree_rows)}" if disagree_rows.empty else None)
+
+        # Colour the Agree column
+        def _colour_agree(val):
+            if val == "YES":
+                return "color: #3fb950"
+            if val == "NO":
+                return "color: #f85149"
+            return ""
+
+        styled = (
+            cmp_df.style
+            .applymap(_colour_agree, subset=["Agree"])
+            .format({
+                "ML Expected": "{:.3f}",
+                "ML P(Over)%": "{:.1f}%",
+                "Stat Prob%":  lambda x: f"{x:.1f}%" if pd.notna(x) else "—",
+            })
+        )
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        with st.expander("How to read this table"):
+            st.markdown("""
+- **ML Expected** — raw XGBoost regression output: expected count for this prop
+- **ML P(Over)%** — Poisson P(actual > line) given the expected count
+- **ML Pred** — OVER if ML P(Over) >= 50%, else UNDER
+- **Stat Prob%** — probability from the current statistical engine for this line
+- **Stat Pred** — OVER/UNDER from the statistical engine
+- **Agree** — YES if both models pick the same direction; NO = divergence worth noting
+            """)
+
+    # ═══════════════════════════════════════════════════════════════════════════
     # TAB — MLB  (Game Lines + Player Props + Season Props)
     # ═══════════════════════════════════════════════════════════════════════════
     with tab_mlb:
@@ -2186,363 +2384,14 @@ def main():
 
         st.divider()
 
-        st.subheader("MLB Season Props — 2026 Projections")
+        # ── ML Model Comparison ───────────────────────────────────────────────
+        st.subheader("ML Model vs Statistical Model")
         st.caption(
-            "Marcel projections (3-year weighted avg + age curve + park factors). "
-            "Run `python mlb/scripts/run_season_projections.py` to refresh."
+            "XGBoost regressor (trained on 2024-2025 Statcast) vs the current "
+            "statistical engine. Covers: hits, total_bases, home_runs, strikeouts, "
+            "walks, outs_recorded. Agreement = both models agree on OVER/UNDER direction."
         )
-
-        # ── Confidence tier explanation ────────────────────────────────────────
-        with st.expander("What does the Confidence rating mean?"):
-            st.markdown("""
-**Confidence reflects how many seasons of historical data were available** to build each player's projection — not model accuracy directly.
-
-| Tier | Seasons of data | What it means |
-|------|----------------|---------------|
-| **HIGH** | 3 seasons (2023, 2024, 2025) | Most reliable. Marcel weighted avg uses all three years. Typical error range: **±10–18%** of projection. |
-| **MEDIUM** | 2 seasons | Good signal, slightly wider range. Typical error range: **±18–28%** of projection. |
-| **LOW** | 1 season only | Rookie, injury return, or recent call-up. Projection regresses heavily to league average. Error range: **±28–45%**. |
-| **VERY LOW** | No historical data | Best-guess estimate based on league average only. Treat as highly speculative. |
-
-**Example:** A HIGH confidence projection of 42 home runs has an implied range of roughly **34–50 HR** (±18%).
-A LOW confidence 42 HR projection could reasonably land anywhere from **23–61 HR**.
-
-**Other factors baked in:** Age curve (peak at 27; power stats decline 1.5%/yr after 30), park factor (home ballpark dimensions), and regression-to-mean (volatile stats like HR/SB regress ~30% toward league average).
-
-> *Tip: Use HIGH confidence projections for sizable bets. MEDIUM is fine for smaller wagers with strong line value. LOW and VERY LOW are speculative — only play if the sportsbook line appears significantly mispriced.*
-            """)
-
-        # ── Filters ───────────────────────────────────────────────────────────
-        BATTER_STATS = {
-            'hr':    'Home Runs',
-            'k':     'Strikeouts (B)',
-            'tb':    'Total Bases',
-            'rbi':   'RBIs',
-            'runs':  'Runs Scored',
-            'hits':  'Hits',
-            'sb':    'Stolen Bases',
-        }
-        PITCHER_STATS = {
-            'k_total':       'Strikeouts (P)',
-            'bb_total':      'Walks (P)',
-            'hits_allowed':  'Hits Allowed',
-            'er_total':      'Earned Runs',
-        }
-        ALL_STATS = {**BATTER_STATS, **PITCHER_STATS}
-        STAT_LABELS = {v: k for k, v in ALL_STATS.items()}
-        stat_options = ['All'] + list(ALL_STATS.values())
-
-        sf1, sf2, sf3, sf4, sf5 = st.columns([2, 1, 1, 1, 1])
-        with sf1:
-            stat_sel_label = st.selectbox("Stat", stat_options,
-                                          key="sp_stat", label_visibility="collapsed")
-            stat_sel = STAT_LABELS.get(stat_sel_label) if stat_sel_label != 'All' else None
-        with sf2:
-            ptype_sel = st.selectbox("Player type", ["All", "Batters", "Pitchers"],
-                                     key="sp_ptype", label_visibility="collapsed")
-            ptype_map = {"Batters": "batter", "Pitchers": "pitcher", "All": None}
-            ptype_filter = ptype_map[ptype_sel]
-        with sf3:
-            conf_sel = st.selectbox("Min confidence", ["All", "MEDIUM+", "HIGH only"],
-                                    key="sp_conf", label_visibility="collapsed")
-            conf_map = {"All": "VERY LOW", "MEDIUM+": "MEDIUM", "HIGH only": "HIGH"}
-            conf_filter = conf_map[conf_sel]
-        with sf4:
-            sort_col_outer = st.selectbox("Sort by", ["Projection", "Player", "Confidence"],
-                                          key="sp_sort_outer", label_visibility="collapsed")
-        with sf5:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Refresh", use_container_width=True, key="sp_refresh"):
-                st.cache_data.clear()
-                st.rerun()
-
-        df_sp = fetch_season_projections(
-            stat_filter=stat_sel,
-            player_type=ptype_filter,
-            team_filter=None,
-            min_confidence=conf_filter,
-        )
-
-        if df_sp.empty:
-            st.warning(
-                "No season projections found. "
-                "Run: `cd mlb && python scripts/run_season_projections.py`"
-            )
-        else:
-            # ── Summary metrics ───────────────────────────────────────────────
-            n_players  = df_sp['player_name'].nunique()
-            n_pitchers = df_sp[df_sp['player_type'] == 'pitcher']['player_name'].nunique()
-            n_batters  = df_sp[df_sp['player_type'] == 'batter']['player_name'].nunique()
-            n_high     = df_sp[df_sp['confidence'] == 'HIGH']['player_name'].nunique()
-
-            sm1, sm2, sm3, sm4 = st.columns(4)
-            sm1.metric("Players", n_players)
-            sm2.metric("Batters", n_batters)
-            sm3.metric("Pitchers", n_pitchers)
-            sm4.metric("HIGH confidence", n_high)
-
-            st.divider()
-
-            # ── Inner tabs ────────────────────────────────────────────────────
-            spt1, spt2, spt3 = st.tabs(["Rankings", "Line Evaluator", "PrizePicks SZLN ML"])
-
-            with spt1:
-                # Display table
-                display_df = df_sp[['player_name', 'team', 'player_type', 'stat',
-                                    'projection', 'confidence', 'seasons_used', 'age']].copy()
-                display_df['stat_label'] = display_df['stat'].map(ALL_STATS).fillna(display_df['stat'])
-                display_df = display_df.rename(columns={
-                    'player_name': 'Player', 'team': 'Team',
-                    'player_type': 'Type', 'stat_label': 'Stat',
-                    'projection': 'Projection', 'confidence': 'Confidence',
-                    'seasons_used': 'Seasons', 'age': 'Age',
-                }).drop(columns=['stat'])
-
-                # Map confidence to emoji badge so meaning is visible at a glance
-                CONF_BADGE = {
-                    'HIGH':     'HIGH (3 seasons)',
-                    'MEDIUM':   'MED (2 seasons)',
-                    'LOW':      'LOW (1 season)',
-                    'VERY LOW': 'VERY LOW',
-                }
-                display_df['Confidence'] = display_df['Confidence'].map(
-                    lambda c: CONF_BADGE.get(c, c)
-                )
-
-                asc = sort_col_outer == "Player"
-                display_df = display_df.sort_values(sort_col_outer, ascending=asc)
-
-                st.dataframe(display_df, use_container_width=True,
-                             hide_index=True, height=500)
-
-                total_rows = len(df_sp)
-                st.caption(
-                    f"{total_rows:,} stat projections across {n_players} players. "
-                    "Confidence = seasons of historical data used (HIGH=3, MED=2, LOW=1)."
-                )
-
-            with spt2:
-                st.markdown("**Enter a sportsbook line to get an instant edge calculation:**")
-                st.caption("Works for any player in the projections table above.")
-
-                le1, le2, le3, le4, le5 = st.columns([3, 2, 2, 1, 1])
-                with le1:
-                    le_player = st.text_input("Player name", key="le_player",
-                                              placeholder="e.g. Aaron Judge")
-                with le2:
-                    le_stat_label = st.selectbox("Stat", list(ALL_STATS.values()),
-                                                 key="le_stat")
-                    le_stat = STAT_LABELS.get(le_stat_label, le_stat_label)
-                with le3:
-                    le_line = st.number_input("Sportsbook line", value=30.0,
-                                              min_value=0.5, step=0.5, key="le_line")
-                with le4:
-                    le_dir = st.selectbox("Dir", ["OVER", "UNDER"], key="le_dir")
-                with le5:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    evaluate = st.button("Evaluate", use_container_width=True, key="le_eval")
-
-                if evaluate and le_player:
-                    result = _evaluate_line(le_player, le_stat, le_line, le_dir)
-                    if result is None:
-                        st.warning(f"No projection found for '{le_player}' / {le_stat_label}. "
-                                   "Check spelling or run the projections batch.")
-                    else:
-                        ec1, ec2, ec3, ec4 = st.columns(4)
-                        ec1.metric("Projection", result['projection'])
-                        ec2.metric("Model Prob", f"{result['probability']}%")
-                        ec3.metric("Edge vs -110", f"{result['edge']:+.1f}%")
-                        conf_label = {
-                            'HIGH':   'HIGH (3 seasons)',
-                            'MEDIUM': 'MEDIUM (2 seasons)',
-                            'LOW':    'LOW (1 season)',
-                        }.get(result['confidence'], result['confidence'])
-                        ec4.metric("Confidence", conf_label)
-
-                        color = "#1b4332" if result['edge'] > 5 else (
-                                "#3f1515" if result['edge'] < -2 else "#2a2a2a")
-                        st.markdown(
-                            f'<div style="background:{color};padding:12px 18px;'
-                            f'border-radius:8px;margin-top:8px">'
-                            f'<b style="font-size:16px">{result["recommendation"]}</b>'
-                            f'<span style="color:#aaa;font-size:12px;margin-left:12px">'
-                            f'Age {result["age"] or "?"} · {result["team"]} · '
-                            f'{result["seasons_used"]} seasons of data used</span>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-
-                # Quick multi-eval: paste multiple lines
-                st.divider()
-                st.markdown("**Bulk evaluate — paste multiple lines:**")
-                st.caption('One per line: `Player Name, stat_key, line, OVER/UNDER`  '
-                           '(e.g. `Aaron Judge, hr, 42.5, OVER`)')
-
-                bulk_input = st.text_area("Lines to evaluate", height=150,
-                                          key="bulk_lines",
-                                          placeholder="Aaron Judge, hr, 42.5, OVER\n"
-                                                      "Gerrit Cole, k_total, 195.5, OVER\n"
-                                                      "Ronald Acuna Jr, sb, 55.5, OVER")
-                if st.button("Evaluate all", key="bulk_eval") and bulk_input.strip():
-                    bulk_results = []
-                    for line_str in bulk_input.strip().split('\n'):
-                        parts = [p.strip() for p in line_str.split(',')]
-                        if len(parts) < 4:
-                            continue
-                        pname_, stat_, line_, dir_ = parts[0], parts[1], parts[2], parts[3].upper()
-                        try:
-                            r = _evaluate_line(pname_, stat_, float(line_), dir_)
-                            if r:
-                                bulk_results.append(r)
-                        except Exception:
-                            pass
-
-                    if bulk_results:
-                        bulk_df = pd.DataFrame(bulk_results)[[
-                            'player_name', 'stat', 'line', 'direction',
-                            'projection', 'probability', 'edge', 'recommendation', 'confidence'
-                        ]].rename(columns={
-                            'player_name': 'Player', 'stat': 'Stat',
-                            'line': 'Line', 'direction': 'Dir',
-                            'projection': 'Proj', 'probability': 'Prob%',
-                            'edge': 'Edge%', 'recommendation': 'Rec',
-                            'confidence': 'Conf',
-                        }).sort_values('Edge%', ascending=False)
-                        st.dataframe(bulk_df, use_container_width=True, hide_index=True)
-                    else:
-                        st.warning("No matching projections found. Check player names and stat keys.")
-
-            # ─────────────────────────────────────────────────────────────────
-            with spt3:
-                st.markdown("### PrizePicks SZLN — ML Predictions")
-                st.caption(
-                    "ML model compares our career-stat projections against live PrizePicks "
-                    "season-long lines and returns calibrated OVER/UNDER probabilities. "
-                    "Run `python mlb/scripts/season_props_ml.py` to refresh picks."
-                )
-
-                # ── Controls row ──────────────────────────────────────────────
-                pp_c1, pp_c2, pp_c3, pp_c4, pp_c5 = st.columns([2, 1, 1, 1, 1])
-                SZLN_STAT_LABELS = {
-                    'All':           'All',
-                    'k_total':       'Strikeouts (P)',
-                    'bb_total':      'Walks (P)',
-                    'hits_allowed':  'Hits Allowed (P)',
-                    'er_total':      'Earned Runs (P)',
-                    'outs_recorded': 'Outs Recorded (P)',
-                    'hr':    'Home Runs',
-                    'sb':    'Stolen Bases',
-                    'hits':  'Hits',
-                    'tb':    'Total Bases',
-                    'rbi':   'RBIs',
-                    'runs':  'Runs Scored',
-                    'k':     'Strikeouts (B)',
-                    'walks': 'Walks (B)',
-                    'hrr':   'H+R+RBI',
-                }
-                SZLN_LABEL_TO_STAT = {v: k for k, v in SZLN_STAT_LABELS.items() if k != 'All'}
-
-                with pp_c1:
-                    pp_stat_label = st.selectbox(
-                        "Stat", list(SZLN_STAT_LABELS.values()), key="pp_stat"
-                    )
-                    pp_stat_filter = SZLN_LABEL_TO_STAT.get(pp_stat_label)
-
-                with pp_c2:
-                    pp_dir = st.selectbox("Direction", ["All", "OVER", "UNDER"], key="pp_dir")
-                    pp_dir_filter = None if pp_dir == "All" else pp_dir
-
-                with pp_c3:
-                    pp_ptype = st.selectbox("Type", ["All", "Batters", "Pitchers"], key="pp_ptype2")
-                    pp_ptype_filter = {"Batters": "batter", "Pitchers": "pitcher"}.get(pp_ptype)
-
-                with pp_c4:
-                    pp_min_edge = st.number_input(
-                        "Min edge %", value=3.0, min_value=0.0, step=1.0, key="pp_min_edge"
-                    )
-
-                with pp_c5:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    if st.button("Refresh", use_container_width=True, key="pp_refresh"):
-                        st.cache_data.clear()
-                        st.rerun()
-
-                df_szln = fetch_szln_picks(
-                    stat_filter=pp_stat_filter,
-                    direction_filter=pp_dir_filter,
-                    min_edge=pp_min_edge,
-                    player_type_filter=pp_ptype_filter,
-                )
-
-                if df_szln.empty:
-                    st.info(
-                        "No ML SZLN picks found. "
-                        "Run: `cd mlb && python scripts/season_props_ml.py` to fetch lines and generate predictions.\n\n"
-                        "First-time setup: `python scripts/season_props_ml.py --train` to build models."
-                    )
-                else:
-                    # ── Summary metrics ───────────────────────────────────────
-                    n_picks  = len(df_szln)
-                    n_over   = (df_szln['direction'] == 'OVER').sum()
-                    n_under  = (df_szln['direction'] == 'UNDER').sum()
-                    avg_edge = df_szln['edge'].mean()
-
-                    pm1, pm2, pm3, pm4 = st.columns(4)
-                    pm1.metric("Total Picks", n_picks)
-                    pm2.metric("OVER picks",  n_over)
-                    pm3.metric("UNDER picks", n_under)
-                    pm4.metric("Avg Edge vs -110", f"{avg_edge:+.1f}%")
-
-                    st.divider()
-
-                    # ── Direction breakdown tabs ───────────────────────────────
-                    EDGE_COLOR = {True: "#1b4332", False: "#2a2a2a"}  # green if big edge
-
-                    disp = df_szln[[
-                        'player_name', 'team', 'player_type', 'stat',
-                        'line', 'direction', 'probability', 'edge',
-                        'projection', 'confidence', 'model_used', 'recommendation',
-                    ]].copy()
-
-                    disp['stat_label'] = disp['stat'].map(SZLN_STAT_LABELS).fillna(disp['stat'])
-                    disp['probability'] = disp['probability'].round(1).astype(str) + '%'
-                    disp['edge']        = disp['edge'].apply(lambda x: f"{x:+.1f}%")
-                    disp['projection']  = disp['projection'].round(1)
-
-                    # Direction emoji
-                    disp['direction'] = disp['direction'].map(
-                        lambda d: f"OVER" if d == 'OVER' else f"UNDER"
-                    )
-
-                    disp = disp.rename(columns={
-                        'player_name': 'Player', 'team': 'Team',
-                        'player_type': 'Type', 'stat_label': 'Stat',
-                        'line': 'PP Line', 'direction': 'Dir',
-                        'probability': 'Prob', 'edge': 'Edge',
-                        'projection': 'Our Proj', 'confidence': 'Conf',
-                        'model_used': 'Model', 'recommendation': 'Rec',
-                    }).drop(columns=['stat'])
-
-                    st.dataframe(disp, use_container_width=True, hide_index=True, height=480)
-
-                    # ── Legend ────────────────────────────────────────────────
-                    with st.expander("Column guide"):
-                        st.markdown("""
-| Column | Meaning |
-|--------|---------|
-| **PP Line** | The PrizePicks season-long prop line |
-| **Dir** | Our ML model's recommended direction (OVER or UNDER) |
-| **Prob** | Calibrated probability the actual total lands on our side |
-| **Edge** | Prob − 52.4% (break-even at -110). Positive = profitable long-run |
-| **Our Proj** | Marcel + ML model's season-total projection |
-| **Conf** | Data quality: HIGH = 3+ seasons, MED = 2, LOW = 1 |
-| **Model** | `ml` = Gradient Boosting model trained on career data; `stat` = statistical fallback |
-                        """)
-
-                    # Fetch timestamp
-                    if 'fetched_at' in df_szln.columns:
-                        latest = df_szln['fetched_at'].max()
-                        st.caption(f"Lines fetched: {latest[:19] if latest else 'unknown'}")
+        _render_mlb_ml_comparison(mlb_date)
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TAB — PERFORMANCE

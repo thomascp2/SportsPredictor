@@ -60,6 +60,8 @@ PITCHER_STAT_MAP = {
 
 BATTER_STAT_MAP = {
     'hits':              lambda b: b.hits,
+    'singles':           lambda b: max(0, b.hits - b.doubles - b.triples - b.home_runs),
+    'doubles':           lambda b: b.doubles,
     'total_bases':       lambda b: b.total_bases,
     'home_runs':         lambda b: b.home_runs,
     'rbis':              lambda b: b.rbis,
@@ -147,10 +149,16 @@ class MLBGrader:
             # Backfill profit for any existing rows that are missing it
             conn.execute("""
                 UPDATE prediction_outcomes
-                SET profit = CASE outcome WHEN 'HIT' THEN 90.91
-                                          WHEN 'MISS' THEN -100.0
-                                          ELSE 0.0 END
-                WHERE profit IS NULL AND outcome IN ('HIT', 'MISS', 'VOID')
+                SET profit = CASE outcome 
+                    WHEN 'HIT' THEN 
+                        CASE odds_type
+                            WHEN 'goblin' THEN 31.25
+                            WHEN 'demon' THEN 120.0
+                            ELSE 90.91
+                        END
+                    ELSE -100.0 
+                END
+                WHERE profit IS NULL AND outcome IN ('HIT', 'MISS')
             """)
 
             conn.commit()
@@ -250,6 +258,7 @@ class MLBGrader:
             prop_type = pred['prop_type']
             line = pred['line']
             prediction = pred['prediction']
+            odds_type = pred.get('odds_type', 'standard')
 
             try:
                 # Goblin/demon lines only allow OVER on PrizePicks.
@@ -286,9 +295,21 @@ class MLBGrader:
                       (prediction == 'UNDER' and not actual_over)
 
                 outcome = 'HIT' if hit else 'MISS'
+
+                # Calculate profit based on odds_type ($100 unit)
+                if outcome == 'HIT':
+                    if odds_type == 'goblin':
+                        profit = 31.25  # -320 odds
+                    elif odds_type == 'demon':
+                        profit = 120.0  # +120 odds
+                    else:
+                        profit = 90.91  # -110 odds
+                else:
+                    profit = -100.0
+
                 self._save_outcome(conn, pred['id'], target_date, game_id,
                                    player_name, prop_type, line, prediction,
-                                   actual_value, outcome)
+                                   actual_value, outcome, profit, odds_type)
                 graded += 1
 
             except Exception as e:
@@ -413,14 +434,14 @@ class MLBGrader:
                         innings_pitched, outs_recorded, strikeouts_pitched,
                         walks_allowed, hits_allowed, earned_runs,
                         home_runs_allowed, pitches,
-                        opposing_pitcher, venue, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        opposing_pitcher, venue, game_time, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     str(game.game_id), game.game_date, p.player_name, p.team, opponent,
                     home_away, 'pitcher',
                     p.innings_pitched, p.outs_recorded, p.strikeouts, p.walks,
                     p.hits_allowed, p.earned_runs, p.home_runs_allowed, p.pitches,
-                    opp_starter, game.venue, datetime.now().isoformat()
+                    opp_starter, game.venue, game.game_time_utc, datetime.now().isoformat()
                 ))
             except Exception as e:
                 print(f"  [WARN] Failed to save pitcher log {p.player_name}: {e}")
@@ -443,15 +464,15 @@ class MLBGrader:
                         at_bats, hits, home_runs, rbis, runs,
                         stolen_bases, walks_drawn, strikeouts_batter,
                         doubles, triples, total_bases, hrr,
-                        batting_order, opposing_pitcher, venue, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        batting_order, opposing_pitcher, venue, game_time, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     str(game.game_id), game.game_date, b.player_name, b.team, opponent,
                     home_away, 'batter',
                     b.at_bats, b.hits, b.home_runs, b.rbis, b.runs,
                     b.stolen_bases, b.walks, b.strikeouts, b.doubles, b.triples,
                     b.total_bases, b.hrr, b.batting_order,
-                    opp_pitcher, game.venue, datetime.now().isoformat()
+                    opp_pitcher, game.venue, game.game_time_utc, datetime.now().isoformat()
                 ))
             except Exception as e:
                 print(f"  [WARN] Failed to save batter log {b.player_name}: {e}")
@@ -462,18 +483,18 @@ class MLBGrader:
 
     def _save_outcome(self, conn: sqlite3.Connection, prediction_id: int, game_date: str,
                        game_id: str, player_name: str, prop_type: str, line: float,
-                       prediction: str, actual_value: Optional[float], outcome: str) -> None:
+                       prediction: str, actual_value: Optional[float], outcome: str,
+                       profit: float = 0.0, odds_type: str = 'standard') -> None:
         """Save a single prediction outcome to the prediction_outcomes table."""
-        profit = 90.91 if outcome == 'HIT' else (-100.0 if outcome == 'MISS' else 0.0)
         conn.execute('''
             INSERT OR IGNORE INTO prediction_outcomes (
                 prediction_id, game_date, game_id, player_name,
-                prop_type, line, prediction, actual_value, outcome, created_at, profit
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                prop_type, line, prediction, actual_value, outcome, created_at, profit, odds_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             prediction_id, game_date, game_id, player_name,
             prop_type, line, prediction, actual_value, outcome,
-            datetime.now().isoformat(), profit
+            datetime.now().isoformat(), profit, odds_type
         ))
 
     def _void_predictions(self, conn: sqlite3.Connection, game_date: str,

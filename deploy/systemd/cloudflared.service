@@ -1,0 +1,31 @@
+[Unit]
+Description=Cloudflare Tunnel — PEGASUS API public endpoint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# Option A: Quick tunnel (URL changes on restart — good for testing)
+# ExecStart=/usr/local/bin/cloudflared tunnel --url http://localhost:8600
+
+# Option B: Named tunnel (fixed URL — use this for production)
+# Setup: cloudflared tunnel login
+#        cloudflared tunnel create sportspredictor
+#        cloudflared tunnel route dns sportspredictor your-subdomain.yourdomain.com
+# Then uncomment below and set your tunnel name:
+# ExecStart=/usr/local/bin/cloudflared tunnel run sportspredictor
+
+# UNCOMMENT ONE OF THE TWO OPTIONS ABOVE before enabling this service
+
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cloudflared
+
+[Install]
+WantedBy=multi-user.target

@@ -209,6 +209,13 @@ class DataLoader:
             FROM predictions p
             INNER JOIN prediction_outcomes o ON p.id = o.prediction_id
             WHERE p.prop_type = ? AND p.line = ?
+            -- Exclude ML-contaminated predictions (model_version='ensemble_ml60').
+            -- Root cause: between 2026-03-17 and 2026-04-15 the NHL prediction script renamed
+            -- features_for_ml keys (sog_l10 -> f_l10_avg). The ML models were trained expecting
+            -- the old names. After the rename they received 0.0 for all shot features, causing
+            -- extreme positive z-scores and 100% UNDER predictions. These labels are wrong and
+            -- will poison any retrained model. Safe to use: model_version='statistical_v2.2_asym'.
+            AND (p.model_version IS NULL OR p.model_version != 'ensemble_ml60')
             ORDER BY p.game_date
         """
 
@@ -216,7 +223,7 @@ class DataLoader:
 
         if len(df) == 0:
             return df
-        
+
         # Parse features from JSON
         features_list = []
         for idx, row in df.iterrows():
@@ -370,13 +377,26 @@ class DataLoader:
             'model_prediction', 'model_probability', 'actual_value',
             'actual_outcome', 'outcome', 'target', 'features_json', 'prob_over',
             'player_type',
+            # EXCLUDED 2026-04-15: f_prob_over is the stat model's own probability.
+            # Including it creates a feedback loop — ML inherits stat model biases and
+            # can't generate independent signal. When stat model bugs, ML amplifies it.
+            'f_prob_over', 'prob_over_stat',
         }
-        
+
         feature_cols = [col for col in df.columns if col not in exclude_cols]
-        
+
         # Remove any columns that are all NaN
         feature_cols = [col for col in feature_cols if df[col].notna().any()]
-        
+
+        # Deduplicate: prefer f_* canonical names over legacy non-prefixed names.
+        # During training data collection both naming conventions coexisted; keeping
+        # both causes multicollinearity in logistic regression and bloats feature space.
+        f_prefixed = {col for col in feature_cols if col.startswith('f_')}
+        # Build set of non-prefixed names that have an f_* equivalent
+        shadowed_by_f = {col for col in feature_cols
+                         if not col.startswith('f_') and f'f_{col}' in f_prefixed}
+        feature_cols = [col for col in feature_cols if col not in shadowed_by_f]
+
         return feature_cols
 
 
@@ -898,10 +918,32 @@ def train_model(
     if len(df) < config.min_samples:
         print(f"\n[WARN] Insufficient data: {len(df)} samples (need {config.min_samples})")
         return {'status': 'insufficient_data', 'samples': len(df)}
-    
+
     print(f"\nLoaded {len(df):,} samples")
     print(f"Date range: {df['game_date'].min()} to {df['game_date'].max()}")
-    print(f"Target distribution: {df['target'].mean():.1%} positive (HIT)")
+
+    over_rate = df['target'].mean()
+    majority_pct = max(over_rate, 1 - over_rate)
+    print(f"Target distribution: {over_rate:.1%} OVER / {1-over_rate:.1%} UNDER")
+
+    # Degenerate-line guard: skip training when one class dominates >75%.
+    # On such lines (e.g. points_1.5 at 88% UNDER) logistic regression cannot
+    # beat always-majority-class — it just memorises the majority and reports
+    # inflated accuracy. There is no edge to learn here.
+    DEGENERATE_THRESHOLD = 0.75
+    if majority_pct > DEGENERATE_THRESHOLD:
+        majority_label = "UNDER" if over_rate < 0.5 else "OVER"
+        print(f"\n[SKIP] Degenerate line: {majority_label} wins {majority_pct:.1%} of the time "
+              f"(threshold {DEGENERATE_THRESHOLD:.0%}). No ML model trained — "
+              f"use statistical-only for {prop_type} O{line}.")
+        return {
+            'status': 'skipped_degenerate',
+            'prop_type': prop_type,
+            'line': line,
+            'majority_pct': majority_pct,
+            'majority_label': majority_label,
+            'samples': len(df),
+        }
     
     # Get features
     feature_cols = loader.get_feature_columns(df)
@@ -976,18 +1018,25 @@ def train_model(
     if len(importance_df) > 0:
         print(importance_df.head(10).to_string(index=False))
     
-    # Compare to baseline (statistical model)
+    # Compare to always-majority-class baseline (NOT statistical model).
+    # Using the stat model as baseline inflated improvement numbers because a broken
+    # stat model scores <50% — easy to beat without adding real signal.
+    # Always-majority-class is the honest bar: if ML can't beat "always pick UNDER"
+    # (or "always pick OVER" for rare OVER-dominated lines) it adds no value.
     print("\n" + "="*60)
-    print("COMPARISON TO STATISTICAL BASELINE")
+    print("COMPARISON TO ALWAYS-MAJORITY-CLASS BASELINE")
     print("="*60)
-    
-    # Statistical model's predictions are in model_prediction column
-    # Test set starts after train+val+cal rows
-    test_start = len(X_train) + len(X_val) + len(X_cal)
-    baseline_pred = (df.iloc[test_start:]['model_prediction'] == 'OVER').astype(int).values
-    baseline_prob = df.iloc[test_start:]['model_probability'].values
-    
+
+    majority_class = 1 if y_test.mean() >= 0.5 else 0
+    baseline_accuracy = max(y_test.mean(), 1 - y_test.mean())
+    baseline_pred = np.full(len(y_test), majority_class)
+    # Use 0.5+eps prob so Brier/log-loss reflect the inherent uncertainty
+    baseline_prob = np.full(len(y_test), baseline_accuracy)
+
     baseline_metrics = trainer._calculate_metrics(y_test, baseline_pred, baseline_prob)
+
+    majority_label = "OVER" if majority_class == 1 else "UNDER"
+    print(f"  Majority class: always-{majority_label} ({baseline_accuracy:.1%} of test set)")
     
     print(f"\n{'Metric':<15} {'Statistical':<12} {'ML Model':<12} {'Delta':<10}")
     print("-"*50)

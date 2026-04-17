@@ -1,0 +1,351 @@
+{
+  "sport": "nhl",
+  "n": 61976,
+  "pass": true,
+  "approved_combos": [
+    [
+      "OVER",
+      "standard"
+    ],
+    [
+      "UNDER",
+      "standard"
+    ]
+  ],
+  "check_a_baseline": {
+    "n": 61976,
+    "our_accuracy": 0.6744,
+    "always_under_accuracy": 0.6923,
+    "real_edge": -0.0179,
+    "under_prediction_rate": 0.6923,
+    "pass": false,
+    "verdict": "FAIL \u2014 real edge only +-1.8pp (need >3pp on n>=1,000)"
+  },
+  "check_b_reliability": {
+    "buckets": [
+      {
+        "bucket_low": 0.5,
+        "bucket_mid": 0.55,
+        "n": 16024,
+        "hits": 8459,
+        "actual_rate": 0.5279,
+        "wilson_lo": 0.5202,
+        "wilson_hi": 0.5356,
+        "deviation": 0.0221
+      },
+      {
+        "bucket_low": 0.6,
+        "bucket_mid": 0.65,
+        "n": 15508,
+        "hits": 9454,
+        "actual_rate": 0.6096,
+        "wilson_lo": 0.6019,
+        "wilson_hi": 0.6173,
+        "deviation": 0.0404
+      },
+      {
+        "bucket_low": 0.7,
+        "bucket_mid": 0.75,
+        "n": 14923,
+        "hits": 10635,
+        "actual_rate": 0.7127,
+        "wilson_lo": 0.7053,
+        "wilson_hi": 0.7199,
+        "deviation": 0.0373
+      },
+      {
+        "bucket_low": 0.8,
+        "bucket_mid": 0.85,
+        "n": 14966,
+        "hits": 12741,
+        "actual_rate": 0.8513,
+        "wilson_lo": 0.8455,
+        "wilson_hi": 0.8569,
+        "deviation": 0.0013
+      },
+      {
+        "bucket_low": 0.9,
+        "bucket_mid": 0.95,
+        "n": 555,
+        "hits": 507,
+        "actual_rate": 0.9135,
+        "wilson_lo": 0.8872,
+        "wilson_hi": 0.9341,
+        "deviation": 0.0365
+      }
+    ],
+    "calibration_table": {
+      "0.55": 0.5279,
+      "0.65": 0.6096,
+      "0.75": 0.7127,
+      "0.85": 0.8513,
+      "0.95": 0.9135
+    },
+    "max_deviation": 0.0404,
+    "mace": 0.0275,
+    "verdict": "Well-calibrated (MACE=0.028, max_dev=0.040)"
+  },
+  "check_c_tiers": {
+    "tiers": [
+      {
+        "tier": "T1-ELITE",
+        "n": 5898,
+        "hit_rate": 0.8318,
+        "wilson_lo": 0.822,
+        "wilson_hi": 0.8411
+      },
+      {
+        "tier": "T2-STRONG",
+        "n": 24869,
+        "hit_rate": 0.7698,
+        "wilson_lo": 0.7646,
+        "wilson_hi": 0.775
+      },
+      {
+        "tier": "T3-GOOD",
+        "n": 6632,
+        "hit_rate": 0.6315,
+        "wilson_lo": 0.6198,
+        "wilson_hi": 0.643
+      },
+      {
+        "tier": "T4-LEAN",
+        "n": 17239,
+        "hit_rate": 0.5671,
+        "wilson_lo": 0.5597,
+        "wilson_hi": 0.5745
+      },
+      {
+        "tier": "T5-FADE",
+        "n": 7338,
+        "hit_rate": 0.5151,
+        "wilson_lo": 0.5037,
+        "wilson_hi": 0.5266
+      }
+    ],
+    "verdict": "PASS \u2014 T1-ELITE (83.2%) meaningfully beats T4-LEAN (56.7%)"
+  },
+  "check_d_brier": {
+    "n": 61976,
+    "brier": 0.2052,
+    "brier_naive": 0.3736,
+    "brier_skill": 0.4508,
+    "verdict": "PASS \u2014 Brier=0.2052 beats naive 0.3736 (skill=0.451)"
+  },
+  "check_e_directional": {
+    "by_direction": [
+      {
+        "key": "OVER",
+        "n": 19073,
+        "pct_of_all": 0.3077,
+        "hit_rate": 0.578,
+        "wilson_lo": 0.571,
+        "wilson_hi": 0.585
+      },
+      {
+        "key": "UNDER",
+        "n": 42903,
+        "pct_of_all": 0.6923,
+        "hit_rate": 0.7172,
+        "wilson_lo": 0.7129,
+        "wilson_hi": 0.7215
+      }
+    ],
+    "by_odds_type": [
+      {
+        "key": "standard",
+        "n": 61976,
+        "pct_of_all": 1.0,
+        "hit_rate": 0.6744,
+        "wilson_lo": 0.6707,
+        "wilson_hi": 0.6781
+      }
+    ],
+    "verdict": "OK \u2014 UNDER prediction rate 69% (acceptable)"
+  },
+  "check_f_profitability": {
+    "matrix": [
+      {
+        "direction": "OVER",
+        "odds_type": "standard",
+        "break_even": 0.5238,
+        "n_total": 19073,
+        "n_approved": 8372,
+        "hit_rate": 0.6485,
+        "wilson_lo": 0.6382,
+        "wilson_hi": 0.6586,
+        "edge_vs_be": 0.1247,
+        "status": "APPROVED",
+        "verdict": "APPROVED \u2014 hit_rate=64.8% (CI [63.8%\u201365.9%]) vs break-even 52.4% \u2192 edge=+12.5pp on 8,372 T1-T3 picks",
+        "tier_detail": [
+          {
+            "tier": "T1-ELITE",
+            "n": 295,
+            "hit_rate": 0.7186,
+            "wilson_lo": 0.6648,
+            "wilson_hi": 0.7669,
+            "edge_vs_be": 0.1948,
+            "profitable": true
+          },
+          {
+            "tier": "T2-STRONG",
+            "n": 5273,
+            "hit_rate": 0.6639,
+            "wilson_lo": 0.6511,
+            "wilson_hi": 0.6766,
+            "edge_vs_be": 0.1401,
+            "profitable": true
+          },
+          {
+            "tier": "T3-GOOD",
+            "n": 2804,
+            "hit_rate": 0.612,
+            "wilson_lo": 0.5938,
+            "wilson_hi": 0.6299,
+            "edge_vs_be": 0.0882,
+            "profitable": true
+          },
+          {
+            "tier": "T4-LEAN",
+            "n": 7149,
+            "hit_rate": 0.5415,
+            "wilson_lo": 0.5299,
+            "wilson_hi": 0.553,
+            "edge_vs_be": 0.0177,
+            "profitable": true
+          },
+          {
+            "tier": "T5-FADE",
+            "n": 3552,
+            "hit_rate": 0.4856,
+            "wilson_lo": 0.4692,
+            "wilson_hi": 0.5021,
+            "edge_vs_be": -0.0382,
+            "profitable": false
+          }
+        ]
+      },
+      {
+        "direction": "OVER",
+        "odds_type": "goblin",
+        "break_even": 0.7619,
+        "n_total": 0,
+        "n_approved": 0,
+        "hit_rate": null,
+        "edge_vs_be": null,
+        "status": "NO_DATA",
+        "verdict": "No T1-T3 picks found \u2014 combo not active",
+        "tier_detail": []
+      },
+      {
+        "direction": "OVER",
+        "odds_type": "demon",
+        "break_even": 0.4545,
+        "n_total": 0,
+        "n_approved": 0,
+        "hit_rate": null,
+        "edge_vs_be": null,
+        "status": "NO_DATA",
+        "verdict": "No T1-T3 picks found \u2014 combo not active",
+        "tier_detail": []
+      },
+      {
+        "direction": "UNDER",
+        "odds_type": "standard",
+        "break_even": 0.5238,
+        "n_total": 42903,
+        "n_approved": 29027,
+        "hit_rate": 0.7858,
+        "wilson_lo": 0.7811,
+        "wilson_hi": 0.7905,
+        "edge_vs_be": 0.262,
+        "status": "APPROVED",
+        "verdict": "APPROVED \u2014 hit_rate=78.6% (CI [78.1%\u201379.1%]) vs break-even 52.4% \u2192 edge=+26.2pp on 29,027 T1-T3 picks",
+        "tier_detail": [
+          {
+            "tier": "T1-ELITE",
+            "n": 5603,
+            "hit_rate": 0.8378,
+            "wilson_lo": 0.8279,
+            "wilson_hi": 0.8472,
+            "edge_vs_be": 0.314,
+            "profitable": true
+          },
+          {
+            "tier": "T2-STRONG",
+            "n": 19596,
+            "hit_rate": 0.7983,
+            "wilson_lo": 0.7926,
+            "wilson_hi": 0.8039,
+            "edge_vs_be": 0.2745,
+            "profitable": true
+          },
+          {
+            "tier": "T3-GOOD",
+            "n": 3828,
+            "hit_rate": 0.6458,
+            "wilson_lo": 0.6305,
+            "wilson_hi": 0.6608,
+            "edge_vs_be": 0.122,
+            "profitable": true
+          },
+          {
+            "tier": "T4-LEAN",
+            "n": 10090,
+            "hit_rate": 0.5853,
+            "wilson_lo": 0.5757,
+            "wilson_hi": 0.5949,
+            "edge_vs_be": 0.0615,
+            "profitable": true
+          },
+          {
+            "tier": "T5-FADE",
+            "n": 3786,
+            "hit_rate": 0.5428,
+            "wilson_lo": 0.5269,
+            "wilson_hi": 0.5586,
+            "edge_vs_be": 0.019,
+            "profitable": true
+          }
+        ]
+      },
+      {
+        "direction": "UNDER",
+        "odds_type": "goblin",
+        "break_even": 0.7619,
+        "n_total": 0,
+        "n_approved": 0,
+        "hit_rate": null,
+        "edge_vs_be": null,
+        "status": "NO_DATA",
+        "verdict": "No T1-T3 picks found \u2014 combo not active",
+        "tier_detail": []
+      },
+      {
+        "direction": "UNDER",
+        "odds_type": "demon",
+        "break_even": 0.4545,
+        "n_total": 0,
+        "n_approved": 0,
+        "hit_rate": null,
+        "edge_vs_be": null,
+        "status": "NO_DATA",
+        "verdict": "No T1-T3 picks found \u2014 combo not active",
+        "tier_detail": []
+      }
+    ],
+    "approved_combos": [
+      [
+        "OVER",
+        "standard"
+      ],
+      [
+        "UNDER",
+        "standard"
+      ]
+    ],
+    "gate_passed": true,
+    "verdict": "GATE PASS \u2014 2 combo(s) approved for consumer output: OVER/standard, UNDER/standard"
+  },
+  "audit_date": "2026-04-15"
+}

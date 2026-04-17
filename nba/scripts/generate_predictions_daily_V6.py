@@ -85,8 +85,8 @@ PP_TO_INTERNAL = {
     'fantasy': 'fantasy',
 }
 
-# Odds types to include (skip demon - too risky)
-ODDS_TYPES = ['standard', 'goblin']
+# Odds types to include — demon BE ~45%, quality-gated by σ<1.5 in selector
+ODDS_TYPES = ['standard', 'goblin', 'demon']
 
 # Fallback lines if PP not available (rarely needed)
 FALLBACK_PROPS = {

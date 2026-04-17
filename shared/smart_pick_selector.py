@@ -499,7 +499,7 @@ class SmartPickSelector:
                 self._intel = None  # Advisory only -- never blocks picks
 
         if odds_types is None:
-            odds_types = ['standard', 'goblin']  # Skip demon by default (too risky)
+            odds_types = ['standard', 'goblin', 'demon']  # Demon BE ~45% — lowest threshold, quality-gated by σ<1.5
 
         # Optionally refresh lines
         if refresh_lines:
@@ -545,10 +545,15 @@ class SmartPickSelector:
         matched = 0
         _logged_trades = set()  # Dedupe trade log — one message per player per run
 
+        # Golf: PrizePicks uses different prop names than our internal schema
+        _GOLF_PROP_MAP = {'strokes': 'round_score'}
+
         for pp in pp_lines:
             # Try to find our prediction for this player+prop
             # Strip diacritics so PP 'Stutzle' matches our DB 'Stützle'
-            key = (_strip_diacritics(pp['player_name']).lower(), pp['prop_type'])
+            # Golf: map PP prop name to our internal name (strokes -> round_score)
+            pp_prop_internal = _GOLF_PROP_MAP.get(pp['prop_type'], pp['prop_type']) if self.sport == 'GOLF' else pp['prop_type']
+            key = (_strip_diacritics(pp['player_name']).lower(), pp_prop_internal)
 
             # If no exact match, try proper fuzzy matching with high threshold
             if key not in pred_lookup:
@@ -557,8 +562,8 @@ class SmartPickSelector:
                 pp_name_lower = _strip_diacritics(pp['player_name']).lower()
 
                 for pred_key in pred_lookup.keys():
-                    # Only consider same prop type
-                    if pred_key[1] != pp['prop_type']:
+                    # Only consider same prop type (use mapped internal name for golf)
+                    if pred_key[1] != pp_prop_internal:
                         continue
 
                     pred_name = pred_key[0]
@@ -674,6 +679,17 @@ class SmartPickSelector:
                 our_param = stored_prob
                 recent_avg = 0
                 baseline_prob_over = pp_prob_over  # no separate baseline for MLB
+            elif self.sport == 'GOLF':
+                # Golf: round_score uses Normal distribution on scoring average
+                mean = pred.get('golf_mean')
+                std_dev = pred.get('golf_std') or 3.5
+                recent_avg = mean or 0
+                recent_std = std_dev
+                if mean is None or mean <= 0:
+                    continue
+                pp_prob_over = self.normal_prob_over(mean, std_dev, pp['line'])
+                our_param = mean
+                baseline_prob_over = self.normal_prob_over(season_avg, season_std, pp['line']) if season_avg > 0 else pp_prob_over
             else:
                 # NBA: All props use Normal distribution
                 mean = pred.get('mean') or pred.get('f_l10_avg')
@@ -884,7 +900,8 @@ class SmartPickSelector:
                      'hits', 'total_bases', 'home_runs', 'rbis', 'runs',
                      'stolen_bases', 'walks', 'batter_strikeouts', 'hrr')
         elif self.sport == 'GOLF':
-            props = ('round_score', 'make_cut')
+            # PrizePicks stores golf round score as 'strokes'; make_cut not on PP
+            props = ('strokes',)
         else:
             # NBA
             props = ('points', 'rebounds', 'assists', 'threes', 'pra',
@@ -955,8 +972,22 @@ class SmartPickSelector:
         for row in rows:
             pred = dict(row)
 
-            if self.sport in ('NHL', 'MLB', 'GOLF'):
-                # NHL/MLB/GOLF: Extract parameters from features_json
+            if self.sport == 'GOLF':
+                # Golf: Extract scoring avg/std from features_json
+                try:
+                    features = json.loads(row['features_json'])
+                    pred['golf_mean'] = (features.get('f_scoring_avg_l10_rounds')
+                                         or features.get('f_scoring_avg_l5_rounds'))
+                    pred['golf_std'] = features.get('f_scoring_std_l10_rounds') or 3.5
+                    pred['f_season_avg'] = features.get('f_scoring_avg_l10_rounds') or 0
+                    pred['f_season_std'] = features.get('f_scoring_std_l10_rounds') or 3.5
+                except:
+                    pred['golf_mean'] = None
+                    pred['golf_std'] = 3.5
+                    pred['f_season_avg'] = 0
+                    pred['f_season_std'] = 3.5
+            elif self.sport in ('NHL', 'MLB'):
+                # NHL/MLB: Extract parameters from features_json
                 try:
                     features = json.loads(row['features_json'])
                     # For points (Poisson) — try legacy key then canonical

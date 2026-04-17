@@ -1,0 +1,30 @@
+[Unit]
+Description=PEGASUS FastAPI — Pick Data API (port 8600)
+Documentation=https://github.com/thomascp2/SportsPredictor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/SportsPredictor
+EnvironmentFile=/opt/SportsPredictor/.env
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONUTF8=1
+
+# Bind to all interfaces so Cloudflare tunnel / nginx can reach it
+ExecStart=/opt/SportsPredictor/venv/bin/uvicorn PEGASUS.api.main:app \
+    --host 0.0.0.0 \
+    --port 8600 \
+    --workers 1
+
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pegasus-api
+
+[Install]
+WantedBy=multi-user.target

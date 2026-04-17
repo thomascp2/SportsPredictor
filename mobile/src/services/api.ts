@@ -65,6 +65,14 @@ export interface SmartPick {
   days_rest?: number;               // Player's days since last game (0 = back-to-back)
   // League rank field
   percentile_score?: number;        // 0-100: where this player's season_avg ranks among today's tracked players for this prop
+  // PEGASUS enrichment fields — optional, only present when data came from PEGASUS API (port 8600)
+  calibrated_probability?: number;  // PEGASUS calibration-corrected probability (always show over raw when present)
+  implied_probability?: number | null; // DK vig-removed fair probability for this direction
+  situation_flag?: string;          // "NORMAL" | "HIGH_STAKES" | "DEAD_RUBBER" | "ELIMINATED" | "USAGE_BOOST"
+  situation_notes?: string;         // Tooltip: "HIGH STAKES | LAC | 9-seed play-in | 22.0 GB"
+  true_ev?: number;                 // (calibrated_prob / break_even) - 1
+  model_version?: string;           // "statistical_v1" | "mlb_xgb_v1" | ...
+  pegasus_source?: boolean;         // true when pick originated from PEGASUS API
 }
 
 export interface GameGroup {
@@ -311,7 +319,46 @@ export async function fetchSmartPicks(
     groupByGame?: boolean;
   } = {}
 ): Promise<SmartPicksResponse> {
-  // Try local FastAPI first (home WiFi / dev), fall back to Supabase (works anywhere)
+  // Source priority:
+  //   1. PEGASUS FastAPI (port 8600) — calibrated probs, situational flags, DK implied odds
+  //   2. Local production FastAPI (port 8000) — raw smart picks
+  //   3. Supabase daily_props — always works, no enrichment
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+  // 1. Try PEGASUS first
+  try {
+    const { fetchSmartPicksFromPegasus } = await import('./pegasus');
+    const picks = await fetchSmartPicksFromPegasus(sport, {
+      minTier:   options.tier,
+      direction: options.prediction,
+      limit:     500,
+    });
+
+    if (picks.length > 0) {
+      const avgEdge = picks.reduce((s, p) => s + p.edge, 0) / picks.length;
+      const avgProb = picks.reduce((s, p) => s + p.pp_probability, 0) / picks.length;
+      const byTier: Record<string, number> = {};
+      for (const p of picks) byTier[p.tier] = (byTier[p.tier] ?? 0) + 1;
+
+      return {
+        success: true,
+        date: todayStr,
+        sport: sport.toUpperCase(),
+        total_picks: picks.length,
+        picks,
+        summary: {
+          avg_probability: Math.round(avgProb * 100) / 100,
+          avg_edge: Math.round(avgEdge * 100) / 100,
+          by_tier: byTier,
+        },
+      };
+    }
+  } catch (_pegasusErr) {
+    // PEGASUS unreachable or no picks — continue to next source
+  }
+
+  // 2. Try local production FastAPI
   try {
     const response = await api.get<SmartPicksResponse>('/picks/today', {
       params: {
@@ -326,13 +373,15 @@ export async function fetchSmartPicks(
         sort_by: options.sortBy ?? 'edge',
         group_by_game: options.groupByGame ?? false,
       },
-      timeout: 5000,  // shorter timeout so fallback kicks in quickly
+      timeout: 5000,
     });
     return response.data;
   } catch (_localErr) {
-    // Local FastAPI unreachable — use Supabase directly
-    return fetchSmartPicksFromSupabase(sport, options);
+    // Local FastAPI unreachable — fall through to Supabase
   }
+
+  // 3. Supabase fallback
+  return fetchSmartPicksFromSupabase(sport, options);
 }
 
 export async function fetchPicksByGame(sport: string): Promise<SmartPicksResponse> {

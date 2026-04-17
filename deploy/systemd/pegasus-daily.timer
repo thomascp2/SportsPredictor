@@ -1,0 +1,16 @@
+[Unit]
+Description=PEGASUS Daily Runner — fires after afternoon PP sync completes
+Documentation=https://github.com/thomascp2/SportsPredictor
+
+[Timer]
+# 2:00 PM CST = 20:00 UTC (accounts for CDT offset during summer: 19:00 UTC)
+# Set VPS timezone to America/Chicago so you can use local times directly:
+#   sudo timedatectl set-timezone America/Chicago
+# Then this fires at 2:00 PM local (after the 12:30/1:00 PM pp-sync windows)
+OnCalendar=*-*-* 14:00:00
+
+# If the VPS was off at fire time, run immediately on next boot
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -199,12 +199,23 @@ class NBADailyPredictor:
                 over_under   REAL,    -- game total
                 home_moneyline INTEGER,
                 away_moneyline INTEGER,
+                over_odds        INTEGER,
+                under_odds       INTEGER,
+                home_spread_odds INTEGER,
+                away_spread_odds INTEGER,
                 odds_details TEXT,
                 odds_provider TEXT,
                 fetched_at   TEXT,
                 PRIMARY KEY (game_id)
             )
         """)
+        # Add new columns for existing databases
+        for col, typ in [("over_odds", "INTEGER"), ("under_odds", "INTEGER"),
+                         ("home_spread_odds", "INTEGER"), ("away_spread_odds", "INTEGER")]:
+            try:
+                cursor.execute(f"ALTER TABLE game_lines ADD COLUMN {col} {typ}")
+            except Exception:
+                pass  # Column already exists
 
         for game in games:
             cursor.execute("""
@@ -273,12 +284,15 @@ class NBADailyPredictor:
                 (game_id, game_date, home_team, away_team,
                  spread, abs_spread, over_under,
                  home_moneyline, away_moneyline,
+                 over_odds, under_odds, home_spread_odds, away_spread_odds,
                  odds_details, odds_provider, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 game_id, game_date, espn_home, espn_away,
                 spread, abs_spread, over_under,
                 eg.get('home_moneyline'), eg.get('away_moneyline'),
+                eg.get('over_odds'), eg.get('under_odds'),
+                eg.get('home_spread_odds'), eg.get('away_spread_odds'),
                 eg.get('odds_details', ''), eg.get('odds_provider', ''),
                 datetime.now().isoformat()
             ))

@@ -364,8 +364,8 @@ class SupabaseSync:
                     local_name = pick.local_player_name if pick.local_player_name else pick.player_name
                     c.execute(
                         "UPDATE predictions SET is_smart_pick=1, ai_tier=? "
-                        "WHERE game_date=? AND player_name=? AND prop_type=?",
-                        (pick.tier, game_date, local_name, pick.prop_type),
+                        "WHERE game_date=? AND player_name=? AND prop_type=? AND line=?",
+                        (pick.tier, game_date, local_name, pick.prop_type, pick.pp_line),
                     )
                     sqlite_updated += c.rowcount
                 conn.commit()
@@ -449,11 +449,14 @@ class SupabaseSync:
                         pp_odds = odds
                         break
 
-            # Determine the authoritative odds_type for this row
-            effective_type = pp_odds if pp_odds is not None else row.get('odds_type', 'standard')
+            # Lock odds_type at first write — don't overwrite once set.
+            # PP reprices standard → demon once games go live; we want the pregame label
+            # locked in so ML training data reflects what was actually bettable pregame.
+            current_odds_type = row.get('odds_type') or ''
+            needs_odds_update = pp_odds is not None and not current_odds_type
 
-            # Determine if we need to update odds_type and/or ai_prediction
-            needs_odds_update = pp_odds is not None and row['odds_type'] != pp_odds
+            # Edge recalculation uses the locked odds_type (or PP value if not yet set)
+            effective_type = current_odds_type or (pp_odds if pp_odds is not None else 'standard')
             needs_dir_fix = (effective_type in ('goblin', 'demon')
                              and row.get('ai_prediction') == 'UNDER')
 

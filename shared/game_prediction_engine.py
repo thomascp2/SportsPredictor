@@ -45,6 +45,20 @@ from game_statistical_baseline import GameStatisticalPredictor
 from game_prediction_schema import ensure_game_tables
 
 
+def _american_to_break_even(odds: Optional[int], default: float = 0.5238) -> float:
+    """Convert American odds integer to break-even probability."""
+    if odds is None:
+        return default
+    try:
+        o = int(odds)
+        if o < 0:
+            return abs(o) / (abs(o) + 100)
+        else:
+            return 100 / (o + 100)
+    except (ValueError, TypeError):
+        return default
+
+
 # ── Backtest-proven thresholds ───────────────────────────────────────────────
 
 # Elo divergence: bet when Elo disagrees with market by this much
@@ -305,14 +319,17 @@ class GamePredictionEngine:
             else:
                 final_prob = sp.probability
 
-            # Recalculate edge
-            # Spread bets: always -110 both sides → break-even = 0.5238
-            # Total bets:  always -110 both sides → break-even = 0.50 (symmetric)
-            # Moneyline:   use actual market implied probability
+            # Recalculate edge using market-priced odds when available
             if sp.bet_type == "spread":
-                implied = 0.5238
+                if sp.bet_side == "home":
+                    implied = _american_to_break_even(features.get("gf_home_spread_odds_american"))
+                else:
+                    implied = _american_to_break_even(features.get("gf_away_spread_odds_american"))
             elif sp.bet_side in ["over", "under"]:
-                implied = 0.50
+                if sp.bet_side == "over":
+                    implied = _american_to_break_even(features.get("gf_over_odds_american"))
+                else:
+                    implied = _american_to_break_even(features.get("gf_under_odds_american"))
             else:  # moneyline
                 implied = features.get("gf_home_implied_prob", 0.50)
                 if sp.bet_side == "away":

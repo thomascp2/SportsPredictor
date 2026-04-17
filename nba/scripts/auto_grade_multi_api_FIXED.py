@@ -49,7 +49,7 @@ class MultiAPIGrader:
 
         # Get predictions to grade
         cursor.execute("""
-            SELECT id, game_id, player_name, prop_type, line, prediction, probability
+            SELECT id, game_id, player_name, prop_type, line, prediction, probability, odds_type
             FROM predictions
             WHERE game_date = ?
               AND id NOT IN (SELECT prediction_id FROM prediction_outcomes)
@@ -90,7 +90,7 @@ class MultiAPIGrader:
         print(f"Grading predictions...")
         
         for pred in predictions:
-            pred_id, game_id, player_name, prop_type, line, prediction, probability = pred
+            pred_id, game_id, player_name, prop_type, line, prediction, probability, odds_type = pred
             
             match_result = self._find_player_stats(player_name, all_player_stats)
             
@@ -100,10 +100,7 @@ class MultiAPIGrader:
             
             player_stats, match_tier, match_score = match_result
 
-            # Skip DNP players — NBA Stats API fallback includes them with 0 minutes.
-            # ESPN API filters them out at fetch time, but the fallback does not.
-            # Grading a DNP with actual_value=0 marks all OVERs as MISS and all
-            # UNDERs as HIT, corrupting accuracy stats.
+            # Skip DNP players
             if player_stats.get('minutes', 1) == 0:
                 ungraded.append((player_name, "DNP (0 minutes played)"))
                 continue
@@ -119,16 +116,25 @@ class MultiAPIGrader:
             else:
                 outcome = 'HIT' if actual_value <= line else 'MISS'
 
-            profit = 90.91 if outcome == 'HIT' else -100.0
+            # Calculate profit based on odds_type ($100 unit)
+            if outcome == 'HIT':
+                if odds_type == 'goblin':
+                    profit = 31.25  # -320 odds
+                elif odds_type == 'demon':
+                    profit = 120.0  # +120 odds
+                else:
+                    profit = 90.91  # -110 odds
+            else:
+                profit = -100.0
 
             cursor.execute("""
                 INSERT INTO prediction_outcomes
                 (prediction_id, game_id, game_date, player_name, prop_type, line,
-                 prediction, actual_value, outcome, match_tier, match_score, profit)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 prediction, actual_value, outcome, match_tier, match_score, profit, odds_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 pred_id, game_id, target_date, player_name, prop_type, line,
-                prediction, actual_value, outcome, match_tier, match_score, profit
+                prediction, actual_value, outcome, match_tier, match_score, profit, odds_type
             ))
             
             graded_count += 1
@@ -138,7 +144,15 @@ class MultiAPIGrader:
         # Backfill profit for any existing rows that are missing it
         cursor.execute("""
             UPDATE prediction_outcomes
-            SET profit = CASE outcome WHEN 'HIT' THEN 90.91 ELSE -100.0 END
+            SET profit = CASE outcome 
+                WHEN 'HIT' THEN 
+                    CASE odds_type
+                        WHEN 'goblin' THEN 31.25
+                        WHEN 'demon' THEN 120.0
+                        ELSE 90.91
+                    END
+                ELSE -100.0 
+            END
             WHERE profit IS NULL AND outcome IN ('HIT', 'MISS')
         """)
 

@@ -640,7 +640,15 @@ def grade_predictions(game_date: str) -> Dict:
     # Backfill profit for any existing rows that are missing it
     cursor.execute("""
         UPDATE prediction_outcomes
-        SET profit = CASE outcome WHEN 'HIT' THEN 90.91 ELSE -100.0 END
+        SET profit = CASE outcome 
+            WHEN 'HIT' THEN 
+                CASE odds_type
+                    WHEN 'goblin' THEN 31.25
+                    WHEN 'demon' THEN 120.0
+                    ELSE 90.91
+                END
+            ELSE -100.0 
+        END
         WHERE profit IS NULL AND outcome IN ('HIT', 'MISS')
     """)
 

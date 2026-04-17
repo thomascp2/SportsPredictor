@@ -133,10 +133,18 @@ class GamePredictionGrader:
             odds = pred["odds_american"]
             if outcome == "HIT" and odds:
                 if odds > 0:
-                    profit = odds  # e.g., +150 -> $150
+                    # Plus odds: +150 means you bet 100 to win 150
+                    profit = float(odds)
                 else:
-                    profit = 100.0 / (abs(odds) / 100.0)  # e.g., -150 -> $66.67
+                    # Minus odds: -110 means you bet 110 to win 100.
+                    # Normalized to a $100 base bet:
+                    # Profit = 100 / (abs(odds) / 100)
+                    profit = 100.0 / (abs(odds) / 100.0)
             elif outcome == "MISS":
+                # Standard $100 unit loss. 
+                # Note: Technically minus odds risk more than $100 to win $100,
+                # but for simplicity in tracking P&L we often use $100 risked.
+                # Here we stick to "To Win $100" logic for minus odds.
                 profit = -100.0
             # PUSH = 0
 
@@ -178,6 +186,44 @@ class GamePredictionGrader:
             "accuracy": round(accuracy, 1),
             "game_date": game_date,
         }
+
+    def _save_closing_odds(self, conn, game_date: str, odds_list: List[Dict]):
+        """Save closing odds to the game_predictions table for CLV analysis."""
+        for odds in odds_list:
+            home = odds["home_team"]
+            away = odds["away_team"]
+            
+            # Update closing line/odds for this game's predictions
+            # Note: We update ALL predictions for this game (ML, Spread, Total)
+            # The closing_line we save depends on the bet_type.
+            
+            # 1. Update Moneyline closing odds
+            conn.execute("""
+                UPDATE game_predictions
+                SET closing_odds_american = CASE 
+                    WHEN bet_side = 'home' THEN ? 
+                    ELSE ? 
+                END
+                WHERE game_date = ? AND home_team = ? AND away_team = ? AND bet_type = 'moneyline'
+            """, (odds.get("home_ml"), odds.get("away_ml"), game_date, home, away))
+
+            # 2. Update Spread closing line
+            conn.execute("""
+                UPDATE game_predictions
+                SET closing_line = ?,
+                    closing_odds_american = -110 -- Standard spread juice if not provided
+                WHERE game_date = ? AND home_team = ? AND away_team = ? AND bet_type = 'spread'
+            """, (odds.get("spread"), game_date, home, away))
+
+            # 3. Update Total closing line
+            conn.execute("""
+                UPDATE game_predictions
+                SET closing_line = ?,
+                    closing_odds_american = -110 -- Standard total juice if not provided
+                WHERE game_date = ? AND home_team = ? AND away_team = ? AND bet_type = 'total'
+            """, (odds.get("over_under"), game_date, home, away))
+
+        conn.commit()
 
     def _get_final_scores(self, conn, game_date: str) -> Dict:
         """

@@ -3,6 +3,10 @@
 // For physical device: use your PC's IP address
 export const API_BASE_URL = 'http://192.168.1.70:8000/api';
 
+// PEGASUS FastAPI (port 8600) — enriched calibrated picks, separate from production FastAPI
+// Override via EXPO_PUBLIC_PEGASUS_API_URL env var (e.g., for Cloudflare tunnel or different LAN IP)
+export const PEGASUS_API_URL = process.env.EXPO_PUBLIC_PEGASUS_API_URL ?? 'http://192.168.1.70:8600';
+
 // Supabase Configuration
 // Replace with your Supabase project credentials
 export const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL || 'YOUR_SUPABASE_URL';

@@ -21,6 +21,12 @@ Commands:
   !health          - Check API health
   !help            - Show commands
 
+HOTKEYS (short aliases):
+  !g [nba|nhl|both]          - Grade yesterday (or: !g nba 2026-04-14)
+  !p [nba|nhl|both]          - Run predictions for today
+  !r [nba|nhl|both]          - PP sync / refresh lines
+  !run [nba|nhl|both]        - Grade + Predict + PP-sync in one shot
+
 Setup:
 1. Create a Discord bot at https://discord.com/developers/applications
 2. Get your bot token
@@ -511,6 +517,151 @@ async def cmd_gamelines(ctx, sport: str = "nba", game_date: str = None):
     msg_parts.append("```")
 
     await ctx.send("\n".join(msg_parts))
+
+
+async def _run_script(sport: str, operation: str, extra_args: list = None) -> tuple[bool, str]:
+    """Run an orchestrator operation and return (success, summary_line)."""
+    import subprocess
+    cmd = [sys.executable, 'orchestrator.py', '--sport', sport, '--mode', 'once', '--operation', operation]
+    if extra_args:
+        cmd.extend(extra_args)
+    result = await asyncio.get_event_loop().run_in_executor(
+        None,
+        lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=360, cwd=str(PROJECT_ROOT))
+    )
+    success = result.returncode == 0
+    # Pull a compact summary from the last non-empty output line
+    lines = [l for l in (result.stdout or '').splitlines() if l.strip()]
+    summary = lines[-1] if lines else (result.stderr[-200:] if result.stderr else 'no output')
+    return success, summary
+
+
+async def _grade_sport(sport: str, game_date: str) -> tuple[bool, str]:
+    """Grade a specific date by calling the grading script directly."""
+    import subprocess
+    script_map = {
+        'nhl': ['nhl/scripts/v2_auto_grade_yesterday_v3_RELIABLE.py', game_date],
+        'nba': ['nba/scripts/auto_grade_multi_api_FIXED.py', game_date],
+        'mlb': ['mlb/scripts/auto_grade_daily.py', game_date],
+    }
+    if sport not in script_map:
+        return False, f'Unknown sport: {sport}'
+    cmd = [sys.executable] + script_map[sport]
+    result = await asyncio.get_event_loop().run_in_executor(
+        None,
+        lambda: subprocess.run(cmd, capture_output=True, text=True, timeout=360, cwd=str(PROJECT_ROOT))
+    )
+    success = result.returncode == 0
+    # Find the GRADING COMPLETE / SUCCESS summary line
+    for line in reversed((result.stdout or '').splitlines()):
+        if any(k in line for k in ('COMPLETE', 'SUCCESS', 'Results:', 'ERROR', 'FAIL')):
+            return success, line.strip()
+    return success, 'done' if success else (result.stderr[-200:] if result.stderr else 'failed')
+
+
+@bot.command(name='g')
+async def hotkey_grade(ctx, sport: str = 'both', game_date: str = None):
+    """Hotkey: grade yesterday (or a specific date). Usage: !g [nba|nhl|both] [YYYY-MM-DD]"""
+    from datetime import timedelta
+    if game_date is None:
+        game_date = (date.today() - timedelta(days=1)).isoformat()
+
+    sports = ['nba', 'nhl'] if sport.lower() == 'both' else [sport.lower()]
+    await ctx.send(f"```Grading {sport.upper()} for {game_date}...```")
+
+    lines = []
+    all_ok = True
+    for s in sports:
+        ok, summary = await _grade_sport(s, game_date)
+        tag = '[OK]' if ok else '[ERR]'
+        lines.append(f'{tag} {s.upper()}: {summary}')
+        if not ok:
+            all_ok = False
+
+    status = '[OK]' if all_ok else '[WARN]'
+    await ctx.send(f"```{status} Grade done — {game_date}\n" + "\n".join(lines) + "```")
+
+
+@bot.command(name='p')
+async def hotkey_predict(ctx, sport: str = 'both'):
+    """Hotkey: run predictions for today. Usage: !p [nba|nhl|both]"""
+    sports = ['nba', 'nhl'] if sport.lower() == 'both' else [sport.lower()]
+    await ctx.send(f"```Running {sport.upper()} predictions...```")
+
+    lines = []
+    all_ok = True
+    for s in sports:
+        ok, summary = await _run_script(s, 'prediction')
+        tag = '[OK]' if ok else '[ERR]'
+        lines.append(f'{tag} {s.upper()}: {summary}')
+        if not ok:
+            all_ok = False
+
+    status = '[OK]' if all_ok else '[WARN]'
+    await ctx.send(f"```{status} Predictions done\n" + "\n".join(lines) + "```")
+
+
+@bot.command(name='r')
+async def hotkey_refresh(ctx, sport: str = 'both'):
+    """Hotkey: PP sync / refresh lines. Usage: !r [nba|nhl|both]"""
+    sports = ['nba', 'nhl'] if sport.lower() == 'both' else [sport.lower()]
+    await ctx.send(f"```PP-syncing {sport.upper()}...```")
+
+    lines = []
+    all_ok = True
+    for s in sports:
+        ok, summary = await _run_script(s, 'pp-sync')
+        tag = '[OK]' if ok else '[ERR]'
+        lines.append(f'{tag} {s.upper()}: {summary}')
+        if not ok:
+            all_ok = False
+
+    status = '[OK]' if all_ok else '[WARN]'
+    await ctx.send(f"```{status} PP-sync done\n" + "\n".join(lines) + "```")
+
+
+@bot.command(name='run')
+async def hotkey_run_all(ctx, sport: str = 'both'):
+    """Hotkey: grade + predict + pp-sync all in one shot. Usage: !run [nba|nhl|both]"""
+    from datetime import timedelta
+    sports = ['nba', 'nhl'] if sport.lower() == 'both' else [sport.lower()]
+    grade_date = (date.today() - timedelta(days=1)).isoformat()
+
+    await ctx.send(f"```[RUN] Starting full pipeline for {sport.upper()}...\n  1/3 Grading {grade_date}```")
+
+    report = []
+    all_ok = True
+
+    # Step 1: Grade
+    for s in sports:
+        ok, summary = await _grade_sport(s, grade_date)
+        tag = '[OK]' if ok else '[ERR]'
+        report.append(f'GRADE  {tag} {s.upper()}: {summary}')
+        if not ok:
+            all_ok = False
+
+    await ctx.send(f"```  2/3 Predicting today...```")
+
+    # Step 2: Predict
+    for s in sports:
+        ok, summary = await _run_script(s, 'prediction')
+        tag = '[OK]' if ok else '[ERR]'
+        report.append(f'PRED   {tag} {s.upper()}: {summary}')
+        if not ok:
+            all_ok = False
+
+    await ctx.send(f"```  3/3 PP-sync...```")
+
+    # Step 3: PP-sync
+    for s in sports:
+        ok, summary = await _run_script(s, 'pp-sync')
+        tag = '[OK]' if ok else '[ERR]'
+        report.append(f'SYNC   {tag} {s.upper()}: {summary}')
+        if not ok:
+            all_ok = False
+
+    status = '[OK] All done!' if all_ok else '[WARN] Done with errors'
+    await ctx.send(f"```{status}\n" + "\n".join(report) + "```")
 
 
 def main():

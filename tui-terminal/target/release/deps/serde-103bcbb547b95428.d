@@ -1,0 +1,14 @@
+C:\Users\thoma\SportsPredictor\tui-terminal\target\release\deps\serde-103bcbb547b95428.d: C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\thoma\SportsPredictor\tui-terminal\target\release\build\serde-e63531b5e3bb2643\out/private.rs
+
+C:\Users\thoma\SportsPredictor\tui-terminal\target\release\deps\libserde-103bcbb547b95428.rlib: C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\thoma\SportsPredictor\tui-terminal\target\release\build\serde-e63531b5e3bb2643\out/private.rs
+
+C:\Users\thoma\SportsPredictor\tui-terminal\target\release\deps\libserde-103bcbb547b95428.rmeta: C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\thoma\SportsPredictor\tui-terminal\target\release\build\serde-e63531b5e3bb2643\out/private.rs
+
+C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs:
+C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs:
+C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs:
+C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs:
+C:\Users\thoma\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs:
+C:\Users\thoma\SportsPredictor\tui-terminal\target\release\build\serde-e63531b5e3bb2643\out/private.rs:
+
+# env-dep:OUT_DIR=C:\\Users\\thoma\\SportsPredictor\\tui-terminal\\target\\release\\build\\serde-e63531b5e3bb2643\\out

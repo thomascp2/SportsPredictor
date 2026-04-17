@@ -101,6 +101,10 @@ DEFAULT_FEATURES = {
     "gf_spread": 0.0,
     "gf_total_line": 9.0,
     "gf_home_implied_prob": 0.50,
+    "gf_over_odds_american": -110,
+    "gf_under_odds_american": -110,
+    "gf_home_spread_odds_american": -110,
+    "gf_away_spread_odds_american": -110,
 
     # Context
     "gf_is_divisional": 0,
@@ -374,7 +378,8 @@ class MLBGameFeatureExtractor:
 
             if "game_lines" in tables:
                 row = conn.execute("""
-                    SELECT spread, over_under, home_moneyline, home_implied_prob
+                    SELECT spread, over_under, home_moneyline, home_implied_prob,
+                           over_odds, under_odds, home_spread_odds, away_spread_odds
                     FROM game_lines
                     WHERE home_team = ? AND away_team = ? AND game_date = ?
                     LIMIT 1
@@ -394,6 +399,14 @@ class MLBGameFeatureExtractor:
                             features["gf_home_implied_prob"] = round(abs(ml) / (abs(ml) + 100), 4)
                         else:
                             features["gf_home_implied_prob"] = round(100 / (ml + 100), 4)
+                    if row["over_odds"] is not None:
+                        features["gf_over_odds_american"] = row["over_odds"]
+                    if row["under_odds"] is not None:
+                        features["gf_under_odds_american"] = row["under_odds"]
+                    if row["home_spread_odds"] is not None:
+                        features["gf_home_spread_odds_american"] = row["home_spread_odds"]
+                    if row["away_spread_odds"] is not None:
+                        features["gf_away_spread_odds_american"] = row["away_spread_odds"]
         except Exception:
             pass
 

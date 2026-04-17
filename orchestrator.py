@@ -182,7 +182,7 @@ class SportConfig:
         self.prizepicks_time = "03:30"   # 3:30 AM - fetch PrizePicks lines (early pass before predictions)
         self.prediction_time = "04:00"   # 4 AM - generate today's predictions
         self.pp_sync_time = "13:00"      # 1 PM - afternoon PP re-sync (full slate posted by now, refresh smart picks)
-        self.pp_sync_time_evening = "17:00"  # 5 PM - evening re-sync (catches late line adds before primetime)
+        self.pp_sync_time_evening = "09:15"  # 9:15 AM - mid-morning PP sync (after game preds post, catches all new lines)
         self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord (after afternoon sync)
         self.hits_blocks_time = "11:00"  # 11 AM - Claude-generated hits/blocks picks (after lineups post)
 
@@ -244,8 +244,8 @@ class SportConfig:
         self.prizepicks_time = "05:30"   # 5:30 AM - fetch PrizePicks lines (early pass before predictions)
         self.prediction_time = "06:00"   # 6 AM - generate today's predictions
         self.pp_sync_time = "12:30"      # 12:30 PM - afternoon PP re-sync (full slate posted by now, refresh smart picks)
-        self.pp_sync_time_evening = "17:00"  # 5 PM - evening re-sync (catches late line adds before primetime)
-        self.top_picks_time = "14:00"    # 2 PM - post top picks to Discord (after afternoon sync)
+        self.pp_sync_time_evening = "10:15"  # 10:15 AM - mid-morning PP sync (after MLB game preds, fresh lines before afternoon)
+        self.top_picks_time = "14:20"    # 2:20 PM - post top picks to Discord (after afternoon sync, staggered from NHL)
 
         # Full-game prediction pipeline
         self.team_stats_time = "04:30"       # 4:30 AM - update team stats + Elo (after late games)
@@ -309,8 +309,9 @@ class SportConfig:
         self.retrain_time = "08:30"      # 8:30 AM Sunday - weekly ML retrain
         self.prizepicks_time = "08:30"   # 8:30 AM - fetch PrizePicks lines
         self.prediction_time = "10:00"   # 10 AM - some games start 11 AM CST; lineups post ~10am CST
+        self.feature_store_time = "10:30"  # 10:30 AM - MLB feature store + ML predictions (decoupled)
         self.pp_sync_time = "15:00"      # 3 PM - refresh lines for evening games
-        self.pp_sync_time_evening = "17:30"  # 5:30 PM - evening re-sync (placeholder — late west coast games)
+        self.pp_sync_time_evening = "10:45"  # 10:45 AM - mid-morning PP sync (after feature store, before afternoon)
         self.top_picks_time = "16:00"    # 4 PM - post Discord picks
 
         # Full-game prediction pipeline
@@ -386,14 +387,14 @@ class SportConfig:
         self.schedule_script = None  # Golf: tournament detection is handled inside generate_predictions_daily.py
 
         # Timing (CST)
-        # PGA Tour rounds finish Thu/Fri/Sat/Sun evenings; grade next morning
-        self.grading_time = "08:00"      # 8 AM — grade previous round scores
-        self.retrain_time = "08:30"      # 8:30 AM Sunday — weekly ML retrain
-        self.prizepicks_time = "09:00"   # 9 AM — fetch PrizePicks golf lines
-        self.prediction_time = "10:00"   # 10 AM — tee times posted, generate predictions
-        self.pp_sync_time = "12:00"      # Noon — refresh lines as tee times confirm
-        self.pp_sync_time_evening = "15:00"  # 3 PM — evening re-sync (placeholder — late tee times / round updates)
-        self.top_picks_time = "13:00"    # 1 PM — post Discord picks
+        # PGA Tour rounds finish Thu/Fri/Sat/Sun evenings; all results posted by 2 AM CST
+        self.grading_time = "02:00"      # 2 AM — grade previous round scores (results posted within hours of round end)
+        self.retrain_time = "07:00"      # 7 AM Sunday — weekly ML retrain (after predictions, before MLB morning block)
+        self.prizepicks_time = "02:15"   # 2:15 AM — fetch PrizePicks golf lines (early pass before predictions)
+        self.prediction_time = "04:15"   # 4:15 AM — generate predictions (ready well before 6 AM)
+        self.pp_sync_time = "06:30"      # 6:30 AM — early PP sync (after predictions, before MLB morning block; all rounds start by 1 PM)
+        self.pp_sync_time_evening = "08:45"  # 8:45 AM — mid-morning PP sync (catches any remaining lines before first tee)
+        self.top_picks_time = "13:30"    # 1:30 PM — post Discord picks (after both syncs, staggered from NHL 1 PM)
 
         # No full-game pipeline for golf (individual/tournament sport)
         self.team_stats_time = None
@@ -713,6 +714,8 @@ class SportsOrchestrator:
                     )
                 else:
                     print(f"   Predictions generated ({pred_count:,} rows)")
+                    # Direction sanity check — alert if any competitive prop is >85% one way
+                    self.check_prediction_direction_sanity(target_date)
             step += 1
 
             # Step 3: Verify predictions
@@ -900,6 +903,20 @@ class SportsOrchestrator:
                 print(f"   Drift: {calibration['drift']:.1%}")
             else:
                 print(f"   Calibration stable")
+
+            # MLB ML grading — run after stat grading so hitter/pitcher labels are fresh
+            # Uses the same decoupled _run_feature_store_cmd helper; non-fatal.
+            if self.config.sport == "MLB":
+                print(f"\n[MLB ML] Grading ML predictions for {yesterday}...")
+                ml_grade_result = self._run_feature_store_cmd(
+                    ['-m', 'ml.grade', '--date', yesterday],
+                    f'ml.grade {yesterday}'
+                )
+                if ml_grade_result['success']:
+                    print(f"[MLB ML] ml.grade OK")
+                else:
+                    err = (ml_grade_result.get('error') or '')[:200]
+                    print(f"[MLB ML] ml.grade FAILED (non-fatal): {err}")
 
             # Update state
             self.state[sport_key]['last_grading'] = datetime.now().isoformat()
@@ -1354,6 +1371,127 @@ class SportsOrchestrator:
                 'error': str(e)
             }
 
+    def run_mlb_feature_store(self) -> None:
+        """
+        Standalone scheduled task: run mlb_feature_store pipeline + ML predictions.
+
+        Scheduled at 10:20 AM — 20 minutes after the stat model prediction (10:00 AM).
+        Runs independently so a slow or erroring stat model cannot block it.
+
+        Steps:
+          1. run_daily.py --date <today>   (Statcast ingest + rolling features + labels)
+          2. ml.predict_to_db --date <today>  (write XGBoost ML predictions to DuckDB)
+
+        Both steps are non-fatal — failures are Discord-alerted but never raise.
+        """
+        if self.config.sport != "MLB":
+            return
+
+        target_date = datetime.now().strftime('%Y-%m-%d')
+        print(f"\n[MLB FS] Starting feature store pipeline for {target_date}")
+
+        # Step 1: Statcast ingest + feature computation
+        fs_result = self._run_feature_store_cmd(
+            ['run_daily.py', '--date', target_date],
+            f'run_daily {target_date}'
+        )
+
+        if not fs_result['success']:
+            err = (fs_result.get('error') or '')[:300]
+            print(f"[MLB FS] run_daily FAILED: {err}")
+            self._send_discord_alert(
+                f"[MLB] Feature Store Warning {target_date}",
+                f"run_daily.py failed — ML predictions may be stale.\n```{err}```"
+            )
+            return
+
+        print(f"[MLB FS] run_daily OK")
+
+        # Step 2: Write ML predictions to DuckDB
+        ml_result = self._run_feature_store_cmd(
+            ['-m', 'ml.predict_to_db', '--date', target_date],
+            f'ml.predict_to_db {target_date}'
+        )
+
+        if not ml_result['success']:
+            err = (ml_result.get('error') or '')[:300]
+            print(f"[MLB FS] predict_to_db FAILED: {err}")
+            self._send_discord_alert(
+                f"[MLB] ML Predictions Warning {target_date}",
+                f"ml.predict_to_db failed — dashboard ML column will be empty.\n```{err}```"
+            )
+            return
+
+        # Count rows written and report
+        try:
+            import duckdb as _ddb
+            from pathlib import Path as _P
+            duck_path = _P(__file__).parent / 'mlb_feature_store' / 'data' / 'mlb.duckdb'
+            _dc = _ddb.connect(str(duck_path), read_only=True)
+            count = _dc.execute(
+                f"SELECT COUNT(*) FROM ml_predictions WHERE game_date = '{target_date}'"
+            ).fetchone()[0]
+            _dc.close()
+            print(f"[MLB FS] ML predictions written: {count} rows for {target_date}")
+            self._send_discord_alert(
+                f"[MLB] ML Predictions Ready {target_date}",
+                f"{count} XGBoost predictions written to DuckDB for {target_date}. Dashboard ML column is live."
+            )
+        except Exception:
+            print(f"[MLB FS] predict_to_db OK (could not verify row count)")
+
+    def _run_feature_store_cmd(self, module_args: List[str], step_name: str) -> Dict:
+        """
+        Run a command in the mlb_feature_store directory.
+        Used for: run_daily.py, python -m ml.predict_to_db, python -m ml.grade.
+
+        Always non-fatal — failures are logged as warnings, never block the
+        main pipeline.
+
+        module_args examples:
+            ['run_daily.py', '--date', '2026-04-13']
+            ['-m', 'ml.predict_to_db', '--date', '2026-04-13']
+            ['-m', 'ml.grade', '--date', '2026-04-13']
+        """
+        fs_dir = Path(__file__).parent / "mlb_feature_store"
+        if not fs_dir.exists():
+            return {'success': False, 'error': 'mlb_feature_store/ not found'}
+        try:
+            cmd = [sys.executable] + module_args
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=600,  # 10 min — Statcast download can be slow on first run of the day
+                cwd=str(fs_dir),
+            )
+            # Append to daily pipeline log
+            try:
+                log_dir = Path(__file__).parent / "logs"
+                log_dir.mkdir(exist_ok=True)
+                log_file = log_dir / f"pipeline_mlb_{datetime.now().strftime('%Y%m%d')}.log"
+                with open(log_file, 'a', encoding='utf-8') as lf:
+                    lf.write(f"\n{'='*60}\n")
+                    lf.write(f"[{datetime.now().strftime('%H:%M:%S')}] feature_store: {step_name}\n")
+                    lf.write(f"Exit code: {result.returncode}\n")
+                    if result.stdout:
+                        lf.write("STDOUT:\n" + result.stdout + "\n")
+                    if result.stderr:
+                        lf.write("STDERR:\n" + result.stderr[-500:] + "\n")
+            except Exception:
+                pass
+            return {
+                'success': result.returncode == 0,
+                'output': result.stdout,
+                'error': result.stderr if result.returncode != 0 else None,
+            }
+        except subprocess.TimeoutExpired:
+            return {'success': False, 'error': f'{step_name} timed out after 5 minutes'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
     def _count_predictions(self) -> int:
         """Count total predictions in database"""
         try:
@@ -1744,6 +1882,154 @@ class SportsOrchestrator:
                 f.write(f"\n{'='*80}\n")
         except:
             pass
+
+    # ========================================================================
+    # PREDICTION DIRECTION SANITY CHECK
+    # ========================================================================
+
+    def check_prediction_direction_sanity(self, game_date: str) -> list:
+        """
+        After prediction generation, check that no competitive prop is >85% in one
+        direction.  Competitive props = those where historical majority is <70%.
+
+        Fires a Discord alert (sport channel) if any prop is lopsided so that a stat
+        model bug is caught the same night it happens, not 30 days later.
+
+        Returns list of warning strings (empty = all clear).
+        Only runs for NHL and NBA — MLB props have different structure.
+        """
+        if self.config.sport not in ('NHL', 'NBA'):
+            return []
+        if not REQUESTS_AVAILABLE:
+            return []
+
+        # Lines that are EXPECTED to be extreme — skip to avoid false alerts
+        KNOWN_EXTREME = {
+            ('points', 1.5), ('points', 2.5),
+            ('shots', 3.5), ('shots', 4.5),
+            ('hits', 2.5), ('blocked_shots', 1.5),
+        }
+
+        try:
+            conn = sqlite3.connect(str(self.config.db_path))
+            rows = conn.execute("""
+                SELECT prop_type, line,
+                       COUNT(*) as n,
+                       ROUND(AVG(CASE WHEN prediction='OVER' THEN 1.0 ELSE 0.0 END), 3) as over_pct
+                FROM predictions
+                WHERE game_date = ?
+                GROUP BY prop_type, line
+                HAVING n >= 10
+                ORDER BY prop_type, line
+            """, (game_date,)).fetchall()
+            conn.close()
+        except Exception as e:
+            self._log_error(f"Direction sanity check DB error: {e}", "SANITY_CHECK")
+            return []
+
+        warnings = []
+        for prop_type, line, n, over_pct in rows:
+            if (prop_type, line) in KNOWN_EXTREME:
+                continue
+            under_pct = 1.0 - over_pct
+            if over_pct > 0.85 or under_pct > 0.85:
+                dominant = "OVER" if over_pct > 0.85 else "UNDER"
+                dominant_pct = over_pct if dominant == "OVER" else under_pct
+                msg = (f"[SANITY ALERT] {self.config.sport} {prop_type} {line}: "
+                       f"{dominant_pct:.0%} predicted {dominant} ({n} predictions). "
+                       f"Expected <85%. Possible stat model bug.")
+                warnings.append(msg)
+                print(f"   !! DIRECTION SANITY: {msg}")
+
+        if warnings:
+            webhook = getattr(self.config, 'discord_picks_webhook', '') or DISCORD_WEBHOOK_URL
+            if webhook and 'YOUR_' not in webhook:
+                text = "\n".join(warnings)
+                text += "\nInvestigate before these reach users."
+                try:
+                    requests.post(webhook, json={"content": f"```{text}```"}, timeout=10)
+                except Exception:
+                    pass
+        else:
+            print(f"   Direction sanity: OK (no prop >85% in one direction)")
+
+        return warnings
+
+    # ========================================================================
+    # WEEKLY ML SHADOW AUDIT
+    # ========================================================================
+
+    def run_weekly_ml_audit(self):
+        """
+        Weekly shadow audit of NHL ML models via PEGASUS/pipeline/nhl_ml_reader.py.
+        Scheduled every Sunday after grading completes.
+        Posts verdict + per-prop summary to Discord.
+        Auto-sets USE_ML=False in generate_predictions_daily_V6.py if audit FAILS
+        and the season is active (i.e. USE_ML is currently True).
+        NHL only — extend when NBA ML is reactivated.
+        """
+        if self.config.sport != 'NHL':
+            return
+
+        print(f"\n[PEGASUS] WEEKLY NHL ML SHADOW AUDIT")
+
+        pegasus_pipeline = self.global_config.ROOT / "PEGASUS" / "pipeline"
+        if not pegasus_pipeline.exists():
+            print(f"   [SKIP] PEGASUS pipeline dir not found: {pegasus_pipeline}")
+            return
+
+        try:
+            import importlib.util, sys as _sys
+            spec = importlib.util.spec_from_file_location(
+                "nhl_ml_reader", pegasus_pipeline / "nhl_ml_reader.py"
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            results = mod.audit_nhl_models(lookback_days=14)
+        except Exception as e:
+            self._log_error(f"Weekly ML audit failed to run: {e}", "ML_AUDIT")
+            print(f"   [ERROR] Audit exception: {e}")
+            return
+
+        summary = results.get('summary', {})
+        verdict = "PASS" if summary.get('overall_pass') else "FAIL"
+        n_pass  = summary.get('n_props_pass', 0)
+        n_fail  = summary.get('n_props_fail', 0)
+        rec     = summary.get('recommendation', '')
+
+        lines = [
+            f"[WEEKLY ML AUDIT] NHL -- {verdict}",
+            f"Props: {n_pass} passing / {n_fail} failing",
+            f"Action: {rec}",
+        ]
+        for prop_str in summary.get('failing_props', []):
+            lines.append(f"  FAIL: {prop_str}")
+
+        # Auto-disable ML if audit fails and USE_ML is currently True
+        v6_path = self.global_config.ROOT / "nhl" / "scripts" / "generate_predictions_daily_V6.py"
+        use_ml_active = False
+        if v6_path.exists():
+            content = v6_path.read_text(encoding='utf-8')
+            use_ml_active = 'USE_ML = True' in content
+
+        if verdict == "FAIL" and use_ml_active:
+            try:
+                new_content = content.replace('USE_ML = True', 'USE_ML = False')
+                v6_path.write_text(new_content, encoding='utf-8')
+                lines.append("!! AUTO-DISABLED ML: USE_ML set to False in V6. Re-enable after investigation.")
+                print(f"   [AUTO-FIX] USE_ML set to False in generate_predictions_daily_V6.py")
+            except Exception as e:
+                lines.append(f"!! Audit FAIL but could not auto-disable ML: {e}")
+
+        message = "\n".join(lines)
+        print(f"   Verdict: {verdict} | {n_pass} pass / {n_fail} fail")
+
+        webhook = getattr(self.config, 'discord_picks_webhook', '') or DISCORD_WEBHOOK_URL
+        if webhook and 'YOUR_' not in webhook and REQUESTS_AVAILABLE:
+            try:
+                requests.post(webhook, json={"content": f"```{message}```"}, timeout=10)
+            except Exception:
+                pass
 
     # ========================================================================
     # DISCORD NOTIFICATIONS
@@ -2279,6 +2565,39 @@ class SportsOrchestrator:
             print(f"[PP-SYNC] Line fetch failed — aborting sync")
             return {'success': False, 'error': 'PP ingestion failed'}
 
+        # Step 1b: NHL hits/blocked_shots prediction refresh.
+        # PP posts hits/blocked_shots lines several hours after the morning prediction run
+        # (hits ~1 PM, blocked_shots ~5 PM CST) so the 4 AM predictions were generated
+        # without those lines — resulting in wrong players (roster fallback instead of PP players).
+        # Now that fresh lines are available, re-run V6 --force to regenerate predictions
+        # for the correct PP-targeted players (physical grinders for hits, D-men for blocks).
+        if self.config.sport == 'NHL' and hasattr(self.config, 'prediction_script'):
+            try:
+                pp_db = Path(__file__).parent / 'shared' / 'prizepicks_lines.db'
+                hb_count = 0
+                if pp_db.exists():
+                    import sqlite3 as _sqlite3
+                    _conn = _sqlite3.connect(str(pp_db))
+                    hb_count = _conn.execute(
+                        "SELECT COUNT(*) FROM prizepicks_lines "
+                        "WHERE league='NHL' AND prop_type IN ('hits','blocked_shots') "
+                        "AND fetch_date=?", (target_date,)
+                    ).fetchone()[0]
+                    _conn.close()
+                if hb_count > 0:
+                    print(f"[PP-SYNC] NHL hits/blocked_shots lines available ({hb_count} rows) — "
+                          f"refreshing predictions with --force to pick up correct PP players")
+                    refresh_result = self._run_script(self.config.prediction_script, [target_date, '--force'])
+                    if refresh_result.get('success'):
+                        print(f"[PP-SYNC] Prediction refresh complete")
+                    else:
+                        print(f"[PP-SYNC] Prediction refresh failed (non-fatal): "
+                              f"{refresh_result.get('error', '')[:200]}")
+                else:
+                    print(f"[PP-SYNC] No NHL hits/blocked_shots lines yet — skipping prediction refresh")
+            except Exception as _hb_err:
+                print(f"[PP-SYNC] Hits/blocks refresh check failed (non-fatal): {_hb_err}")
+
         if not SUPABASE_SYNC_AVAILABLE:
             print(f"[PP-SYNC] Supabase not available — lines fetched but not synced")
             return {'success': True, 'note': 'lines fetched, supabase unavailable'}
@@ -2617,11 +2936,20 @@ class SportsOrchestrator:
         Skips if fewer than MIN_NEW new predictions exist since the last train.
         Threshold is sport-specific (MLB has fewer games per season than NBA/NHL).
         Sends a snug Discord notification with per-model accuracy deltas.
+        
+        STRATEGIC FREEZE (2026-04-11):
+        NBA and NHL retraining is frozen for the remainder of the season
+        to avoid late-season variance and tanking noise.
         """
-        # Use sport-specific threshold if configured, otherwise fall back to 500
-        MIN_NEW = getattr(self.config, 'ml_training_min_new_preds', 500)
         sport = self.config.sport
         emoji = self.config.emoji
+        
+        if sport in ['nba', 'nhl']:
+            print(f"\n{emoji} [FREEZE] {sport.upper()} retraining is frozen for the remainder of the season.")
+            return
+
+        # Use sport-specific threshold if configured, otherwise fall back to 500
+        MIN_NEW = getattr(self.config, 'ml_training_min_new_preds', 500)
 
         print(f"\n{emoji} WEEKLY ML RETRAIN CHECK — {sport}")
 
@@ -2795,6 +3123,12 @@ class SportsOrchestrator:
                 self.run_prizepicks_ingestion
             )
 
+        # MLB feature store + ML predictions (decoupled from stat model — own time slot)
+        if self.config.sport == "MLB" and hasattr(self.config, 'feature_store_time'):
+            schedule.every().day.at(self.config.feature_store_time).do(
+                self.run_mlb_feature_store
+            )
+
         # Daily prediction generation
         schedule.every().day.at(self.config.prediction_time).do(
             self.run_daily_prediction_pipeline
@@ -2826,6 +3160,16 @@ class SportsOrchestrator:
         schedule.every().sunday.at(self.config.retrain_time).do(
             self.run_weekly_ml_retrain
         )
+
+        # Weekly ML shadow audit (NHL only — Sunday after grading, ~1h after retrain_time)
+        if self.config.sport == 'NHL':
+            audit_h, audit_m = divmod(
+                int(self.config.retrain_time.split(':')[0]) * 60
+                + int(self.config.retrain_time.split(':')[1]) + 60,
+                60
+            )
+            audit_time = f"{audit_h:02d}:{audit_m:02d}"
+            schedule.every().sunday.at(audit_time).do(self.run_weekly_ml_audit)
 
         # Daily team stats + Elo update (all sports — runs before game predictions)
         schedule.every().day.at(self.config.team_stats_time).do(
@@ -2878,6 +3222,11 @@ class SportsOrchestrator:
         if hasattr(self.config, 'game_grading_time'):
             print(f"   Game Grading: Daily at {self.config.game_grading_time}")
         print(f"   ML retrain: Sundays at {self.config.retrain_time} (500+ new preds required)")
+        if self.config.sport == 'NHL':
+            _rh = int(self.config.retrain_time.split(':')[0])
+            _rm = int(self.config.retrain_time.split(':')[1])
+            _ah, _am = divmod(_rh * 60 + _rm + 60, 60)
+            print(f"   ML shadow audit: Sundays at {_ah:02d}:{_am:02d} (PEGASUS audit, NHL only)")
         if self.config.sport == "NHL" and hasattr(self.config, 'hits_blocks_time'):
             print(f"   Hits & Blocks: Daily at {self.config.hits_blocks_time} (Claude API)")
         if self.config.sport == "MLB" and hasattr(self.config, 'szln_refresh_time'):
@@ -3370,6 +3719,14 @@ def run_all_sports_continuous(sports: list):
                     orchestrator.run_pp_sync
                 )
 
+            # MLB feature store + ML predictions (decoupled — must be registered here
+            # because run_all_sports_continuous bypasses schedule_tasks())
+            if (sport.upper() == "MLB"
+                    and hasattr(orchestrator.config, 'feature_store_time')):
+                schedule.every().day.at(orchestrator.config.feature_store_time).do(
+                    orchestrator.run_mlb_feature_store
+                )
+
             # Game predictions (moneyline/spread/total for dashboard Game Lines tab)
             if (hasattr(orchestrator.config, 'game_prediction_time')
                     and orchestrator.config.game_prediction_time):
@@ -3388,6 +3745,8 @@ def run_all_sports_continuous(sports: list):
             if PRIZEPICKS_AVAILABLE:
                 print(f"   PP early fetch: {orchestrator.config.prizepicks_time}")
             print(f"   Predictions: {orchestrator.config.prediction_time}")
+            if sport.upper() == "MLB" and hasattr(orchestrator.config, 'feature_store_time'):
+                print(f"   MLB feature store + ML: {orchestrator.config.feature_store_time}")
             if PRIZEPICKS_AVAILABLE:
                 print(f"   PP afternoon sync: {orchestrator.config.pp_sync_time}")
             if PRIZEPICKS_AVAILABLE and hasattr(orchestrator.config, 'pp_sync_time_evening'):
@@ -3409,12 +3768,17 @@ def run_all_sports_continuous(sports: list):
     schedule.every(60).minutes.do(run_all_health_checks)
     print(f"Health checks: Every 60 minutes (all sports)")
 
-    # Daily audit — runs at 10:00 AM after all sports have finished grading
-    try:
-        from daily_audit import run_audit
-        schedule.every().day.at("10:00").do(run_audit)
-        print("Daily audit: 10:00 AM (all sports DB health + Discord report)")
-    except ImportError:
+    # Daily audit — runs at 09:00 AM after all sports have finished grading
+    _audit_path = Path(__file__).parent / "daily_audit.py"
+    if _audit_path.exists():
+        def _run_daily_audit():
+            subprocess.run(
+                [sys.executable, str(_audit_path)],
+                cwd=str(Path(__file__).parent),
+            )
+        schedule.every().day.at("09:00").do(_run_daily_audit)
+        print("Daily audit: 09:00 AM (all sports DB health + Discord report)")
+    else:
         print("NOTE: daily_audit.py not found — audit skipped")
     print()
 

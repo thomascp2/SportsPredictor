@@ -1,0 +1,25 @@
+{
+  "sport": "mlb",
+  "built_date": "2026-04-15",
+  "n": 18835,
+  "calibration_table": {
+    "0.55": 0.5202,
+    "0.65": 0.5916,
+    "0.75": 0.7043,
+    "0.85": 0.7637,
+    "0.95": 0.7928
+  },
+  "always_under_rate": 0.5949,
+  "our_accuracy": 0.6677,
+  "real_edge_vs_naive": 0.0728,
+  "approved_combos": [
+    [
+      "OVER",
+      "standard"
+    ],
+    [
+      "UNDER",
+      "standard"
+    ]
+  ]
+}

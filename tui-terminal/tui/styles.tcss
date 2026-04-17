@@ -1,0 +1,151 @@
+/* Bloomberg dark theme — FreePicks Terminal */
+
+/* ── Globals ─────────────────────────────────────────────────── */
+Screen {
+    background: #080c12;
+    color: #c8d8e8;
+    layers: base;
+}
+
+/* ── App header bar ──────────────────────────────────────────── */
+#header-bar {
+    dock: top;
+    height: 1;
+    background: #0d1b2a;
+    color: #00c853;
+    padding: 0 2;
+    text-style: bold;
+}
+
+/* ── Three-column container ──────────────────────────────────── */
+#columns {
+    layout: horizontal;
+    height: 1fr;
+}
+
+/* ── Context wing (left 20%) ─────────────────────────────────── */
+ContextWing {
+    width: 20%;
+    border: solid #1e3a5f;
+    padding: 0 1;
+}
+
+#context-title {
+    background: #0d1b2a;
+    color: #ffa500;
+    text-style: bold;
+    width: 100%;
+    height: 1;
+    padding: 0 1;
+}
+
+#context-feed {
+    height: 1fr;
+    overflow-y: auto;
+    color: #a0bcd0;
+}
+
+#context-hint {
+    height: 1;
+    color: #3a5570;
+    text-style: italic;
+    padding: 0 1;
+}
+
+/* ── Main floor (center 60%) ─────────────────────────────────── */
+MainGrid {
+    width: 60%;
+    border: solid #1e3a5f;
+}
+
+#grid-title {
+    background: #0d1b2a;
+    color: #00c853;
+    text-style: bold;
+    width: 100%;
+    height: 1;
+    padding: 0 1;
+}
+
+#main-table {
+    height: 1fr;
+    scrollbar-color: #1e3a5f;
+    scrollbar-background: #080c12;
+    scrollbar-size-vertical: 1;
+    scrollbar-size-horizontal: 0;
+}
+
+DataTable > .datatable--cursor {
+    background: #1a3a5c;
+    color: #ffffff;
+}
+
+DataTable > .datatable--header {
+    background: #0d1b2a;
+    color: #ffa500;
+    text-style: bold;
+}
+
+DataTable > .datatable--odd-row {
+    background: #090e15;
+}
+
+DataTable > .datatable--even-row {
+    background: #0c1520;
+}
+
+/* ── Watchlist wing (right 20%) ──────────────────────────────── */
+WatchlistPanel {
+    width: 20%;
+    border: solid #1e3a5f;
+    padding: 0 1;
+}
+
+#watchlist-title {
+    background: #0d1b2a;
+    color: #ffa500;
+    text-style: bold;
+    width: 100%;
+    height: 1;
+    padding: 0 1;
+}
+
+#watchlist-items {
+    height: 1fr;
+    overflow-y: auto;
+    color: #c8d8e8;
+}
+
+#watchlist-hint {
+    height: 1;
+    color: #3a5570;
+    text-style: italic;
+    padding: 0 1;
+}
+
+/* ── Ticker (bottom dock) ────────────────────────────────────── */
+Ticker {
+    dock: bottom;
+    height: 1;
+    background: #060a10;
+    color: #ffa500;
+    padding: 0 1;
+}
+
+/* ── Status bar ──────────────────────────────────────────────── */
+#status-bar {
+    dock: bottom;
+    height: 1;
+    background: #0d1b2a;
+    color: #3a5570;
+    padding: 0 2;
+}
+
+/* ── Color utility classes ───────────────────────────────────── */
+.tier-t1 { color: #00ff41; text-style: bold; }
+.tier-t2 { color: #00c853; }
+.tier-t3 { color: #76ff03; }
+.tier-t4 { color: #ffd600; }
+.tier-t5 { color: #ff1744; }
+.volatile { color: #ffa500; }
+.no-data  { color: #3a5570; }

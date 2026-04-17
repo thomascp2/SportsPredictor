@@ -288,6 +288,8 @@ def _fetch_summary_odds(session, base_url: str, event_id: str) -> dict:
     result = {
         "spread": None, "over_under": None,
         "home_ml": None, "away_ml": None,
+        "over_odds": None, "under_odds": None,
+        "home_spread_odds": None, "away_spread_odds": None,
         "odds_provider": None,
     }
 
@@ -312,8 +314,12 @@ def _fetch_summary_odds(session, base_url: str, event_id: str) -> dict:
             away_odds = pc.get("awayTeamOdds", {})
             if isinstance(home_odds, dict):
                 result["home_ml"] = _safe_int(home_odds.get("moneyLine"))
+                result["home_spread_odds"] = _safe_int(home_odds.get("spreadOdds"))
             if isinstance(away_odds, dict):
                 result["away_ml"] = _safe_int(away_odds.get("moneyLine"))
+                result["away_spread_odds"] = _safe_int(away_odds.get("spreadOdds"))
+            result["over_odds"]  = _safe_int(pc.get("overOdds"))
+            result["under_odds"] = _safe_int(pc.get("underOdds"))
 
     # Fallback: header.competitions[0].odds
     if result["over_under"] is None:
@@ -380,12 +386,23 @@ def save_odds_to_db(sport: str, db_path: str, odds_list: List[Dict]) -> int:
             away_moneyline   INTEGER,
             home_implied_prob REAL,
             away_implied_prob REAL,
+            over_odds        INTEGER,
+            under_odds       INTEGER,
+            home_spread_odds INTEGER,
+            away_spread_odds INTEGER,
             odds_details     TEXT,
             odds_provider    TEXT,
             fetched_at       TEXT,
             PRIMARY KEY (game_date, home_team, away_team)
         )
     """)
+    # Add new columns to existing tables that were created before this schema update
+    for col, typ in [("over_odds", "INTEGER"), ("under_odds", "INTEGER"),
+                     ("home_spread_odds", "INTEGER"), ("away_spread_odds", "INTEGER")]:
+        try:
+            conn.execute(f"ALTER TABLE game_lines ADD COLUMN {col} {typ}")
+        except Exception:
+            pass  # column already exists
 
     saved = 0
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -401,14 +418,17 @@ def save_odds_to_db(sport: str, db_path: str, odds_list: List[Dict]) -> int:
                 (game_id, game_date, home_team, away_team, spread, abs_spread,
                  over_under, home_moneyline, away_moneyline,
                  home_implied_prob, away_implied_prob,
+                 over_odds, under_odds, home_spread_odds, away_spread_odds,
                  odds_details, odds_provider, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 game_id, odds["game_date"], odds["home_team"], odds["away_team"],
                 spread, abs_spread,
                 odds.get("over_under"),
                 odds.get("home_ml"), odds.get("away_ml"),
                 odds.get("home_implied_prob"), odds.get("away_implied_prob"),
+                odds.get("over_odds"), odds.get("under_odds"),
+                odds.get("home_spread_odds"), odds.get("away_spread_odds"),
                 "", odds.get("odds_provider", "ESPN"), now,
             ))
             saved += 1

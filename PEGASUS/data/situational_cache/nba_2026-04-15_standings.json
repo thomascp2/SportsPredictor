@@ -1,0 +1,302 @@
+{
+  "DET": {
+    "wins": 60,
+    "losses": 22,
+    "games_back": 0.0,
+    "conference_rank": 1,
+    "games_remaining": 0,
+    "clinched_playoffs": true,
+    "eliminated": false,
+    "espn_team": "DET"
+  },
+  "ATL": {
+    "wins": 46,
+    "losses": 36,
+    "games_back": 14.0,
+    "conference_rank": 6,
+    "games_remaining": 0,
+    "clinched_playoffs": true,
+    "eliminated": false,
+    "espn_team": "ATL"
+  },
+  "BOS": {
+    "wins": 56,
+    "losses": 26,
+    "games_back": 4.0,
+    "conference_rank": 2,
+    "games_remaining": 0,
+    "clinched_playoffs": true,
+    "eliminated": false,
+    "espn_team": "BOS"
+  },
+  "TOR": {
+    "wins": 46,
+    "losses": 36,
+    "games_back": 14.0,
+    "conference_rank": 5,
+    "games_remaining": 0,
+    "clinched_playoffs": true,
+    "eliminated": false,
+    "espn_team": "TOR"
+  },
+  "CLE": {
+    "wins": 52,
+    "losses": 30,
+    "games_back": 8.0,
+    "conference_rank": 4,
+    "games_remaining": 0,
+    "clinched_playoffs": true,
+    "eliminated": false,
+    "espn_team": "CLE"
+  },
+  "NYK": {
+    "wins": 53,
+    "losses": 29,
+    "games_back": 7.0,
+    "conference_rank": 3,
+    "games_remaining": 0,
+    "clinched_playoffs": true,
+    "eliminated": false,
+    "espn_team": "NY"
+  },
+  "MIA": {
+    "wins": 43,
+    "losses": 39,
+    "games_back": 17.0,
+    "conference_rank": 10,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": false,
+    "espn_team": "MIA"
+  },
+  "CHA": {
+    "wins": 44,
+    "losses": 38,
+    "games_back": 16.0,
+    "conference_rank": 9,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": false,
+    "espn_team": "CHA"
+  },
+  "PHI": {
+    "wins": 45,
+    "losses": 37,
+    "games_back": 15.0,
+    "conference_rank": 7,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": false,
+    "espn_team": "PHI"
+  },
+  "ORL": {
+    "wins": 45,
+    "losses": 37,
+    "games_back": 15.0,
+    "conference_rank": 8,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": false,
+    "espn_team": "ORL"
+  },
+  "WAS": {
+    "wins": 17,
+    "losses": 65,
+    "games_back": 43.0,
+    "conference_rank": 15,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": true,
+    "espn_team": "WSH"
+  },
+  "IND": {
+    "wins": 19,
+    "losses": 63,
+    "games_back": 41.0,
+    "conference_rank": 14,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": true,
+    "espn_team": "IND"
+  },
+  "BKN": {
+    "wins": 20,
+    "losses": 62,
+    "games_back": 40.0,
+    "conference_rank": 13,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": true,
+    "espn_team": "BKN"
+  },
+  "CHI": {
+    "wins": 31,
+    "losses": 51,
+    "games_back": 29.0,
+    "conference_rank": 12,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": true,
+    "espn_team": "CHI"
+  },
+  "MIL": {
+    "wins": 32,
+    "losses": 50,
+    "games_back": 28.0,
+    "conference_rank": 11,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": true,
+    "espn_team": "MIL"
+  },
+  "LAL": {
+    "wins": 53,
+    "losses": 29,
+    "games_back": 11.0,
+    "conference_rank": 4,
+    "games_remaining": 0,
+    "clinched_playoffs": true,
+    "eliminated": false,
+    "espn_team": "LAL"
+  },
+  "SAS": {
+    "wins": 62,
+    "losses": 20,
+    "games_back": 2.0,
+    "conference_rank": 2,
+    "games_remaining": 0,
+    "clinched_playoffs": true,
+    "eliminated": false,
+    "espn_team": "SA"
+  },
+  "POR": {
+    "wins": 42,
+    "losses": 40,
+    "games_back": 22.0,
+    "conference_rank": 7,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": false,
+    "espn_team": "POR"
+  },
+  "MIN": {
+    "wins": 49,
+    "losses": 33,
+    "games_back": 15.0,
+    "conference_rank": 6,
+    "games_remaining": 0,
+    "clinched_playoffs": true,
+    "eliminated": false,
+    "espn_team": "MIN"
+  },
+  "HOU": {
+    "wins": 52,
+    "losses": 30,
+    "games_back": 12.0,
+    "conference_rank": 5,
+    "games_remaining": 0,
+    "clinched_playoffs": true,
+    "eliminated": false,
+    "espn_team": "HOU"
+  },
+  "DEN": {
+    "wins": 54,
+    "losses": 28,
+    "games_back": 10.0,
+    "conference_rank": 3,
+    "games_remaining": 0,
+    "clinched_playoffs": true,
+    "eliminated": false,
+    "espn_team": "DEN"
+  },
+  "GSW": {
+    "wins": 37,
+    "losses": 45,
+    "games_back": 27.0,
+    "conference_rank": 10,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": false,
+    "espn_team": "GS"
+  },
+  "LAC": {
+    "wins": 42,
+    "losses": 40,
+    "games_back": 22.0,
+    "conference_rank": 9,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": false,
+    "espn_team": "LAC"
+  },
+  "PHX": {
+    "wins": 45,
+    "losses": 37,
+    "games_back": 19.0,
+    "conference_rank": 8,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": false,
+    "espn_team": "PHX"
+  },
+  "SAC": {
+    "wins": 22,
+    "losses": 60,
+    "games_back": 42.0,
+    "conference_rank": 14,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": true,
+    "espn_team": "SAC"
+  },
+  "UTA": {
+    "wins": 22,
+    "losses": 60,
+    "games_back": 42.0,
+    "conference_rank": 15,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": true,
+    "espn_team": "UTAH"
+  },
+  "MEM": {
+    "wins": 25,
+    "losses": 57,
+    "games_back": 39.0,
+    "conference_rank": 13,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": true,
+    "espn_team": "MEM"
+  },
+  "NOP": {
+    "wins": 26,
+    "losses": 56,
+    "games_back": 38.0,
+    "conference_rank": 11,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": true,
+    "espn_team": "NO"
+  },
+  "DAL": {
+    "wins": 26,
+    "losses": 56,
+    "games_back": 38.0,
+    "conference_rank": 12,
+    "games_remaining": 0,
+    "clinched_playoffs": false,
+    "eliminated": true,
+    "espn_team": "DAL"
+  },
+  "OKC": {
+    "wins": 64,
+    "losses": 18,
+    "games_back": 0.0,
+    "conference_rank": 1,
+    "games_remaining": 0,
+    "clinched_playoffs": true,
+    "eliminated": false,
+    "espn_team": "OKC"
+  }
+}

@@ -1,0 +1,264 @@
+=== TUI ===
+Working dir: /c/Users/thoma/SportsPredictor/tui-terminal
+Waiting 3s for ingester to populate props.db...
+╭───────────────────── Traceback (most recent call last) ──────────────────────╮
+│ C:\Users\thoma\SportsPredictor\tui-terminal\tui\widgets\main_grid.py:217 in  │
+│ on_mount                                                                     │
+│                                                                              │
+│   214 │   │   yield table                                                    │
+│   215 │                                                                      │
+│   216 │   def on_mount(self) -> None:                                        │
+│ ❱ 217 │   │   self.refresh_data()                                            │
+│   218 │   │   self.set_interval(1.0, self.refresh_data)                      │
+│   219 │                                                                      │
+│   220 │   def refresh_data(self) -> None:                                    │
+│                                                                              │
+│ ╭──────────── locals ─────────────╮                                          │
+│ │ self = MainGrid(id='main-grid') │                                          │
+│ ╰─────────────────────────────────╯                                          │
+│                                                                              │
+│ C:\Users\thoma\SportsPredictor\tui-terminal\tui\widgets\main_grid.py:269 in  │
+│ refresh_data                                                                 │
+│                                                                              │
+│   266 │   │   │                                                              │
+│   267 │   │   │   row_key = f"{pid}|{r['stat_type']}"                        │
+│   268 │   │   │                                                              │
+│ ❱ 269 │   │   │   table.add_row(                                             │
+│   270 │   │   │   │   Text(name_display, style=color),                       │
+│   271 │   │   │   │   Text(stat, style=color),                               │
+│   272 │   │   │   │   Text(sport, style="#3a5570"),                          │
+│                                                                              │
+│ ╭────────────────────────── locals ──────────────────────────╮               │
+│ │        arrow = '^'                                         │               │
+│ │        color = '#00c853'                                   │               │
+│ │      d_color = '#3a5570'                                   │               │
+│ │         disc = None                                        │               │
+│ │      e_color = '#00ff41'                                   │               │
+│ │     edge_pct = 1854.8640450004211                          │               │
+│ │  is_volatile = 0                                           │               │
+│ │       kalshi = ' — '                                       │               │
+│ │         name = 'James Wood'                                │               │
+│ │ name_display = 'James Wood ^'                              │               │
+│ │     new_hash = -3473160717532752635                        │               │
+│ │          pid = 'MLB_james_wood'                            │               │
+│ │      pp_line = '2.5'                                       │               │
+│ │   prediction = 'OVER'                                      │               │
+│ │            r = {                                           │               │
+│ │                │   'player_id': 'MLB_james_wood',          │               │
+│ │                │   'name': 'James Wood',                   │               │
+│ │                │   'team': 'WSH',                          │               │
+│ │                │   'sport': 'MLB',                         │               │
+│ │                │   'stat_type': 'MLB_HRR',                 │               │
+│ │                │   'prizepicks_line': 2.5,                 │               │
+│ │                │   'underdog_line': None,                  │               │
+│ │                │   'kalshi_price': None,                   │               │
+│ │                │   'ml_tier': 'T2-STRONG',                 │               │
+│ │                │   'ml_edge': 1854.8640450004211,          │               │
+│ │                │   ... +5                                  │               │
+│ │                }                                           │               │
+│ │      row_key = 'MLB_james_wood|MLB_HRR'                    │               │
+│ │         rows = [                                           │               │
+│ │                │   {                                       │               │
+│ │                │   │   'player_id': 'MLB_alex_bregman',    │               │
+│ │                │   │   'name': 'Alex Bregman',             │               │
+│ │                │   │   'team': 'CHC',                      │               │
+│ │                │   │   'sport': 'MLB',                     │               │
+│ │                │   │   'stat_type': 'BATTER_STRIKEOUTS',   │               │
+│ │                │   │   'prizepicks_line': 0.5,             │               │
+│ │                │   │   'underdog_line': None,              │               │
+│ │                │   │   'kalshi_price': None,               │               │
+│ │                │   │   'ml_tier': 'T1-ELITE',              │               │
+│ │                │   │   'ml_edge': 3373.5867480965085,      │               │
+│ │                │   │   ... +5                              │               │
+│ │                │   },                                      │               │
+│ │                │   {                                       │               │
+│ │                │   │   'player_id': 'MLB_ozzie_albies',    │               │
+│ │                │   │   'name': 'Ozzie Albies',             │               │
+│ │                │   │   'team': 'ATL',                      │               │
+│ │                │   │   'sport': 'MLB',                     │               │
+│ │                │   │   'stat_type': 'BATTER_STRIKEOUTS',   │               │
+│ │                │   │   'prizepicks_line': 0.5,             │               │
+│ │                │   │   'underdog_line': None,              │               │
+│ │                │   │   'kalshi_price': None,               │               │
+│ │                │   │   'ml_tier': 'T1-ELITE',              │               │
+│ │                │   │   'ml_edge': 3269.586748096509,       │               │
+│ │                │   │   ... +5                              │               │
+│ │                │   },                                      │               │
+│ │                │   {                                       │               │
+│ │                │   │   'player_id': 'MLB_bobby_witt_jr.',  │               │
+│ │                │   │   'name': 'Bobby Witt Jr.',           │               │
+│ │                │   │   'team': 'KC',                       │               │
+│ │                │   │   'sport': 'MLB',                     │               │
+│ │                │   │   'stat_type': 'BATTER_STRIKEOUTS',   │               │
+│ │                │   │   'prizepicks_line': 0.5,             │               │
+│ │                │   │   'underdog_line': None,              │               │
+│ │                │   │   'kalshi_price': None,               │               │
+│ │                │   │   'ml_tier': 'T1-ELITE',              │               │
+│ │                │   │   'ml_edge': 3172.58674809651,        │               │
+│ │                │   │   ... +5                              │               │
+│ │                │   },                                      │               │
+│ │                │   {                                       │               │
+│ │                │   │   'player_id': 'MLB_xander_bogaerts', │               │
+│ │                │   │   'name': 'Xander Bogaerts',          │               │
+│ │                │   │   'team': 'SD',                       │               │
+│ │                │   │   'sport': 'MLB',                     │               │
+│ │                │   │   'stat_type': 'BATTER_STRIKEOUTS',   │               │
+│ │                │   │   'prizepicks_line': 0.5,             │               │
+│ │                │   │   'underdog_line': None,              │               │
+│ │                │   │   'kalshi_price': None,               │               │
+│ │                │   │   'ml_tier': 'T1-ELITE',              │               │
+│ │                │   │   'ml_edge': 3056.5867480965094,      │               │
+│ │                │   │   ... +5                              │               │
+│ │                │   },                                      │               │
+│ │                │   {                                       │               │
+│ │                │   │   'player_id': 'MLB_ryan_mcmahon',    │               │
+│ │                │   │   'name': 'Ryan McMahon',             │               │
+│ │                │   │   'team': 'NYY',                      │               │
+│ │                │   │   'sport': 'MLB',                     │               │
+│ │                │   │   'stat_type': 'MLB_HITS',            │               │
+│ │                │   │   'prizepicks_line': 0.5,             │               │
+│ │                │   │   'underdog_line': None,              │               │
+│ │                │   │   'kalshi_price': None,               │               │
+│ │                │   │   'ml_tier': 'T1-ELITE',              │               │
+│ │                │   │   'ml_edge': 3029.586748096509,       │               │
+│ │                │   │   ... +5                              │               │
+│ │                │   },                                      │               │
+│ │                │   {                                       │               │
+│ │                │   │   'player_id': 'MLB_tyler_freeman',   │               │
+│ │                │   │   'name': 'Tyler Freeman',            │               │
+│ │                │   │   'team': 'COL',                      │               │
+│ │                │   │   'sport': 'MLB',                     │               │
+│ │                │   │   'stat_type': 'BATTER_STRIKEOUTS',   │               │
+│ │                │   │   'prizepicks_line': 0.5,             │               │
+│ │                │   │   'underdog_line': None,              │               │
+│ │                │   │   'kalshi_price': None,               │               │
+│ │                │   │   'ml_tier': 'T1-ELITE',              │               │
+│ │                │   │   'ml_edge': 3011.58674809651,        │               │
+│ │                │   │   ... +5                              │               │
+│ │                │   },                                      │               │
+│ │                │   {                                       │               │
+│ │                │   │   'player_id': 'MLB_marcell_ozuna',   │               │
+│ │                │   │   'name': 'Marcell Ozuna',            │               │
+│ │                │   │   'team': 'PIT',                      │               │
+│ │                │   │   'sport': 'MLB',                     │               │
+│ │                │   │   'stat_type': 'MLB_HITS',            │               │
+│ │                │   │   'prizepicks_line': 0.5,             │               │
+│ │                │   │   'underdog_line': None,              │               │
+│ │                │   │   'kalshi_price': None,               │               │
+│ │                │   │   'ml_tier': 'T1-ELITE',              │               │
+│ │                │   │   'ml_edge': 2982.5867480965094,      │               │
+│ │                │   │   ... +5                              │               │
+│ │                │   },                                      │               │
+│ │                │   {                                       │               │
+│ │                │   │   'player_id': 'MLB_ranger_suarez',   │               │
+│ │                │   │   'name': 'Ranger Suarez',            │               │
+│ │                │   │   'team': 'BOS',                      │               │
+│ │                │   │   'sport': 'MLB',                     │               │
+│ │                │   │   'stat_type': 'OUTS_RECORDED',       │               │
+│ │                │   │   'prizepicks_line': 16.5,            │               │
+│ │                │   │   'underdog_line': None,              │               │
+│ │                │   │   'kalshi_price': None,               │               │
+│ │                │   │   'ml_tier': 'T1-ELITE',              │               │
+│ │                │   │   'ml_edge': 2836.586748096509,       │               │
+│ │                │   │   ... +5                              │               │
+│ │                │   },                                      │               │
+│ │                │   {                                       │               │
+│ │                │   │   'player_id': 'MLB_chase_meidroth',  │               │
+│ │                │   │   'name': 'Chase Meidroth',           │               │
+│ │                │   │   'team': 'CWS',                      │               │
+│ │                │   │   'sport': 'MLB',                     │               │
+│ │                │   │   'stat_type': 'BATTER_STRIKEOUTS',   │               │
+│ │                │   │   'prizepicks_line': 0.5,             │               │
+│ │                │   │   'underdog_line': None,              │               │
+│ │                │   │   'kalshi_price': None,               │               │
+│ │                │   │   'ml_tier': 'T1-ELITE',              │               │
+│ │                │   │   'ml_edge': 2832.5867480965085,      │               │
+│ │                │   │   ... +5                              │               │
+│ │                │   },                                      │               │
+│ │                │   {                                       │               │
+│ │                │   │   'player_id': 'MLB_alec_burleson',   │               │
+│ │                │   │   'name': 'Alec Burleson',            │               │
+│ │                │   │   'team': 'STL',                      │               │
+│ │                │   │   'sport': 'MLB',                     │               │
+│ │                │   │   'stat_type': 'BATTER_STRIKEOUTS',   │               │
+│ │                │   │   'prizepicks_line': 0.5,             │               │
+│ │                │   │   'underdog_line': None,              │               │
+│ │                │   │   'kalshi_price': None,               │               │
+│ │                │   │   'ml_tier': 'T1-ELITE',              │               │
+│ │                │   │   'ml_edge': 2770.5867480965085,      │               │
+│ │                │   │   ... +5                              │               │
+│ │                │   },                                      │               │
+│ │                │   ... +146                                │               │
+│ │                ]                                           │               │
+│ │ saved_cursor = 0                                           │               │
+│ │         self = MainGrid(id='main-grid')                    │               │
+│ │        sport = 'MLB'                                       │               │
+│ │         stat = 'HRR'                                       │               │
+│ │        table = DataTable(id='main-table')                  │               │
+│ │         tier = 'T2-STRONG'                                 │               │
+│ │      ud_line = ' — '                                       │               │
+│ ╰────────────────────────────────────────────────────────────╯               │
+│                                                                              │
+│ C:\Users\thoma\AppData\Local\Programs\Python\Python313\Lib\site-packages\tex │
+│ tual\widgets\_data_table.py:1693 in add_row                                  │
+│                                                                              │
+│   1690 │   │   """                                                           │
+│   1691 │   │   row_key = RowKey(key)                                         │
+│   1692 │   │   if row_key in self._row_locations:                            │
+│ ❱ 1693 │   │   │   raise DuplicateKey(f"The row key {row_key!r} already exis │
+│   1694 │   │                                                                 │
+│   1695 │   │   # TODO: If there are no columns: do we generate them here?    │
+│   1696 │   │   #  If we don't do this, users will be required to call add_co │
+│                                                                              │
+│ ╭───────────────────── locals ──────────────────────╮                        │
+│ │   cells = (                                       │                        │
+│ │           │   <text 'James Wood ^' [] '#00c853'>, │                        │
+│ │           │   <text 'HRR' [] '#00c853'>,          │                        │
+│ │           │   <text 'MLB' [] '#3a5570'>,          │                        │
+│ │           │   <text '2.5' [] '#c8d8e8'>,          │                        │
+│ │           │   <text ' — ' [] '#a0b8c8'>,          │                        │
+│ │           │   <text ' — ' [] '#7a9cb8'>,          │                        │
+│ │           │   <text 'T2' [] '#00c853'>,           │                        │
+│ │           │   <text '+1854.9%' [] '#00ff41'>,     │                        │
+│ │           │   <text ' — ' [] '#3a5570'>           │                        │
+│ │           )                                       │                        │
+│ │  height = 1                                       │                        │
+│ │     key = 'MLB_james_wood|MLB_HRR'                │                        │
+│ │   label = None                                    │                        │
+│ │ row_key = RowKey(value='MLB_james_wood|MLB_HRR')  │                        │
+│ │    self = DataTable(id='main-table')              │                        │
+│ ╰───────────────────────────────────────────────────╯                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+DuplicateKey: The row key <textual.widgets._data_table.RowKey object at
+0x00000246110CB200> already exists.
+[NHL] Found 2012 PP lines
+[NHL] Found 1367 predictions with lambda values
+[INFO] Trade detected: Adrian Kempe local=LA -> PP=LAK
+[INFO] Trade detected: Alex Laferriere local=LA -> PP=LAK
+[INFO] Trade detected: Anthony Cirelli local=TB -> PP=TBL
+[INFO] Trade detected: Anze Kopitar local=LA -> PP=LAK
+[INFO] Trade detected: Artemi Panarin local=LA -> PP=LAK
+[INFO] Trade detected: Brandt Clarke local=LA -> PP=LAK
+[INFO] Trade detected: Brayden Point local=TB -> PP=TBL
+[INFO] Trade detected: Collin Graf local=SJ -> PP=SJS
+[INFO] Trade detected: Connor Brown local=NJ -> PP=NJD
+[INFO] Trade detected: Darren Raddysh local=TB -> PP=TBL
+[INFO] Trade detected: Dawson Mercer local=NJ -> PP=NJD
+[INFO] Trade detected: Dougie Hamilton local=NJ -> PP=NJD
+[INFO] Trade detected: Jack Hughes local=NJ -> PP=NJD
+[INFO] Trade detected: Jake Guentzel local=TB -> PP=TBL
+[INFO] Trade detected: Jesper Bratt local=NJ -> PP=NJD
+[INFO] Trade detected: Macklin Celebrini local=SJ -> PP=SJS
+[INFO] Trade detected: Nico Hischier local=NJ -> PP=NJD
+[INFO] Trade detected: Nikita Kucherov local=TB -> PP=TBL
+[INFO] Trade detected: Pavol Regenda local=SJ -> PP=SJS
+[INFO] Trade detected: Quinton Byfield local=LA -> PP=LAK
+[INFO] Trade detected: Timo Meier local=NJ -> PP=NJD
+[INFO] Trade detected: Tyler Toffoli local=SJ -> PP=SJS
+[INFO] Trade detected: Will Smith local=SJ -> PP=SJS
+[INFO] Trade detected: William Eklund local=SJ -> PP=SJS
+[NHL] Matched 404/2012 PP lines to predictions (1608 unmatched, 80%)
+[WARN] [NHL] High unmatched PP line rate: 1608/2012 (80%). Name matching or prediction coverage may be degraded.
+[NHL] Found 52 picks with edge >= 5.0%
+[NBA] Found 0 PP lines
+[NBA] Found 0 predictions with lambda values

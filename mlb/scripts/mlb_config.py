@@ -101,6 +101,12 @@ CORE_PROPS = {
     # Medium-High: high-avg hitters in favorable matchups have reliable floors
     'hits':               [0.5, 1.5],
 
+    # Medium: singles are 68%+ of all hits; goblin line for contact hitters
+    'singles':            [0.5],
+
+    # Medium: doubles driven by ISO and park; standard line
+    'doubles':            [0.5],
+
     # Medium: ISO + park + pitcher matchup gives good signal
     'total_bases':        [1.5, 2.5],
 
@@ -128,8 +134,8 @@ CORE_PROPS = {
 
 # Player type for each prop (determines which features to extract)
 PITCHER_PROPS = {'strikeouts', 'outs_recorded', 'pitcher_walks', 'hits_allowed', 'earned_runs'}
-BATTER_PROPS = {'hits', 'total_bases', 'home_runs', 'rbis', 'runs', 'stolen_bases',
-                'walks', 'batter_strikeouts', 'hrr'}
+BATTER_PROPS = {'hits', 'singles', 'doubles', 'total_bases', 'home_runs', 'rbis', 'runs',
+                'stolen_bases', 'walks', 'batter_strikeouts', 'hrr'}
 
 def get_player_type(prop_type: str) -> str:
     """Returns 'pitcher' or 'batter' for a given prop type."""
@@ -162,6 +168,7 @@ LINE_TYPES = {
     # ----- Goblin lines (easy bars — OVER only on PrizePicks) -----
     # Low-threshold props where hitting Over is relatively easy
     ('hits', 0.5):               'goblin',
+    ('singles', 0.5):            'goblin',   # Singles are 68%+ of hits; easy bar for starters
     ('runs', 0.5):               'goblin',
     ('rbis', 0.5):               'goblin',
     ('stolen_bases', 0.5):       'goblin',
@@ -172,6 +179,7 @@ LINE_TYPES = {
     # ----- Standard lines (OVER or UNDER available) -----
     # HR 0.5 is standard — not trivially easy despite low bar
     ('home_runs', 0.5):          'standard',
+    ('doubles', 0.5):            'standard',  # ~35-40% of player-games have a double
     # Mid-range lines default to standard (explicit for clarity)
     ('hits', 1.5):               'standard',
     ('strikeouts', 3.5):         'standard',

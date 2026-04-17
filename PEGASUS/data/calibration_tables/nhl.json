@@ -1,0 +1,25 @@
+{
+  "sport": "nhl",
+  "built_date": "2026-04-15",
+  "n": 61976,
+  "calibration_table": {
+    "0.55": 0.5279,
+    "0.65": 0.6096,
+    "0.75": 0.7127,
+    "0.85": 0.8513,
+    "0.95": 0.9135
+  },
+  "always_under_rate": 0.6923,
+  "our_accuracy": 0.6744,
+  "real_edge_vs_naive": -0.0179,
+  "approved_combos": [
+    [
+      "OVER",
+      "standard"
+    ],
+    [
+      "UNDER",
+      "standard"
+    ]
+  ]
+}

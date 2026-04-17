@@ -1,0 +1,7 @@
+● Saved. tui-terminal/bookmark-4.md has everything you need.
+
+  TL;DR after reboot:                                                                                                     1. Re-add the two Defender folder exclusions (site-packages + Scripts)
+  2. pip install google-generativeai — will be instant this time                                                          3. python tui-terminal/intel/context_engine.py --dry-run to verify
+  4. If all good, drop the --dry-run flag and go live
+
+  Good luck with the reboot.

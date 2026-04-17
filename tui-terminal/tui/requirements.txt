@@ -1,0 +1,6 @@
+textual>=0.52.0
+rich>=13.7.0
+fuzzywuzzy>=0.18.0
+python-Levenshtein>=0.25.0
+python-dotenv>=1.0.0
+google-genai>=1.0.0

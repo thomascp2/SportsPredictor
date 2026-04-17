@@ -1,0 +1,22 @@
+[Unit]
+Description=PEGASUS Daily Runner — calibrate + tier + Turso sync
+Documentation=https://github.com/thomascp2/SportsPredictor
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/SportsPredictor
+EnvironmentFile=/opt/SportsPredictor/.env
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONUTF8=1
+
+ExecStart=/opt/SportsPredictor/venv/bin/python PEGASUS/run_daily.py
+
+# Don't restart on failure — the timer will retry tomorrow
+# If orchestrator hasn't run yet, PEGASUS exits 1 gracefully
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pegasus-daily

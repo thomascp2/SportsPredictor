@@ -137,6 +137,14 @@ class MLBStatisticalEngine:
                 lam = self._batter_hits_lambda(batter_features, ctx, opp)
                 prob = self._poisson_prob_over(line, lam)
 
+            elif prop_type == 'singles':
+                lam = self._batter_singles_lambda(batter_features, ctx, opp)
+                prob = self._poisson_prob_over(line, lam)
+
+            elif prop_type == 'doubles':
+                lam = self._batter_doubles_lambda(batter_features, ctx, opp)
+                prob = self._poisson_prob_over(line, lam)
+
             elif prop_type == 'total_bases':
                 mu, sigma = self._batter_tb_distribution(batter_features, ctx, opp)
                 prob = self._normal_prob_over(line, mu, sigma)
@@ -343,6 +351,60 @@ class MLBStatisticalEngine:
         lam *= ctx.get('ctx_park_hits_factor', 1.0)
 
         return max(lam, 0.2)
+
+    def _batter_singles_lambda(self, bf: Dict, ctx: Dict, opp: Dict) -> float:
+        """Singles Poisson λ — derived from hits lambda scaled by singles fraction."""
+        bf = bf or {}
+
+        lam_hits = self._batter_hits_lambda(bf, ctx, opp)
+
+        iso = bf.get('f_season_iso', 0.162)
+
+        # League-average singles fraction ≈ 68% of hits.
+        # Higher ISO players hit more XBH → fewer singles per hit.
+        # Each 0.10 ISO above league avg (0.162) reduces singles fraction by ~8pp.
+        iso_excess = iso - 0.162
+        singles_fraction = max(0.40, min(0.82, 0.68 - iso_excess * 0.80))
+
+        lam = lam_hits * singles_fraction
+
+        # Blend with recent form if available
+        l5_singles = bf.get('f_l5_singles_avg', None)
+        if l5_singles is not None:
+            lam = 0.55 * l5_singles + 0.45 * lam
+
+        return max(lam, 0.10)
+
+    def _batter_doubles_lambda(self, bf: Dict, ctx: Dict, opp: Dict) -> float:
+        """Doubles Poisson λ — driven by ISO and plate appearances."""
+        bf = bf or {}
+
+        pa = PA_BY_ORDER.get(bf.get('f_batting_order', 0), 3.8)
+        iso = bf.get('f_season_iso', 0.162)
+
+        # League avg doubles ≈ 31% of ISO per PA (empirical: 0.050 doubles/PA ÷ 0.162 ISO)
+        doubles_rate = iso * 0.31
+        lam_season = pa * doubles_rate
+
+        # Blend with recent form if available
+        l5_doubles = bf.get('f_l5_doubles_avg', None)
+        if l5_doubles is not None:
+            lam = 0.55 * l5_doubles + 0.45 * lam_season
+        else:
+            lam = lam_season
+
+        # Park hits factor (gap dimensions affect doubles; HR factor affects flyball XBH)
+        lam *= ctx.get('ctx_park_hits_factor', 1.0)
+
+        # Pitcher difficulty (elite pitchers suppress XBH more than singles)
+        difficulty = opp.get('opp_pitcher_difficulty', 0.5)
+        lam *= (1.0 - (difficulty - 0.5) * 0.25)
+
+        # Platoon: slight platoon effect on power
+        plat = bf.get('f_platoon_advantage', 0.0)
+        lam *= (1.0 + plat * 0.2)
+
+        return max(lam, 0.05)
 
     def _batter_tb_distribution(self, bf: Dict, ctx: Dict, opp: Dict) -> Tuple[float, float]:
         """Total bases Normal distribution."""
@@ -586,6 +648,10 @@ class MLBStatisticalEngine:
                 return self._pitcher_walks_lambda(pf, ctx, opp)
             elif prop_type == 'hits':
                 return self._batter_hits_lambda(bf, ctx, opp)
+            elif prop_type == 'singles':
+                return self._batter_singles_lambda(bf, ctx, opp)
+            elif prop_type == 'doubles':
+                return self._batter_doubles_lambda(bf, ctx, opp)
             elif prop_type == 'total_bases':
                 mu, _ = self._batter_tb_distribution(bf, ctx, opp)
                 return mu

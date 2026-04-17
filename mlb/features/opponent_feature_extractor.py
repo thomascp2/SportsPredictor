@@ -39,6 +39,8 @@ DEFAULT_OPP_PITCHER = {
     'opp_pitcher_is_home':   0.5,
     'opp_pitcher_known':     0,       # 0 = TBD, 1 = confirmed
     'opp_pitcher_difficulty': 0.5,   # 0=easy, 1=ace; composite score
+    'opp_pitcher_lineup_k_rate': 0.23, # Team strikeout tendency
+    'opp_pitcher_lineup_tb_rate': 1.2,  # Team total base tendency
 }
 
 DEFAULT_OPP_TEAM = {
@@ -65,7 +67,8 @@ class OpponentFeatureExtractor:
 
     def extract_pitcher_matchup(self, pitcher_name: str, pitcher_id: Optional[int],
                                  target_date: str, batter_hand: str = 'R',
-                                 pitcher_is_home: bool = False) -> Dict:
+                                 pitcher_is_home: bool = False,
+                                 batter_team: str = None) -> Dict:
         """
         Extract opposing starting pitcher features for batter prop predictions.
 
@@ -75,6 +78,7 @@ class OpponentFeatureExtractor:
             target_date: Prediction date YYYY-MM-DD
             batter_hand: Batter's hitting hand ('L', 'R', 'S')
             pitcher_is_home: Whether pitcher is at home
+            batter_team: Team of the batter (for lineup friction features)
 
         Returns:
             Dict with 'opp_pitcher_*' features
@@ -96,41 +100,70 @@ class OpponentFeatureExtractor:
                 # Try MLB API for season stats
                 api_feats = self._get_pitcher_api_features(pitcher_name, pitcher_id,
                                                             target_date)
-                return {**DEFAULT_OPP_PITCHER, **api_feats,
-                        'opp_pitcher_known': 1,
-                        'opp_pitcher_is_home': features['opp_pitcher_is_home']}
+                features.update({**DEFAULT_OPP_PITCHER, **api_feats})
+            else:
+                # Season stats from local data
+                total_outs = sum(s.get('outs_recorded', 0) or 0 for s in starts)
+                total_ip = total_outs / 3.0
+                total_k  = sum(s.get('strikeouts_pitched', 0) or 0 for s in starts)
+                total_bb = sum(s.get('walks_allowed', 0) or 0 for s in starts)
+                total_h  = sum(s.get('hits_allowed', 0) or 0 for s in starts)
+                total_er = sum(s.get('earned_runs', 0) or 0 for s in starts)
+                total_hr = sum(s.get('home_runs_allowed', 0) or 0 for s in starts)
 
-            # Season stats from local data
-            total_outs = sum(s.get('outs_recorded', 0) or 0 for s in starts)
-            total_ip = total_outs / 3.0
-            total_k  = sum(s.get('strikeouts_pitched', 0) or 0 for s in starts)
-            total_bb = sum(s.get('walks_allowed', 0) or 0 for s in starts)
-            total_h  = sum(s.get('hits_allowed', 0) or 0 for s in starts)
-            total_er = sum(s.get('earned_runs', 0) or 0 for s in starts)
-            total_hr = sum(s.get('home_runs_allowed', 0) or 0 for s in starts)
+                features['opp_pitcher_era']  = MLBStatsAPI.compute_era(total_er, total_ip)
+                features['opp_pitcher_whip'] = MLBStatsAPI.compute_whip(total_h, total_bb, total_ip)
+                features['opp_pitcher_k9']   = MLBStatsAPI.compute_k9(total_k, total_ip)
+                features['opp_pitcher_bb9']  = MLBStatsAPI.compute_bb9(total_bb, total_ip)
+                features['opp_pitcher_hr9']  = MLBStatsAPI.compute_hr9(total_hr, total_ip)
 
-            features['opp_pitcher_era']  = MLBStatsAPI.compute_era(total_er, total_ip)
-            features['opp_pitcher_whip'] = MLBStatsAPI.compute_whip(total_h, total_bb, total_ip)
-            features['opp_pitcher_k9']   = MLBStatsAPI.compute_k9(total_k, total_ip)
-            features['opp_pitcher_bb9']  = MLBStatsAPI.compute_bb9(total_bb, total_ip)
-            features['opp_pitcher_hr9']  = MLBStatsAPI.compute_hr9(total_hr, total_ip)
+                # Last 3 starts K average
+                l3 = starts[:3]
+                l3_ks = [s.get('strikeouts_pitched', 0) or 0 for s in l3]
+                features['opp_pitcher_l3_k_avg'] = sum(l3_ks) / len(l3_ks) if l3_ks else 5.5
 
-            # Last 3 starts K average
-            l3 = starts[:3]
-            l3_ks = [s.get('strikeouts_pitched', 0) or 0 for s in l3]
-            features['opp_pitcher_l3_k_avg'] = sum(l3_ks) / len(l3_ks) if l3_ks else 5.5
+                # Days rest
+                features['opp_pitcher_days_rest'] = self._compute_days_rest(starts, target_date)
 
-            # Days rest
-            features['opp_pitcher_days_rest'] = self._compute_days_rest(starts, target_date)
+                # Difficulty composite: 0 = very easy, 1 = elite ace
+                k9_norm  = min(features['opp_pitcher_k9'] / 12.0, 1.0)
+                era_norm = max(0, 1.0 - features['opp_pitcher_era'] / 8.0)
+                features['opp_pitcher_difficulty'] = round((k9_norm + era_norm) / 2.0, 3)
 
-            # Difficulty composite: 0 = very easy, 1 = elite ace
-            # Based on normalized K9 and inverse ERA
-            k9_norm  = min(features['opp_pitcher_k9'] / 12.0, 1.0)   # 12 K/9 = max
-            era_norm = max(0, 1.0 - features['opp_pitcher_era'] / 8.0) # 0 ERA = 1.0
-            features['opp_pitcher_difficulty'] = round((k9_norm + era_norm) / 2.0, 3)
+            # NHL PORT: Lineup Friction (What does THIS PITCHER do against THIS TEAM'S type of lineup?)
+            if batter_team:
+                friction = self.extract_lineup_friction(batter_team, target_date)
+                features.update(friction)
+            else:
+                features['opp_pitcher_lineup_k_rate'] = 0.23
+                features['opp_pitcher_lineup_tb_rate'] = 1.2
 
             return features
 
+        finally:
+            conn.close()
+
+    def extract_lineup_friction(self, team: str, target_date: str) -> Dict:
+        """
+        Calculate how much 'friction' a lineup provides (K rate, TB rate).
+        High K rate lineup = easier for pitcher to get K props.
+        """
+        conn = get_db_connection(self.db_path)
+        try:
+            # Get team's last 30 days plate discipline
+            games = self._get_team_batting(conn, team, target_date, lookback_days=30)
+            if not games:
+                return {'opp_pitcher_lineup_k_rate': 0.23, 'opp_pitcher_lineup_tb_rate': 1.2}
+
+            total_pa = sum((g.get('at_bats', 0) or 0) + (g.get('walks_drawn', 0) or 0) for g in games)
+            total_k  = sum(g.get('strikeouts_batter', 0) or 0 for g in games)
+            total_tb = sum(g.get('total_bases', 0) or 0 for g in games)
+            total_g  = len(set(g.get('game_id') for g in games)) or 1
+
+            return {
+                'opp_pitcher_lineup_k_rate': round(total_k / total_pa, 4) if total_pa > 0 else 0.23,
+                'opp_pitcher_lineup_tb_rate': round(total_tb / total_g, 4) if total_g > 0 else 1.2
+            }
         finally:
             conn.close()
 
@@ -268,7 +301,7 @@ class OpponentFeatureExtractor:
             cutoff = '2020-01-01'
 
         cursor = conn.execute('''
-            SELECT at_bats, hits, walks_drawn, strikeouts_batter, total_bases
+            SELECT at_bats, hits, walks_drawn, strikeouts_batter, total_bases, game_id
             FROM player_game_logs
             WHERE player_type = 'batter'
               AND team = ?

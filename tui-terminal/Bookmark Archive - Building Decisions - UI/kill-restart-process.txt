@@ -1,0 +1,9 @@
+# Kill everything                                                                                                                 
+   cd ~/SportsPredictor/tui-terminal && ./kill.sh
+                                                                                                                                    
+# Wait 2 minutes, then:
+  ./launch.sh
+
+------------------------------------------
+~/SportsPredictor/tui-terminal
+PYTHONIOENCODING=utf-8 python tui/app.py

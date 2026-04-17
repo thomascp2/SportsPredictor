@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/thoma/SportsPredictor/**)",
+      "Bash(python -c \"import pydantic; import requests; from supabase import create_client; print\\('pydantic:', pydantic.__version__\\); print\\('requests:', requests.__version__\\); print\\('supabase import: OK'\\)\")",
+      "Bash(python -c ':*)",
+      "Bash(python:*)"
+    ]
+  }
+}

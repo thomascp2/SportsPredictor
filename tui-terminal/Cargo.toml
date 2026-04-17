@@ -1,0 +1,46 @@
+[package]
+name        = "props-ingester"
+version     = "0.1.0"
+edition     = "2021"
+description = "Headless sidecar: fetches PrizePicks, Underdog, and Kalshi into local props.db"
+
+[[bin]]
+name = "ingester"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "gzip", "deflate"] }
+
+# WebSocket (Kalshi)
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util       = "0.3"
+
+# Serialization
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Database — SQLite via sqlx (async)
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+anyhow = "1"
+
+# Logging
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Jittered intervals / randomness
+rand = "0.8"
+
+# URL parsing (used by Kalshi WS)
+url = "2"
+
+# .env loader
+dotenvy = "0.15"

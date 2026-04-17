@@ -129,6 +129,9 @@ class BatterFeatureExtractor:
             # Streak (consecutive over/under this line)
             features['f_streak'] = self._compute_streak(games, stat_col, line)
 
+            # Fatigue features
+            features.update(self._compute_fatigue_features(games, target_date))
+
             return features
 
         finally:
@@ -143,7 +146,7 @@ class BatterFeatureExtractor:
         """Fetch batter's historical game logs with temporal safety."""
         cursor = conn.execute('''
             SELECT
-                game_date, hits, total_bases, home_runs, rbis, runs,
+                game_date, game_time, hits, total_bases, home_runs, rbis, runs,
                 stolen_bases, walks_drawn, strikeouts_batter, hrr,
                 at_bats, doubles, triples,
                 opposing_pitcher_hand, home_away
@@ -317,3 +320,26 @@ class BatterFeatureExtractor:
                     break
 
         return streak
+
+    def _compute_fatigue_features(self, games: List[Dict], target_date: str) -> Dict:
+        """
+        Compute rest/fatigue features based on days since last game.
+
+        Returns:
+          f_days_rest: Days since last game (capped at 7). 0 = played yesterday.
+          f_played_yesterday: 1 if played the previous day, else 0.
+        """
+        if not games:
+            return {'f_days_rest': 3, 'f_played_yesterday': 0}
+        try:
+            from datetime import date
+            target = date.fromisoformat(target_date)
+            last_game_date = date.fromisoformat(games[0]['game_date'])
+            days_rest = (target - last_game_date).days - 1  # -1 so day-after = 0 rest
+            days_rest = max(0, min(days_rest, 7))
+        except Exception:
+            days_rest = 3
+        return {
+            'f_days_rest': days_rest,
+            'f_played_yesterday': 1 if days_rest == 0 else 0,
+        }

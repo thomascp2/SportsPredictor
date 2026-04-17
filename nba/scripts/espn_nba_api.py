@@ -116,6 +116,10 @@ class ESPNNBAApi:
                 over_under = None
                 home_moneyline = None
                 away_moneyline = None
+                over_odds = None
+                under_odds = None
+                home_spread_odds = None
+                away_spread_odds = None
                 odds_provider = ''
                 odds_details = ''
                 try:
@@ -147,13 +151,17 @@ class ESPNNBAApi:
                                 except (ValueError, IndexError):
                                     pass
 
-                            # Moneylines
+                            # Moneylines and spread odds
                             home_odds = odds_obj.get('homeTeamOdds', {})
                             away_odds = odds_obj.get('awayTeamOdds', {})
                             if isinstance(home_odds, dict):
                                 home_moneyline = home_odds.get('moneyLine') or home_odds.get('current', {}).get('moneyLine')
+                                home_spread_odds = home_odds.get('spreadOdds')
                             if isinstance(away_odds, dict):
                                 away_moneyline = away_odds.get('moneyLine') or away_odds.get('current', {}).get('moneyLine')
+                                away_spread_odds = away_odds.get('spreadOdds')
+                            over_odds  = odds_obj.get('overOdds')
+                            under_odds = odds_obj.get('underOdds')
                 except Exception:
                     pass  # Odds unavailable — non-fatal
 
@@ -190,6 +198,10 @@ class ESPNNBAApi:
                     'over_under': over_under,   # float; game total
                     'home_moneyline': home_moneyline,
                     'away_moneyline': away_moneyline,
+                    'over_odds': over_odds,
+                    'under_odds': under_odds,
+                    'home_spread_odds': home_spread_odds,
+                    'away_spread_odds': away_spread_odds,
                     'odds_details': odds_details,
                     'odds_provider': odds_provider,
                 }

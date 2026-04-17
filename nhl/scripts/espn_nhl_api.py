@@ -165,10 +165,16 @@ class ESPNNHLApi:
             away_odds = pc.get('awayTeamOdds', {})
             home_moneyline = home_odds.get('moneyLine') if isinstance(home_odds, dict) else None
             away_moneyline = away_odds.get('moneyLine') if isinstance(away_odds, dict) else None
+            home_spread_odds = home_odds.get('spreadOdds') if isinstance(home_odds, dict) else None
+            away_spread_odds = away_odds.get('spreadOdds') if isinstance(away_odds, dict) else None
 
             home_prob = _moneyline_to_prob(home_moneyline)
             away_prob = _moneyline_to_prob(away_moneyline)
             max_prob = max(home_prob or 0.0, away_prob or 0.0) or None
+
+            def _to_int(v):
+                try: return int(float(v)) if v is not None else None
+                except: return None
 
             return {
                 'spread': float(spread) if spread is not None else None,
@@ -178,6 +184,10 @@ class ESPNNHLApi:
                 'home_implied_prob': home_prob,
                 'away_implied_prob': away_prob,
                 'max_implied_prob': max_prob,
+                'over_odds':  _to_int(pc.get('overOdds')),
+                'under_odds': _to_int(pc.get('underOdds')),
+                'home_spread_odds': _to_int(home_spread_odds),
+                'away_spread_odds': _to_int(away_spread_odds),
                 'odds_details': odds_details,
                 'odds_provider': odds_provider,
             }

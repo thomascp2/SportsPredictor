@@ -5,12 +5,22 @@ import {
   StyleSheet,
   TouchableOpacity,
   ViewStyle,
+  Alert,
 } from 'react-native';
 import { SmartPick } from '../../services/api';
 import { TierBadge } from './TierBadge';
 import { EdgeIndicator } from './EdgeIndicator';
 import { StatPercentileBar } from './StatPercentileBar';
 import { Card } from '../common/Card';
+
+// Situation flag display config (PEGASUS advisory flags)
+const SITUATION_CONFIG: Record<string, { label: string; color: string }> = {
+  HIGH_STAKES:    { label: 'MUST WIN',       color: '#EF4444' },
+  DEAD_RUBBER:    { label: 'LOW STAKES',     color: '#9CA3AF' },
+  ELIMINATED:     { label: 'ELIMINATED',     color: '#6B7280' },
+  USAGE_BOOST:    { label: 'USAGE UP',       color: '#F59E0B' },
+  REDUCED_STAKES: { label: 'REDUCED STAKES', color: '#D1D5DB' },
+};
 
 // Prop type display labels
 const PROP_LABELS: Record<string, string> = {
@@ -56,6 +66,19 @@ export function PickCard({ pick, onAddToParlay, onPlayerPress, isInParlay }: Pic
   const oddsType = pick.pp_odds_type || 'standard';
   const textColor = oddsTypeTextColor[oddsType] || '#888';
 
+  // PEGASUS enrichment
+  const isPegasus = pick.pegasus_source === true;
+  const situationCfg =
+    isPegasus && pick.situation_flag && pick.situation_flag !== 'NORMAL'
+      ? SITUATION_CONFIG[pick.situation_flag]
+      : null;
+  const showTrueEV  = isPegasus && pick.true_ev != null;
+  const showBookRow = isPegasus && pick.implied_probability != null;
+
+  const handleSituationPress = () => {
+    if (pick.situation_notes) Alert.alert('Situation', pick.situation_notes);
+  };
+
   // For percentile bar: use season_avg vs pp_line context
   const hasPercentile = pick.percentile_score != null;
 
@@ -98,9 +121,9 @@ export function PickCard({ pick, onAddToParlay, onPlayerPress, isInParlay }: Pic
           </View>
         </View>
 
-        {/* Right: probability + edge */}
+        {/* Right: probability + edge + situation pill */}
         <View style={styles.propRight}>
-          {/* Circular-ish prob display */}
+          {/* Circular prob display — "CAL" label when PEGASUS calibrated */}
           <View style={[styles.probBubble, {
             borderColor: pick.pp_probability >= 0.7 ? '#4CAF50' :
               pick.pp_probability >= 0.6 ? '#FFD700' : '#FF9800',
@@ -111,9 +134,20 @@ export function PickCard({ pick, onAddToParlay, onPlayerPress, isInParlay }: Pic
             }]}>
               {(pick.pp_probability * 100).toFixed(0)}%
             </Text>
-            <Text style={styles.probLabel}>PROB</Text>
+            <Text style={styles.probLabel}>{isPegasus ? 'CAL' : 'PROB'}</Text>
           </View>
-          <EdgeIndicator edge={pick.edge} />
+          <View style={styles.edgeAndPill}>
+            <EdgeIndicator edge={pick.edge} />
+            {situationCfg && (
+              <TouchableOpacity
+                onPress={handleSituationPress}
+                style={[styles.situationPill, { backgroundColor: situationCfg.color }]}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.situationText}>{situationCfg.label}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
       </View>
 
@@ -131,7 +165,20 @@ export function PickCard({ pick, onAddToParlay, onPlayerPress, isInParlay }: Pic
         </View>
       )}
 
-      {/* ── Footer: odds type + add-to-parlay button ── */}
+      {/* ── PEGASUS: Book comparison row (only when DK implied prob available) ── */}
+      {showBookRow && (
+        <View style={styles.bookRow}>
+          <Text style={styles.bookRowText}>
+            Model: {(pick.pp_probability * 100).toFixed(0)}%
+            {'  |  '}
+            Book: {((pick.implied_probability as number) * 100).toFixed(0)}%
+            {'  |  '}
+            Edge: {pick.edge > 0 ? '+' : ''}{pick.edge.toFixed(1)}%
+          </Text>
+        </View>
+      )}
+
+      {/* ── Footer: odds type + EV + add-to-parlay button ── */}
       <View style={styles.footer}>
         <View style={[styles.oddsTypeBadge, oddsTypeBadgeStyles[oddsType] || oddsTypeBadgeStyles.standard]}>
           <Text style={[styles.oddsTypeText, { color: textColor }]}>
@@ -139,13 +186,21 @@ export function PickCard({ pick, onAddToParlay, onPlayerPress, isInParlay }: Pic
           </Text>
         </View>
 
-        {/* EV signal if high */}
-        {pick.ev_4leg != null && pick.ev_4leg > 0.3 && (
-          <View style={styles.evBadge}>
-            <Text style={styles.evBadgeText}>
-              +{(pick.ev_4leg * 100).toFixed(0)}% EV@4L
+        {/* PEGASUS True EV — replaces EV@4L when available */}
+        {showTrueEV ? (
+          <View style={[styles.evBadge, { borderColor: (pick.true_ev as number) >= 0 ? '#22C55E' : '#EF4444' }]}>
+            <Text style={[styles.evBadgeText, { color: (pick.true_ev as number) >= 0 ? '#22C55E' : '#EF4444' }]}>
+              {(pick.true_ev as number) >= 0 ? '+' : ''}{((pick.true_ev as number) * 100).toFixed(1)}% EV
             </Text>
           </View>
+        ) : (
+          pick.ev_4leg != null && pick.ev_4leg > 0.3 && (
+            <View style={styles.evBadge}>
+              <Text style={styles.evBadgeText}>
+                +{(pick.ev_4leg * 100).toFixed(0)}% EV@4L
+              </Text>
+            </View>
+          )
         )}
 
         {onAddToParlay && (
@@ -245,8 +300,31 @@ const styles = StyleSheet.create({
   },
   propRight: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 12,
+  },
+  edgeAndPill: {
+    alignItems: 'flex-end',
+    gap: 6,
+  },
+  situationPill: {
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  situationText: {
+    color: '#fff',
+    fontSize: 8,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  bookRow: {
+    marginBottom: 8,
+  },
+  bookRowText: {
+    color: '#9CA3AF',
+    fontSize: 10,
+    fontWeight: '500',
   },
   probBubble: {
     alignItems: 'center',

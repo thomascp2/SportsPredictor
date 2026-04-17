@@ -1,0 +1,33 @@
+[Unit]
+Description=SportsPredictor Orchestrator (NHL/NBA/MLB/Golf)
+Documentation=https://github.com/thomascp2/SportsPredictor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/SportsPredictor
+EnvironmentFile=/opt/SportsPredictor/.env
+
+# UTF-8 everywhere — prevents the Windows cp1252 issues from ever recurring
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONUTF8=1
+
+ExecStart=/opt/SportsPredictor/venv/bin/python orchestrator.py --sport all --mode continuous
+
+# Auto-restart on crash with 30s cooldown (matches old start_orchestrator.bat behavior)
+Restart=always
+RestartSec=30
+
+# Give it time to connect to APIs on startup
+TimeoutStartSec=60
+
+# Log to journald (use: sudo journalctl -fu sportspredictor)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sportspredictor
+
+[Install]
+WantedBy=multi-user.target

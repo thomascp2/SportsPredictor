@@ -1,0 +1,27 @@
+[Unit]
+Description=FreePicks Discord Bot
+Documentation=https://github.com/thomascp2/SportsPredictor
+After=network-online.target sportspredictor.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/SportsPredictor
+EnvironmentFile=/opt/SportsPredictor/.env
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONUTF8=1
+
+ExecStart=/opt/SportsPredictor/venv/bin/python discord_bot.py
+
+# Match the 15s restart cooldown from start_bot.bat
+Restart=always
+RestartSec=15
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=discord-bot
+
+[Install]
+WantedBy=multi-user.target

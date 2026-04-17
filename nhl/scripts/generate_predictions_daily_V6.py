@@ -67,14 +67,17 @@ except ImportError:
 # ============================================================================
 
 # ML Configuration
-USE_ML = True              # Set to False to disable ML predictions
+USE_ML = False             # DISABLED 2026-04-15: audit confirmed models cause 100% UNDER bias
+                           # Root cause: _prepare_features defaults non-prefixed features to 0.0
+                           # because features_for_ml only stores f_* keys. sog_l10=0 -> z huge
+                           # positive -> all UNDER. Re-enable after Oct 2026 retrain + audit.
 ENSEMBLE_MODE = True       # True = combine ML+statistical, False = ML only when available
 ML_WEIGHT = 0.6            # ML weight in ensemble (0.6 = 60% ML, 40% statistical)
 
 # PrizePicks Configuration
 PP_DB_PATH = Path(__file__).parent.parent.parent / "shared" / "prizepicks_lines.db"
 SUPPORTED_PROPS = ['shots', 'points', 'hits', 'blocked_shots']  # Props we generate predictions for
-ODDS_TYPES = ['standard', 'goblin']    # Skip demon (too risky)
+ODDS_TYPES = ['standard', 'goblin', 'demon']  # Demon BE ~45% — quality-gated by σ<1.5 in selector
 
 # Fallback lines if PP not available (should rarely be needed)
 FALLBACK_SHOT_LINES = [1.5, 2.5, 3.5]
@@ -590,14 +593,17 @@ def _fetch_and_save_nhl_game_lines(conn, game_date: str, games: list) -> dict:
             (game_id, game_date, home_team, away_team,
              spread, over_under, home_moneyline, away_moneyline,
              home_implied_prob, away_implied_prob, max_implied_prob,
+             over_odds, under_odds, home_spread_odds, away_spread_odds,
              odds_details, odds_provider, fetched_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             game_id, game_date, espn_home, espn_away,
             eg.get('spread'), eg.get('over_under'),
             eg.get('home_moneyline'), eg.get('away_moneyline'),
             eg.get('home_implied_prob'), eg.get('away_implied_prob'),
             eg.get('max_implied_prob'),
+            eg.get('over_odds'), eg.get('under_odds'),
+            eg.get('home_spread_odds'), eg.get('away_spread_odds'),
             eg.get('odds_details', ''), eg.get('odds_provider', ''),
             datetime.now().isoformat()
         ))
@@ -719,12 +725,23 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
             home_implied_prob REAL,         -- implied win probability (0.0-1.0)
             away_implied_prob REAL,
             max_implied_prob  REAL,         -- max(home, away) — used for blowout filter
+            over_odds        INTEGER,       -- over price (e.g. -142)
+            under_odds       INTEGER,       -- under price (e.g. 120)
+            home_spread_odds INTEGER,       -- home covering spread price
+            away_spread_odds INTEGER,       -- away covering spread price
             odds_details     TEXT,
             odds_provider    TEXT,
             fetched_at       TEXT,
             PRIMARY KEY (game_id)
         )
     """)
+    # Add new columns for existing databases
+    for col, typ in [("over_odds", "INTEGER"), ("under_odds", "INTEGER"),
+                     ("home_spread_odds", "INTEGER"), ("away_spread_odds", "INTEGER")]:
+        try:
+            cursor.execute(f"ALTER TABLE game_lines ADD COLUMN {col} {typ}")
+        except Exception:
+            pass  # Column already exists
     conn.commit()
 
     cursor.execute('''

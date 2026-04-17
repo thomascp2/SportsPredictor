@@ -1,0 +1,109 @@
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TUI TERMINAL — BOOKMARK 10   (2026-04-12)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SESSION SUMMARY — what was built this session
+───────────────────────────────────────────────────────
+
+1. SCOREBOARD SCROLL FIX (completed mid-implementation from last session)
+   - scoreboard_view.py / ScoreboardView
+   - _render_content now consistently returns a list of Rich markup strings
+     (the "no games" path was still returning a string — fixed)
+   - ScoreboardView.__init__ now carries _all_lines: list + _scroll_offset: int
+   - New _redraw_body() method: slices _all_lines[_scroll_offset:], joins, updates Static
+   - on_key rewritten to use _scroll_offset arithmetic (j/k=3 lines, PgDn/PgUp=20)
+     instead of broken body.scroll_down() calls
+   - _drain_pending now stores into _all_lines, resets offset, calls _redraw_body()
+   Files changed: tui/widgets/scoreboard_view.py
+
+2. GAME PREDICTIONS VIEW (GamePredView) — FULLY WIRED
+   - game_pred_view.py existed but had a SyntaxError (generator in min() w/ key= arg)
+     and was not connected to app.py at all
+   - Fixed SyntaxError: generator expression now properly parenthesized
+   - app.py: import added, Binding("g") added, GamePredView composed + hidden on mount
+   - _set_center_view() extended to handle "gamepreds" as 4th center view
+   - action_game_preds() added (toggle in/out like scoreboard/injuries)
+   - _apply_sport_filter() pushes sport filter to GamePredView (1/2/3 keys work)
+   - _hints_text() updated to include g=gamepreds
+   Files changed: tui/widgets/game_pred_view.py, tui/app.py
+
+3. GAME PREDS — TEAM IDENTIFICATION (user request: who is the favorite?)
+   - Game header now shows ELO win % for both teams:
+       VAN @ SJS   VAN 40%   SJS 60%*
+     (* = ELO favorite, bold yellow highlight)
+   - WIN/LOSE replaced with actual team abbreviations in each row:
+       MONEYLINE: WIN = home team wins → shows home abbrev
+                  LOSE = away team wins → shows away abbrev
+       SPREAD:    positive line (+1.5) = away team's spread → shows away abbrev
+                  negative line (-1.5) = home team's spread → shows home abbrev
+       TOTAL:     unchanged (OVER/UNDER already clear)
+   - Example output after fix:
+       VAN @ SJS   VAN 40%   SJS 60%*
+         TOTAL      6.5    ^ OVER   58%   +7.6%   L    60%
+         SPREAD     1.5    ^ VAN    56%   +3.6%   L    60%
+         SPREAD    -1.5    v SJS    44%   -8.4%   -    60%
+         MONEYLINE   --   ^ SJS    62%   -6.1%   ?    60%
+         MONEYLINE   --   v VAN    38%   +6.1%   -    60%
+   Files changed: tui/widgets/game_pred_view.py
+
+
+OUTSTANDING ITEMS FROM BOOKMARK 9 (still to do)
+───────────────────────────────────────────────────────
+
+Scoreboard center view:
+- [DONE] Scrolling / pagination  ✓
+- [DONE] Game predictions as separate view (g key)  ✓
+- [DONE] Sport filter (1/2/3 keys)  ✓
+- [ ] Player prop stat abbreviations still unclear (UTS, UNS, DED, RECORD, etc.)
+- [ ] Cross-sport team abbreviation collisions (PHI Phillies vs PHI Flyers) — MLB
+      players appearing in NHL games and vice versa. Guard was added for sport-level
+      filtering in _game_picks() but verify it's working end-to-end.
+- [ ] Blank real estate in scoreboard center view (~40% utilised)
+
+Standard player prop view (main grid):
+- [ ] [??] two missing chars at top of scroll bar
+- [ ] Prop type display names still too short/cryptic (RECORD, STRIKE, ALLOWE, HIT)
+- [ ] Column header says 'Spor' instead of 'Sport'
+- [ ] Hide UD / Kalshi / Disc columns (all '--', dead weight)
+- [ ] Add Team column if easy
+
+Left panel intel:
+- [ ] Old/stale INTEL section still showing below INTEL FEED (Desmond Bane phantom)
+- [ ] Player name display: "Yandy M. [DIAZ]" → should be "Yandy Diaz"
+      "Jack M." / "Witt M. [JR.]" — same name parsing bug
+- [ ] Intel sentences cut off mid-sentence in the feed as it gets crowded
+- [ ] Left sidebar injuries: trim to "MLB Arizona Blake Walston 60-Day-IL" format
+
+Center injury report:
+- [ ] Sentences still stop mid-sentence — rewrite status to be complete thought
+
+
+CURRENT CENTER VIEW MODES (g key added this session)
+───────────────────────────────────────────────────────
+  props      — default main grid (player props)
+  injuries   — n key
+  scoreboard — s key  [j/k scroll, PgDn/PgUp, 1/2/3 sport filter]
+  gamepreds  — g key  [j/k scroll, PgDn/PgUp, 1/2/3 sport filter]
+
+Right sidebar toggle: w key (watchlist ↔ live score sidebar)
+
+
+TO START NEXT SESSION
+───────────────────────────────────────────────────────
+Tell Claude:
+  1. Read tui-terminal/PreWork_Bookmark10.txt for full context
+  2. Work directory: C:/Users/thoma/SportsPredictor/tui-terminal/
+  3. Key files:
+       tui/app.py
+       tui/widgets/scoreboard_view.py
+       tui/widgets/game_pred_view.py
+       tui/widgets/main_grid.py
+       tui/widgets/context_wing.py (intel panel)
+       tui/widgets/injury_view.py
+
+  Suggested next tasks (in priority order):
+  A. Fix player name parsing in intel panel (Yandy M. [DIAZ] → Yandy Diaz)
+  B. Fix prop stat abbreviation display names (RECORD, ALLOWE, STRIKE → full names)
+  C. Fix column header 'Spor' → 'Sport', hide dead UD/Kalshi/Disc columns
+  D. Cross-sport team collision verification (is the sport-filter guard in
+     _game_picks() actually working? Check PHI Phillies vs PHI Flyers case)

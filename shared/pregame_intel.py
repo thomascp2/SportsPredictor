@@ -496,6 +496,143 @@ class PreGameIntel:
                 pass
         return {'line_moves': [], 'sharp_action': [], 'prop_moves': [], 'key_angles': []}
 
+    def fetch_season_context(self, sport: str, game_date: str, teams: List[str]) -> Dict:
+        """Fetch seeding/motivation context for each team. One Grok call covers all teams."""
+        cache_path = _cache_path_season_context(sport, game_date)
+        empty = {'team_contexts': {}, 'key_notes': [], 'fetched_at': None}
+
+        if cache_path.exists():
+            try:
+                data = json.loads(cache_path.read_text())
+                if data.get('fetched_at'):
+                    print(f'  [INTEL] Loaded cached season context for {sport.upper()} {game_date}')
+                    return data
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        if not teams:
+            return empty
+
+        print(f'  [INTEL] Fetching season context for {sport.upper()} {game_date} ({len(teams)} teams)...')
+        prompt = SEASON_CONTEXT_PROMPT.format(
+            date=game_date, league=sport.upper(),
+            year=game_date[:4],
+            teams='\n'.join(f'  - {t}' for t in teams),
+        )
+        raw = _call_grok(prompt)
+        if not raw:
+            cache_path.write_text(json.dumps(empty, indent=2))
+            return empty
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            data = json.loads(match.group()) if match else {}
+
+        result = {
+            'team_contexts': data.get('team_contexts', {}),
+            'key_notes':     data.get('key_notes', []),
+            'fetched_at':    datetime.now().isoformat(),
+            'model':         GROK_MODEL,
+        }
+        high_risk = [t for t, ctx in result['team_contexts'].items()
+                     if ctx.get('risk_level') == 'high']
+        print(f'  [INTEL] Season context: {len(result["team_contexts"])} teams, {len(high_risk)} high-risk')
+        if high_risk:
+            print(f'    Dead rubber risk: {", ".join(high_risk)}')
+        cache_path.write_text(json.dumps(result, indent=2))
+        return result
+
+    def get_season_context(self, team: str, sport: str, game_date: str) -> Dict:
+        """Return cached season context for a single team."""
+        cache_path = _cache_path_season_context(sport, game_date)
+        if cache_path.exists():
+            try:
+                data = json.loads(cache_path.read_text())
+                return data.get('team_contexts', {}).get(team.upper(), {})
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def get_usage_beneficiaries(self, absent_players: List[str], team: str,
+                                sport: str, game_date: str) -> List[Dict]:
+        """When stars are OUT, identify teammates who absorb usage via Grok."""
+        if not absent_players:
+            return []
+
+        cache_path = CACHE_DIR / f'{sport}_{game_date}_usage_{team.upper()}.json'
+        if cache_path.exists():
+            try:
+                data = json.loads(cache_path.read_text())
+                if data.get('fetched_at'):
+                    return data.get('beneficiaries', [])
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        absent_str = ', '.join(absent_players)
+        prompt = USAGE_BENEFICIARY_PROMPT.format(
+            date=game_date, team=team.upper(), league=sport.upper(),
+            absent_players='\n'.join(f'  - {p}' for p in absent_players),
+            absent_str=absent_str,
+        )
+        raw = _call_grok(prompt)
+        if not raw:
+            return []
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            data = json.loads(match.group()) if match else {}
+
+        beneficiaries = data.get('beneficiaries', [])
+        cache_path.write_text(json.dumps(
+            {'beneficiaries': beneficiaries, 'fetched_at': datetime.now().isoformat()},
+            indent=2
+        ))
+        return beneficiaries
+
+    def get_situation_flag(self, player_name: str, team: str,
+                           sport: str, game_date: str) -> tuple:
+        """Return (flag, modifier) combining team motivation + player injury status."""
+        ctx = self.get_season_context(team, sport, game_date)
+        motivation = ctx.get('motivation_score', 0.5)
+        if ctx.get('seeding_status') == 'eliminated':
+            motivation = min(motivation, 0.15)
+        injury_status = self.get_status(player_name, sport, game_date)
+        return _situation_flag_from_context(injury_status, motivation)
+
+    def get_situation_notes(self, player_name: str, team: str,
+                            sport: str, game_date: str) -> str:
+        """Return human-readable situational note for a player pick."""
+        ctx = self.get_season_context(team, sport, game_date)
+        if not ctx:
+            return ''
+        parts = []
+        status_labels = {
+            'locked_in': 'seed locked', 'clinched_playoffs': 'playoffs clinched',
+            'fighting_for_seeding': 'fighting for seeding',
+            'bubble': 'BUBBLE -- must win', 'eliminated': 'eliminated',
+        }
+        label = status_labels.get(ctx.get('seeding_status', ''), '')
+        seed = ctx.get('seed')
+        if seed and label:
+            parts.append(f'{team.upper()} {seed}-seed {label}')
+        elif label:
+            parts.append(f'{team.upper()} {label}')
+        if ctx.get('games_remaining') is not None:
+            parts.append(f'{ctx["games_remaining"]} games left')
+        if ctx.get('season_ending_outs'):
+            parts.append(f'{", ".join(ctx["season_ending_outs"][:3])} out for season')
+        narrative = ctx.get('rest_narrative', '')
+        if narrative and len(narrative) < 80:
+            parts.append(narrative)
+        player_status = self.get_status(player_name, sport, game_date)
+        if player_status != 'ACTIVE':
+            parts.append(f'{player_name}: {player_status}')
+        return ' -- '.join(parts) if parts else ''
+
 
 # ── Discord poster ────────────────────────────────────────────────────────────
 
@@ -611,7 +748,114 @@ def _cache_path_betting(sport: str, game_date: str) -> Path:
     return CACHE_DIR / f'{sport}_{game_date}_betting.json'
 
 
-# ── Main class (extended) ─────────────────────────────────────────────────────
+def _cache_path_season_context(sport: str, game_date: str) -> Path:
+    return CACHE_DIR / f'{sport}_{game_date}_season_context.json'
+
+
+# ── Season context prompts ────────────────────────────────────────────────────
+
+SEASON_CONTEXT_PROMPT = """You are a professional sports analyst evaluating
+end-of-season team motivation and roster availability. Today is {date}.
+
+Use your live web search RIGHT NOW to assess the playoff/seeding situation
+for each team listed.
+
+For EACH team below, search:
+1. "{team} {league} standings games remaining {date}"
+2. "{team} playoff seeding clinched locked eliminated {year}"
+3. "{team} resting starters load management end of season"
+4. "{team} players out for rest of regular season"
+5. Coach quotes about rest, development, or playing starters
+
+Teams to assess:
+{teams}
+
+SEEDING STATUS values (pick exactly one per team):
+- "locked_in": Exact seed locked -- cannot move up or down
+- "clinched_playoffs": In playoffs but seed still moveable
+- "fighting_for_seeding": Actively competing for a better seed
+- "bubble": On the edge of making/missing play-in or playoffs
+- "eliminated": Mathematically eliminated
+- "unknown": Cannot determine
+
+MOTIVATION SCORE: 0.0 = no incentive, 1.0 = maximum urgency
+  locked_in -> 0.10-0.25
+  clinched_playoffs -> 0.40-0.60
+  fighting_for_seeding -> 0.65-0.80
+  bubble -> 0.85-1.00
+  eliminated -> 0.05-0.15
+
+Return ONLY raw JSON -- no markdown, no explanation:
+
+{{
+  "team_contexts": {{
+    "TEAM_ABBR": {{
+      "games_remaining": 4,
+      "seeding_status": "locked_in",
+      "seed": 4,
+      "can_move_up": false,
+      "can_fall": false,
+      "motivation_score": 0.15,
+      "season_ending_outs": ["Player Name"],
+      "rest_narrative": "Brief description of rest/load management situation",
+      "risk_level": "high"
+    }}
+  }},
+  "key_notes": ["One-sentence situational note, max 5"]
+}}
+"""
+
+
+USAGE_BENEFICIARY_PROMPT = """You are an NBA/NHL usage and role analyst.
+Today is {date}.
+
+The following players are OUT for {team} ({league}):
+{absent_players}
+
+Use your live web search to find who absorbs their usage:
+1. "{team} lineup changes without {absent_str}"
+2. "{team} usage rate distribution without {absent_str}"
+3. Which teammates absorb extra shots, assists, and minutes
+
+Return ONLY raw JSON:
+
+{{
+  "beneficiaries": [
+    {{
+      "player": "Full Player Name",
+      "usage_boost_pct": 15,
+      "affected_props": ["points", "assists"],
+      "direction": "OVER",
+      "notes": "Brief reason why this player benefits"
+    }}
+  ]
+}}
+
+Return empty list if absences don't meaningfully shift usage.
+"""
+
+
+def _situation_flag_from_context(injury_status: str, motivation_score: float) -> tuple:
+    """
+    Derive (situation_flag, situation_modifier) from injury status + motivation.
+    modifier is ADVISORY ONLY -- never applied to DB predictions.
+    """
+    if motivation_score <= 0.25:
+        if injury_status in ('OUT', 'DOUBTFUL'):
+            return 'DEAD_RUBBER', -0.15
+        elif injury_status == 'QUESTIONABLE':
+            return 'DEAD_RUBBER', -0.10
+        else:
+            return 'DEAD_RUBBER', -0.06
+    elif motivation_score <= 0.50:
+        return 'REDUCED_STAKES', -0.03
+    elif motivation_score >= 0.85:
+        if injury_status == 'QUESTIONABLE':
+            return 'HIGH_STAKES', +0.05
+        return 'HIGH_STAKES', +0.03
+    else:
+        return 'NORMAL', 0.0
+
 
 if __name__ == '__main__':
     import argparse

@@ -61,19 +61,25 @@ class ProductionPredictor:
         }
 
     def _is_model_degenerate(self, metadata) -> bool:
-        """Return True if model is degenerate (predicts one class with near-certainty).
+        """Return True if model should be blocked from production use.
 
-        Degenerate models were observed in NBA threes (Brier=0.0000 after Mar-15 retrain).
-        They pass accuracy thresholds on skewed data but are useless in production — one
-        direction wins 100% of the time and the model just memorised that.
-
-        Thresholds (conservative):
-          - Brier score < 0.01: outputs near-0 or near-1 probabilities exclusively
-          - Test accuracy > 0.98: almost certainly fit to a degenerate class distribution
+        Three failure modes:
+          1. Brier < 0.01: outputs near-0 or near-1 probs exclusively (always-one-class)
+          2. Accuracy > 0.98: memorised a degenerate class distribution
+          3. improvement_over_baseline <= 0: model hurts more than always-majority-class.
+             Measured against always-majority-class baseline (post-2026-04-15 models).
+             For pre-fix models the stored baseline was the stat model — those may have
+             inflated improvement numbers, so we also apply a hard accuracy floor.
+          4. Test accuracy < 0.50: worse than a coin flip on the test set, actively harmful.
         """
         if metadata.test_brier_score is not None and metadata.test_brier_score < 0.01:
             return True
         if metadata.test_accuracy is not None and metadata.test_accuracy > 0.98:
+            return True
+        if metadata.test_accuracy is not None and metadata.test_accuracy < 0.50:
+            return True
+        if (metadata.improvement_over_baseline is not None
+                and metadata.improvement_over_baseline <= 0.0):
             return True
         return False
 
@@ -325,12 +331,22 @@ class ProductionPredictor:
         """
         Prepare features in the order expected by the model.
 
-        Handles missing features by using sensible default values.
+        Tries three name lookups before falling back to a sensible default:
+          1. Exact match: features[name]
+          2. Add f_ prefix: features['f_' + name]   (new naming convention)
+          3. Strip f_ prefix: features[name[2:]]     (old naming convention)
+        This prevents feature-name drift between training eras from causing silent
+        0.0 substitutions for critical features like sog_l10 / f_l10_avg.
         """
         feature_vector = []
 
         for feature_name in expected_order:
+            # Try exact name first, then cross-naming-convention fallbacks
             value = features.get(feature_name)
+            if value is None:
+                value = features.get(f"f_{feature_name}")
+            if value is None and feature_name.startswith("f_"):
+                value = features.get(feature_name[2:])
 
             if value is None:
                 # Use sensible defaults based on feature type

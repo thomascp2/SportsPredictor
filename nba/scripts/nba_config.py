@@ -97,7 +97,7 @@ SCHEDULE_CACHE_MAX_AGE_DAYS = 7
 
 def nba_has_games(target_date: str, force_refresh: bool = False) -> tuple:
     """
-    Check if there are regular-season NBA games on a given date.
+    Check if there are NBA games (regular season or Play-In) on a given date.
 
     Uses a locally cached copy of the full NBA season schedule from the
     NBA CDN. The cache refreshes every 7 days (or on force_refresh).
@@ -188,8 +188,8 @@ def _fetch_and_cache_schedule() -> dict | None:
             reg_season_count = 0
             for game in gd.get('games', []):
                 game_id = str(game.get('gameId', ''))
-                # Regular season game IDs start with '002'
-                if game_id.startswith('002'):
+                # Regular season: '002', Play-In: '005', Playoffs: '004'
+                if game_id.startswith('002') or game_id.startswith('004') or game_id.startswith('005'):
                     reg_season_count += 1
 
             if reg_season_count > 0:
