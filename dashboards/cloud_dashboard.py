@@ -476,11 +476,16 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
             if sport_key == "nhl" and _pp_name_map:
                 _last = local_name.split()[-1].lower() if local_name else ""
                 local_name = _pp_name_map.get(_last, local_name)
-            odds_t = (row[5] or "standard").lower()
-            prob   = float(row[7] or 0)
-            be     = _PROJECT_BREAK_EVEN.get(odds_t, _PROJECT_BREAK_EVEN["standard"])
-            edge   = round((prob - be) * 100, 2)
-            if prob < min_prob or edge < min_edge:
+            odds_t    = (row[5] or "standard").lower()
+            direction = row[6] or "OVER"
+            raw_prob  = float(row[7] or 0)
+            # NBA/NHL store P(OVER) — convert to directional confidence for edge/filter.
+            # supabase_sync.py uses the same formula (line ~150).
+            conf = raw_prob if direction == "OVER" else (1.0 - raw_prob)
+            conf = min(conf, 0.95)
+            be   = _PROJECT_BREAK_EVEN.get(odds_t, _PROJECT_BREAK_EVEN["standard"])
+            edge = round((conf - be) * 100, 2)
+            if conf < min_prob or edge < min_edge:
                 continue
             rows.append({
                 "player_name":    local_name,
@@ -489,8 +494,8 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
                 "prop_type":      row[3] or "",
                 "line":           row[4],
                 "odds_type":      odds_t,
-                "ai_prediction":  row[6] or "",
-                "ai_probability": prob,
+                "ai_prediction":  direction,
+                "ai_probability": conf,
                 "ai_edge":        edge,
                 "ai_tier":        row[8] or "—",
                 "ai_ev_4leg":     None,
