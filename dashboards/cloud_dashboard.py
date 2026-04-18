@@ -2406,51 +2406,60 @@ def main():
             show_disagree = st.checkbox("Disagreements only", key="mlcmp_disagree")
 
         # ── Build comparison rows ────────────────────────────────────────────
+        # Drive from stat_df (players actually playing today per the stat model).
+        # ml_df contains every player in the feature store regardless of schedule —
+        # iterating it would surface pitchers who pitched yesterday, etc.
         rows = []
-        for _, ml_row in ml_df.iterrows():
-            prop = ml_row["prop"]
+        if stat_df.empty:
+            st.info("No stat model predictions for this date — cannot build comparison.")
+            return
+
+        for _, stat_row in stat_df.iterrows():
+            prop  = stat_row["prop"]
+            pname = stat_row["player_name"]
+            line  = float(stat_row["line"])
+
             if sel_prop != "All" and prop != sel_prop:
                 continue
-            pname = ml_row.get("player_name") or "Unknown"
             if sel_player != "All players" and pname != sel_player:
                 continue
-            mu = float(ml_row["predicted_value"]) if pd.notna(ml_row["predicted_value"]) else 0.0
 
-            for line in PROP_LINES.get(prop, []):
-                ml_pover = _p_over(mu, line)
-                ml_pred  = "OVER" if ml_pover >= 0.5 else "UNDER"
+            stat_prob_pct = float(stat_row["stat_prob_pct"])
+            stat_pred_dir = stat_row["prediction"]
 
-                # Match stat model row (same player + prop + line)
-                stat_prob_pct = None
-                stat_pred_dir = None
-                if not stat_df.empty:
-                    match = stat_df[
-                        (stat_df["player_name"] == pname) &
-                        (stat_df["prop"] == prop) &
-                        (stat_df["line"].astype(float) == float(line))
-                    ]
-                    if not match.empty:
-                        stat_prob_pct = float(match.iloc[0]["stat_prob_pct"])
-                        stat_pred_dir = match.iloc[0]["prediction"]
+            # Look up ML prediction for this player + prop
+            ml_pover = None
+            ml_pred  = None
+            mu       = None
+            if not ml_df.empty:
+                ml_match = ml_df[
+                    (ml_df["player_name"] == pname) &
+                    (ml_df["prop"] == prop)
+                ]
+                if not ml_match.empty:
+                    mu = float(ml_match.iloc[0]["predicted_value"])
+                    if pd.notna(mu):
+                        ml_pover = _p_over(mu, line)
+                        ml_pred  = "OVER" if ml_pover >= 0.5 else "UNDER"
 
-                agree = None
-                if stat_pred_dir:
-                    agree = "YES" if ml_pred == stat_pred_dir else "NO"
+            agree = None
+            if ml_pred and stat_pred_dir:
+                agree = "YES" if ml_pred == stat_pred_dir else "NO"
 
-                if show_disagree and agree != "NO":
-                    continue
+            if show_disagree and agree != "NO":
+                continue
 
-                rows.append({
-                    "Player":       pname,
-                    "Prop":         prop,
-                    "Line":         line,
-                    "ML Expected":  round(mu, 3),
-                    "ML P(Over)%":  round(ml_pover * 100, 1),
-                    "ML Pred":      ml_pred,
-                    "Stat Prob%":   stat_prob_pct,
-                    "Stat Pred":    stat_pred_dir,
-                    "Agree":        agree,
-                })
+            rows.append({
+                "Player":       pname,
+                "Prop":         prop,
+                "Line":         line,
+                "ML Expected":  round(mu, 3) if mu is not None else None,
+                "ML P(Over)%":  round(ml_pover * 100, 1) if ml_pover is not None else None,
+                "ML Pred":      ml_pred or "—",
+                "Stat Prob%":   stat_prob_pct,
+                "Stat Pred":    stat_pred_dir,
+                "Agree":        agree,
+            })
 
         if not rows:
             st.info("No comparison data available — check filters or run predict_to_db.py.")
