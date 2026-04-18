@@ -13,7 +13,7 @@
 ::   2:45 PM  - before MLB afternoon sync (3:00 PM)
 
 set REPO=C:\Users\thoma\SportsPredictor
-set VPS_IP=YOUR_VPS_IP
+set VPS_IP=159.203.93.232
 set VPS_PATH=/opt/SportsPredictor/shared/prizepicks_lines.db
 set LOCAL_DB=%REPO%\shared\prizepicks_lines.db
 set PYTHON=C:\Users\thoma\AppData\Local\Programs\Python\Python313\python.exe
