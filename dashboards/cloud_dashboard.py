@@ -435,7 +435,7 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
         endpoint = base_url.rstrip("/") + "/v2/pipeline"
         sql = (
             "SELECT player_name, team, opponent, prop_type, line, odds_type, "
-            "prediction, probability, ai_tier, game_time "
+            "prediction, probability, ai_tier, model_version "
             "FROM predictions "
             "WHERE game_date = ? AND is_smart_pick = 1"
         )
@@ -503,7 +503,8 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
             edge = round((conf - be) * 100, 2)
             if conf < min_prob or edge < min_edge:
                 continue
-            game_time_raw = _v(raw_row[9]) if len(raw_row) > 9 else None
+            mv = _v(raw_row[9]) if len(raw_row) > 9 else None
+            model_src = "ML" if mv and mv.startswith("ml_") else "STAT"
             rows.append({
                 "player_name":    local_name,
                 "team":           _v(raw_row[1]) or "",
@@ -513,16 +514,21 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
                 "odds_type":      odds_t,
                 "ai_prediction":  direction,
                 "ai_probability": conf,
+                "pp_implied":     be,
                 "ai_edge":        edge,
                 "ai_tier":        _v(raw_row[8]) or "—",
                 "ai_ev_4leg":     None,
-                "game_time":      game_time_raw,
+                "game_time":      None,
+                "model_source":   model_src,
             })
         return rows
 
     turso_rows = _turso_picks_http(sport.lower())
 
     if turso_rows:
+        # Load always-UNDER baselines for this sport (cached 30min)
+        _baselines = fetch_under_baselines(sport.lower())
+
         _filtered = []
         for p in turso_rows:
             if direction and p["ai_prediction"] != direction:
@@ -531,16 +537,37 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
             if tier_filter and tier not in tier_filter:
                 continue
             p["matchup"] = f"{p['team']} vs {p['opponent']}"
+            # Compute naive baseline quality columns
+            _key = (p["prop_type"], str(p["line"]))
+            _base = _baselines.get(_key)
+            if _base:
+                _ur, _n = _base
+                _naive = _ur if p["ai_prediction"] == "UNDER" else (1.0 - _ur)
+                p["naive_rate"]  = _naive
+                p["vs_naive"]    = round((p["ai_probability"] - _naive) * 100, 1)
+                p["baseline_n"]  = _n
+            else:
+                p["naive_rate"]  = None
+                p["vs_naive"]    = None
+                p["baseline_n"]  = 0
             _filtered.append(p)
         if _filtered:
             df = pd.DataFrame(_filtered)
             df["Prob"]     = (df["ai_probability"] * 100).round(1).astype(str) + "%"
+            df["PP Impl"]  = (df["pp_implied"] * 100).round(0).astype(int).astype(str) + "%"
             df["Edge"]     = df["ai_edge"].round(1).apply(lambda x: f"+{x}%" if x >= 0 else f"{x}%")
             df["EV 4-leg"] = "---"
             df["Line"]     = df["ai_prediction"] + " " + df["line"].astype(str)
             df["Prop"]     = df["prop_type"].str.upper().str.replace("_", " ")
             df["Matchup"]  = df["matchup"]
             df["Time"]     = df["game_time"].apply(_fmt_time)
+            df["Naive%"]   = df["naive_rate"].apply(
+                lambda x: f"{x*100:.0f}%" if x is not None else "—"
+            )
+            df["vs Naive"] = df["vs_naive"].apply(
+                lambda x: f"+{x}%" if x is not None and x >= 0 else (f"{x}%" if x is not None else "—")
+            )
+            df["Src"]      = df["model_source"]
             return df
 
     # ── 2. SmartPickSelector (local SQLite — only fresh when pipeline runs locally) ──
@@ -628,43 +655,66 @@ def fetch_all_lines_for_players(
     game_date: str,
     player_prop_pairs: tuple,   # tuple of (player_name, prop_type) — must be tuple for cache hashing
 ) -> pd.DataFrame:
-    """Fetch ALL lines for qualifying player-prop combos (no edge/prob filter)."""
-    sb = get_supabase()
-    if sb is None or not player_prop_pairs:
+    """Fetch ALL lines for qualifying player-prop combos from Turso (no smart-pick filter)."""
+    if not player_prop_pairs:
         return pd.DataFrame()
 
-    player_names = list({pair[0] for pair in player_prop_pairs})
+    # Load .env so Turso credentials are available
+    import pathlib as _pl
+    _root = _pl.Path(__file__).parent.parent
+    _env = _root / ".env"
+    if _env.exists():
+        for _ln in _env.read_text(encoding="utf-8").splitlines():
+            _ln = _ln.strip()
+            if _ln and not _ln.startswith("#") and "=" in _ln:
+                _k, _, _v = _ln.partition("=")
+                _os.environ.setdefault(_k.strip(), _v.strip())
 
-    # Paginate — same pattern as fetch_recent_results()
-    all_rows, page_size, offset = [], 1000, 0
-    while True:
-        r = (sb.table("daily_props")
-               .select("player_name,prop_type,team,opponent,line,odds_type,"
-                       "ai_prediction,ai_probability,ai_edge,game_time")
-               .eq("sport", sport)
-               .eq("game_date", game_date)
-               .neq("status", "cancelled")
-               .lt("ai_probability", 0.95)   # same noise-floor as fetch_picks
-               .in_("player_name", player_names)
-               .range(offset, offset + page_size - 1)
-               .execute())
-        batch = r.data or []
-        all_rows.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
+    valid_pairs = set(player_prop_pairs)
+    valid_players = list({pair[0] for pair in valid_pairs})
+    valid_props   = list({pair[1] for pair in valid_pairs})
 
-    if not all_rows:
+    sql = (
+        "SELECT player_name, prop_type, team, opponent, line, odds_type, "
+        "prediction, probability "
+        "FROM predictions "
+        "WHERE game_date = ?"
+    )
+    raw_rows = _turso_request(sport.lower(), sql, [game_date])
+    if not raw_rows:
         return pd.DataFrame()
 
-    df = pd.DataFrame(all_rows)
+    rows = []
+    for raw in raw_rows:
+        pname   = _turso_cell(raw[0]) or ""
+        pt      = _turso_cell(raw[1]) or ""
+        if (pname, pt) not in valid_pairs:
+            continue
+        odds_t  = (_turso_cell(raw[5]) or "standard").lower()
+        pred    = _turso_cell(raw[6]) or "OVER"
+        raw_prob = float(_turso_cell(raw[7]) or 0)
+        conf    = raw_prob if pred == "OVER" else (1.0 - raw_prob)
+        conf    = min(conf, 0.95)
+        be      = _PROJECT_BREAK_EVEN.get(odds_t, _PROJECT_BREAK_EVEN["standard"])
+        edge    = round((conf - be) * 100, 2)
+        rows.append({
+            "player_name":    pname,
+            "prop_type":      pt,
+            "team":           _turso_cell(raw[2]) or "",
+            "opponent":       _turso_cell(raw[3]) or "",
+            "line":           _turso_cell(raw[4]),
+            "odds_type":      odds_t,
+            "ai_prediction":  pred,
+            "ai_probability": conf,
+            "ai_edge":        edge,
+            "game_time":      None,
+        })
 
-    # Post-filter: keep only prop_types that actually qualified
-    # (prevents showing rebounds lines for a player who only qualified on points)
-    valid = set(player_prop_pairs)
-    df = df[df.apply(lambda r: (r["player_name"], r["prop_type"]) in valid, axis=1)].copy()
+    if not rows:
+        return pd.DataFrame()
 
-    df["Time"] = df["game_time"].apply(_fmt_time)
+    df = pd.DataFrame(rows)
+    df["Time"]    = df["game_time"].apply(_fmt_time)
     df["Matchup"] = df["team"] + " vs " + df["opponent"]
     return df
 
@@ -672,6 +722,76 @@ def fetch_all_lines_for_players(
 # Break-even rates — sourced from shared/project_config.py
 _BREAK_EVEN = _PROJECT_BREAK_EVEN
 _ODDS_ABBREV = {"standard": "STD", "goblin": "GOB", "demon": "DEM"}
+
+_TURSO_SPORT_CFG = {
+    "nhl":  ("TURSO_NHL_URL",  "TURSO_NHL_TOKEN"),
+    "nba":  ("TURSO_NBA_URL",  "TURSO_NBA_TOKEN"),
+    "mlb":  ("TURSO_MLB_URL",  "TURSO_MLB_TOKEN"),
+    "golf": ("TURSO_GOLF_URL", "TURSO_GOLF_TOKEN"),
+}
+
+
+def _turso_request(sport_key: str, sql: str, args: list = None) -> list:
+    """Synchronous Turso HTTP pipeline query. Returns raw row list."""
+    import requests as _rq
+    url_env, tok_env = _TURSO_SPORT_CFG.get(sport_key.lower(), (None, None))
+    if not url_env:
+        return []
+    base_url = _os.getenv(url_env, "").replace("libsql://", "https://")
+    token = _os.getenv(tok_env, "")
+    if not base_url or not token:
+        return []
+    stmt = {"sql": sql}
+    if args:
+        stmt["args"] = [{"type": "text", "value": str(a)} for a in args]
+    payload = {"requests": [{"type": "execute", "stmt": stmt}, {"type": "close"}]}
+    try:
+        resp = _rq.post(
+            base_url.rstrip("/") + "/v2/pipeline",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload, timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()["results"][0]["response"]["result"]["rows"]
+    except Exception:
+        return []
+
+
+def _turso_cell(cell):
+    """Unwrap Turso HTTP cell (dict with type/value or bare scalar)."""
+    return cell.get("value") if isinstance(cell, dict) else cell
+
+
+@st.cache_data(ttl=1800)
+def fetch_under_baselines(sport: str) -> dict:
+    """
+    Historical UNDER rate per (prop_type, line) from Turso prediction_outcomes.
+    Returns {(prop_type, line_str): (under_rate_float, sample_size_int)}.
+    Under rate = fraction of actual results that were UNDER the line.
+    """
+    sql = (
+        "SELECT prop_type, line, "
+        "SUM(CASE WHEN (outcome='HIT' AND prediction='UNDER') OR "
+        "         (outcome='MISS' AND prediction='OVER') THEN 1.0 ELSE 0 END) / "
+        "NULLIF(CAST(COUNT(*) AS REAL), 0) AS under_rate, "
+        "COUNT(*) AS n "
+        "FROM prediction_outcomes "
+        "WHERE outcome IN ('HIT','MISS') "
+        "GROUP BY prop_type, line"
+    )
+    rows = _turso_request(sport.lower(), sql)
+    result = {}
+    for raw in rows:
+        pt = _turso_cell(raw[0]) or ""
+        ln = str(_turso_cell(raw[1]) or "")
+        ur = _turso_cell(raw[2])
+        n  = _turso_cell(raw[3])
+        if pt and ur is not None:
+            try:
+                result[(pt, ln)] = (float(ur), int(n or 0))
+            except (TypeError, ValueError):
+                pass
+    return result
 
 
 def render_line_cards(all_lines_df: pd.DataFrame, qualifying_df: pd.DataFrame):
@@ -755,16 +875,37 @@ def render_line_cards(all_lines_df: pd.DataFrame, qualifying_df: pd.DataFrame):
 
 @st.cache_data(ttl=300)
 def fetch_performance(sport: str) -> pd.DataFrame:
-    sb = get_supabase()
-    if sb is None:
+    """Compute daily accuracy from local SQLite prediction_outcomes (last 30 days)."""
+    import os as _os2
+    PROJECT_ROOT = _os2.path.dirname(_os2.path.dirname(_os2.path.abspath(__file__)))
+    db_map = {
+        "NBA": _os2.path.join(PROJECT_ROOT, "nba", "database", "nba_predictions.db"),
+        "NHL": _os2.path.join(PROJECT_ROOT, "nhl", "database", "nhl_predictions_v2.db"),
+        "MLB": _os2.path.join(PROJECT_ROOT, "mlb", "database", "mlb_predictions.db"),
+        "GOLF": _os2.path.join(PROJECT_ROOT, "golf", "database", "golf_predictions.db"),
+    }
+    db_path = db_map.get(sport.upper(), "")
+    if not _os2.path.exists(db_path):
         return pd.DataFrame()
-    r = (sb.table("model_performance")
-           .select("*")
-           .eq("sport", sport)
-           .order("game_date", desc=True)
-           .limit(30)
-           .execute())
-    return pd.DataFrame(r.data) if r.data else pd.DataFrame()
+    try:
+        import sqlite3 as _sq3p
+        conn = _sq3p.connect(db_path)
+        df = pd.read_sql_query(
+            """SELECT game_date,
+                      SUM(CASE WHEN outcome='HIT' THEN 1.0 ELSE 0 END) /
+                      NULLIF(CAST(COUNT(*) AS REAL), 0) AS accuracy,
+                      COUNT(*) AS total_picks
+               FROM prediction_outcomes
+               WHERE outcome IN ('HIT','MISS')
+               GROUP BY game_date
+               ORDER BY game_date DESC
+               LIMIT 30""",
+            conn,
+        )
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=300)
@@ -818,36 +959,48 @@ def fetch_pnl_local(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def fetch_recent_results(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """Fetch graded results between start_date and end_date (inclusive).
-    Pages through all results to avoid the 1000-row Supabase default limit.
-    """
-    sb = get_supabase()
-    if sb is None:
+    """Fetch graded smart-pick results from local SQLite (all history, no row limit)."""
+    import os as _os3
+    PROJECT_ROOT = _os3.path.dirname(_os3.path.dirname(_os3.path.abspath(__file__)))
+    db_map = {
+        "NBA": _os3.path.join(PROJECT_ROOT, "nba", "database", "nba_predictions.db"),
+        "NHL": _os3.path.join(PROJECT_ROOT, "nhl", "database", "nhl_predictions_v2.db"),
+        "MLB": _os3.path.join(PROJECT_ROOT, "mlb", "database", "mlb_predictions.db"),
+        "GOLF": _os3.path.join(PROJECT_ROOT, "golf", "database", "golf_predictions.db"),
+    }
+    db_path = db_map.get(sport.upper(), "")
+    if not _os3.path.exists(db_path):
         return pd.DataFrame()
-
-    all_rows = []
-    page_size = 1000
-    offset = 0
-
-    while True:
-        r = (sb.table("daily_props")
-               .select("game_date,ai_prediction,ai_tier,result,ai_probability,prop_type,actual_value,odds_type")
-               .eq("sport", sport)
-               .eq("is_smart_pick", True)   # only picks that passed suppression + edge filter
-               .gte("game_date", start_date)
-               .lte("game_date", end_date)
-               .not_.is_("result", "null")
-               .not_.is_("actual_value", "null")  # exclude ungraded rows; keep actual_value=0 (valid UNDER hits)
-               .order("game_date", desc=False)
-               .range(offset, offset + page_size - 1)
-               .execute())
-        batch = r.data or []
-        all_rows.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-
-    return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
+    try:
+        import sqlite3 as _sq3r
+        conn = _sq3r.connect(db_path)
+        df = pd.read_sql_query(
+            """SELECT o.game_date,
+                      o.prediction        AS ai_prediction,
+                      p.ai_tier,
+                      o.outcome           AS result,
+                      p.probability       AS ai_probability,
+                      o.prop_type,
+                      o.actual_value,
+                      o.odds_type
+               FROM prediction_outcomes o
+               JOIN predictions p
+                 ON p.game_date   = o.game_date
+                AND p.player_name = o.player_name
+                AND p.prop_type   = o.prop_type
+                AND p.line        = o.line
+               WHERE o.game_date BETWEEN ? AND ?
+                 AND p.is_smart_pick = 1
+                 AND o.outcome IN ('HIT','MISS')
+                 AND o.actual_value IS NOT NULL
+               ORDER BY o.game_date""",
+            conn,
+            params=(start_date, end_date),
+        )
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=60)
@@ -1663,12 +1816,6 @@ def main():
         unsafe_allow_html=True,
     )
 
-    sb = get_supabase()
-    if sb is None:
-        st.error("Supabase not configured. Set SUPABASE_URL and SUPABASE_KEY.")
-        st.info("Local run: set env vars.  Streamlit Cloud: add in app Secrets UI.")
-        return
-
     # ── Top-level tabs ────────────────────────────────────────────────────────
     tab_top, tab_nhl, tab_nba, tab_mlb, tab_golf, tab_statbot, tab_perf, tab_system = st.tabs(
         ["Top Plays", "NHL", "NBA", "MLB", "Golf", "StatBot", "Performance", "System"]
@@ -2031,15 +2178,24 @@ def main():
 
         pt1, pt2, pt3, pt4 = st.tabs(["All Picks", "By Prop", "Parlay Builder", "Line Compare"])
 
+        # Quality columns are present when picks came from Turso path
+        _has_quality = "PP Impl" in df.columns and "Naive%" in df.columns
         display_cols = ["player_name", "Matchup", "Time", "Prop", "Line",
-                        "odds_type", "Prob", "Edge", "ai_tier", "EV 4-leg"]
-        col_labels = {"player_name": "Player", "odds_type": "Type", "ai_tier": "Tier"}
+                        "odds_type", "Prob", "PP Impl", "Edge", "Naive%",
+                        "vs Naive", "Src", "ai_tier"]
+        if not _has_quality:
+            display_cols = ["player_name", "Matchup", "Time", "Prop", "Line",
+                            "odds_type", "Prob", "Edge", "ai_tier", "EV 4-leg"]
+        col_labels = {"player_name": "Player", "odds_type": "Type", "ai_tier": "Tier",
+                      "PP Impl": "PP BE%", "Naive%": "Naive", "vs Naive": "vs Naive",
+                      "Src": "Src"}
 
         with pt1:
             sort_by = st.selectbox("Sort by", ["Edge", "Probability", "Tier"], key=f"{kp}_sort_all")
             sort_map = {"Edge": "ai_edge", "Probability": "ai_probability", "Tier": "ai_tier"}
             df_sorted = df.sort_values(sort_map[sort_by], ascending=(sort_by == "Tier"))
-            st.dataframe(df_sorted[display_cols].rename(columns=col_labels),
+            _safe_cols = [c for c in display_cols if c in df_sorted.columns]
+            st.dataframe(df_sorted[_safe_cols].rename(columns=col_labels),
                          use_container_width=True, hide_index=True, height=420)
 
         with pt2:
