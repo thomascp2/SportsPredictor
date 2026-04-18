@@ -155,9 +155,24 @@ async def picks(ctx, sport: str = 'nba', game_date: str = None):
             await ctx.send(f"```No high-edge picks found for {sport} on {game_date}```")
             return
 
-        # Generate and send Discord message
+        # Generate and send Discord message — split if over 2000 char limit
         message = selector.generate_discord_message(picks_list, game_date)
-        await ctx.send(message)
+        if len(message) <= 2000:
+            await ctx.send(message)
+        else:
+            # Split on double newlines to avoid cutting mid-pick
+            chunks = []
+            current = ""
+            for line in message.split('\n'):
+                if len(current) + len(line) + 1 > 1900:
+                    chunks.append(current)
+                    current = line + '\n'
+                else:
+                    current += line + '\n'
+            if current:
+                chunks.append(current)
+            for chunk in chunks:
+                await ctx.send(chunk)
 
     except Exception as e:
         await ctx.send(f"```Error: {str(e)}```")
