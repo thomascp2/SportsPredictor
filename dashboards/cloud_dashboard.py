@@ -414,7 +414,7 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
                 _k, _, _v = _line.partition("=")
                 _os.environ.setdefault(_k.strip(), _v.strip())
 
-    # ── 1. Turso primary path ─────────────────────────────────────────────────
+    # ── 1. Turso primary path (synchronous HTTP — no asyncio, works in Streamlit) ──
     _TURSO_CFG = {
         "nhl":  ("TURSO_NHL_URL",  "TURSO_NHL_TOKEN"),
         "nba":  ("TURSO_NBA_URL",  "TURSO_NBA_TOKEN"),
@@ -422,35 +422,49 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
         "golf": ("TURSO_GOLF_URL", "TURSO_GOLF_TOKEN"),
     }
 
-    async def _turso_picks(sport_key: str) -> list:
-        try:
-            import libsql_client as _lc
-        except ImportError:
-            return []
+    def _turso_picks_http(sport_key: str) -> list:
+        """Query Turso via HTTP pipeline API — synchronous, no asyncio needed."""
+        import requests as _req
         url_env, tok_env = _TURSO_CFG.get(sport_key, (None, None))
         if not url_env:
             return []
-        url   = _os.getenv(url_env, "").replace("libsql://", "https://")
-        token = _os.getenv(tok_env, "")
-        if not url or not token:
+        base_url = _os.getenv(url_env, "").replace("libsql://", "https://")
+        token    = _os.getenv(tok_env, "")
+        if not base_url or not token:
             return []
-        client = _lc.create_client(url=url, auth_token=token)
+        endpoint = base_url.rstrip("/") + "/v2/pipeline"
+        sql = (
+            "SELECT player_name, team, opponent, prop_type, line, odds_type, "
+            "prediction, probability, ai_tier, game_time "
+            "FROM predictions "
+            "WHERE game_date = ? AND is_smart_pick = 1"
+        )
+        payload = {
+            "requests": [
+                {"type": "execute", "stmt": {
+                    "sql": sql,
+                    "args": [{"type": "text", "value": game_date}],
+                }},
+                {"type": "close"},
+            ]
+        }
         try:
-            res = await client.execute(
-                "SELECT player_name, team, opponent, prop_type, line, odds_type, "
-                "prediction, probability, ai_tier, game_time "
-                "FROM predictions "
-                "WHERE game_date = ? AND is_smart_pick = 1",
-                [game_date],
+            resp = _req.post(
+                endpoint,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=10,
             )
+            resp.raise_for_status()
+            data = resp.json()
+            result = data["results"][0]["response"]["result"]
+            raw_rows = result["rows"]
         except Exception:
             return []
-        finally:
-            await client.close()
 
         # NHL stores abbreviated names (e.g. "A. Fox"). Expand to full PP names
         # using the local prizepicks_lines.db which the pp-sync already populated.
-        _pp_name_map = {}  # last_name_lower -> full_pp_name
+        _pp_name_map = {}
         if sport_key == "nhl":
             try:
                 import sqlite3 as _sq3
@@ -470,56 +484,43 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
                 pass
 
         rows = []
-        for row in res.rows:
-            local_name = row[0] or ""
-            # Expand abbreviated NHL name if possible
+        for raw_row in raw_rows:
+            # Turso HTTP rows are lists of {"type":..., "value":...} dicts
+            def _v(cell):
+                if isinstance(cell, dict):
+                    return cell.get("value")
+                return cell
+            local_name = _v(raw_row[0]) or ""
             if sport_key == "nhl" and _pp_name_map:
                 _last = local_name.split()[-1].lower() if local_name else ""
                 local_name = _pp_name_map.get(_last, local_name)
-            odds_t    = (row[5] or "standard").lower()
-            direction = row[6] or "OVER"
-            raw_prob  = float(row[7] or 0)
-            # NBA/NHL store P(OVER) — convert to directional confidence for edge/filter.
-            # supabase_sync.py uses the same formula (line ~150).
+            odds_t    = (_v(raw_row[5]) or "standard").lower()
+            direction = _v(raw_row[6]) or "OVER"
+            raw_prob  = float(_v(raw_row[7]) or 0)
             conf = raw_prob if direction == "OVER" else (1.0 - raw_prob)
             conf = min(conf, 0.95)
             be   = _PROJECT_BREAK_EVEN.get(odds_t, _PROJECT_BREAK_EVEN["standard"])
             edge = round((conf - be) * 100, 2)
             if conf < min_prob or edge < min_edge:
                 continue
+            game_time_raw = _v(raw_row[9]) if len(raw_row) > 9 else None
             rows.append({
                 "player_name":    local_name,
-                "team":           row[1] or "",
-                "opponent":       row[2] or "",
-                "prop_type":      row[3] or "",
-                "line":           row[4],
+                "team":           _v(raw_row[1]) or "",
+                "opponent":       _v(raw_row[2]) or "",
+                "prop_type":      _v(raw_row[3]) or "",
+                "line":           _v(raw_row[4]),
                 "odds_type":      odds_t,
                 "ai_prediction":  direction,
                 "ai_probability": conf,
                 "ai_edge":        edge,
-                "ai_tier":        row[8] or "—",
+                "ai_tier":        _v(raw_row[8]) or "—",
                 "ai_ev_4leg":     None,
-                "game_time":      row[9] if len(row) > 9 else None,
+                "game_time":      game_time_raw,
             })
         return rows
 
-    # Run async Turso call in a dedicated thread+loop to avoid Streamlit's
-    # event-loop conflict (asyncio.run() raises RuntimeError if a loop is
-    # already running in the main thread, which Streamlit can trigger).
-    import threading as _threading
-    _turso_result: list = []
-    def _run_turso():
-        _loop = _asyncio.new_event_loop()
-        try:
-            _turso_result.extend(_loop.run_until_complete(_turso_picks(sport.lower())))
-        except Exception:
-            pass
-        finally:
-            _loop.close()
-    _t = _threading.Thread(target=_run_turso)
-    _t.start()
-    _t.join(timeout=15)
-    turso_rows = _turso_result
+    turso_rows = _turso_picks_http(sport.lower())
 
     if turso_rows:
         _filtered = []
