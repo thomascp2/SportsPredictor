@@ -134,6 +134,7 @@ class SupabaseSync:
 
         # Transform to Supabase format
         props = []
+        _logged_trades = set()
         for row in rows:
             row_dict = dict(row)
             probability = row_dict.get('probability', 0.5)
@@ -167,8 +168,10 @@ class SupabaseSync:
             norm_name = self._normalize_name(row_dict['player_name']).lower()
             pp_team = pp_team_lookup.get(norm_name, '')
             if pp_team and local_team and pp_team.upper() != local_team.upper():
-                pname_ascii = row_dict['player_name'].encode('ascii', 'replace').decode('ascii')
-                print(f"[SYNC] Trade correction: {pname_ascii} {local_team} -> {pp_team}")
+                if norm_name not in _logged_trades:
+                    pname_ascii = row_dict['player_name'].encode('ascii', 'replace').decode('ascii')
+                    print(f"[SYNC] Trade correction: {pname_ascii} {local_team} -> {pp_team}")
+                    _logged_trades.add(norm_name)
                 team = pp_team
             else:
                 team = local_team
