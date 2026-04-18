@@ -754,7 +754,7 @@ class SmartPickSelector:
             # Apply calibration correction (50%-damped; 0.0 if insufficient history)
             bucket = round(round(probability / 0.05) * 0.05, 2)
             calib_correction = calibration.get((prop_type, bucket), 0.0)
-            probability = max(0.45, min(0.95, probability + calib_correction))
+            probability = max(0.45, min(0.80, probability + calib_correction))
 
             # Calculate ML adjustment (how much better/worse than naive baseline)
             ml_adjustment = (probability - baseline_prob) * 100
