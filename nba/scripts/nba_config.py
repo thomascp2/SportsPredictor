@@ -24,7 +24,7 @@ DB_PATH = str(NBA_ROOT / "database" / "nba_predictions.db")
 # success-rate features) naturally tracks real-world hit rates and was profitable pre-ML.
 # Re-enable LEARNING_MODE = False only after clean retrain with filtered training data.
 LEARNING_MODE = True
-PROBABILITY_CAP = (0.0, 1.0)  # No cap — ML models provide calibrated probabilities
+PROBABILITY_CAP = (0.20, 0.80)  # Statistical mode cap: normal dist can hit 99% on easy lines
 MODEL_TYPE = "statistical_only"  # No ML until Week 8+
 
 # Date/time settings (EST/CST)

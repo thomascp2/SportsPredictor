@@ -394,12 +394,137 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
 
     Revert history: was briefly flipped to Supabase-primary on 2026-04-06; reverted
     same day after data audit showed MLB picks disappeared from the dashboard.
+
+    Priority order post-VPS migration (2026-04-18):
+      1. Turso  — VPS syncs predictions here; always current; works from any machine
+      2. SmartPickSelector (local SQLite) — only fresh when running locally with active pipeline
+      3. Supabase — fallback; NHL/Golf/MLB often missing is_smart_pick
     """
-    import sys
+    import sys, asyncio as _asyncio
     from pathlib import Path
     root = Path(__file__).parent.parent
     sys.path.insert(0, str(root / "shared"))
 
+    # ── Load .env so Turso credentials are available ─────────────────────────
+    _env_path = root / ".env"
+    if _env_path.exists():
+        for _line in _env_path.read_text(encoding="utf-8").splitlines():
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                _os.environ.setdefault(_k.strip(), _v.strip())
+
+    # ── 1. Turso primary path ─────────────────────────────────────────────────
+    _TURSO_CFG = {
+        "nhl":  ("TURSO_NHL_URL",  "TURSO_NHL_TOKEN"),
+        "nba":  ("TURSO_NBA_URL",  "TURSO_NBA_TOKEN"),
+        "mlb":  ("TURSO_MLB_URL",  "TURSO_MLB_TOKEN"),
+        "golf": ("TURSO_GOLF_URL", "TURSO_GOLF_TOKEN"),
+    }
+
+    async def _turso_picks(sport_key: str) -> list:
+        try:
+            import libsql_client as _lc
+        except ImportError:
+            return []
+        url_env, tok_env = _TURSO_CFG.get(sport_key, (None, None))
+        if not url_env:
+            return []
+        url   = _os.getenv(url_env, "").replace("libsql://", "https://")
+        token = _os.getenv(tok_env, "")
+        if not url or not token:
+            return []
+        client = _lc.create_client(url=url, auth_token=token)
+        try:
+            res = await client.execute(
+                "SELECT player_name, team, opponent, prop_type, line, odds_type, "
+                "prediction, probability, ai_tier "
+                "FROM predictions "
+                "WHERE game_date = ? AND is_smart_pick = 1",
+                [game_date],
+            )
+        except Exception:
+            return []
+        finally:
+            await client.close()
+
+        # NHL stores abbreviated names (e.g. "A. Fox"). Expand to full PP names
+        # using the local prizepicks_lines.db which the pp-sync already populated.
+        _pp_name_map = {}  # last_name_lower -> full_pp_name
+        if sport_key == "nhl":
+            try:
+                import sqlite3 as _sq3
+                _ppdb = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                                      "shared", "prizepicks_lines.db")
+                if _os.path.exists(_ppdb):
+                    _ppc = _sq3.connect(_ppdb)
+                    for (_pp_full,) in _ppc.execute(
+                        "SELECT DISTINCT player_name FROM prizepicks_lines "
+                        "WHERE substr(start_time,1,10)=? AND league='NHL'", (game_date,)
+                    ).fetchall():
+                        _parts = _pp_full.strip().split()
+                        if len(_parts) >= 2:
+                            _pp_name_map[_parts[-1].lower()] = _pp_full
+                    _ppc.close()
+            except Exception:
+                pass
+
+        rows = []
+        for row in res.rows:
+            local_name = row[0] or ""
+            # Expand abbreviated NHL name if possible
+            if sport_key == "nhl" and _pp_name_map:
+                _last = local_name.split()[-1].lower() if local_name else ""
+                local_name = _pp_name_map.get(_last, local_name)
+            odds_t = (row[5] or "standard").lower()
+            prob   = float(row[7] or 0)
+            be     = _PROJECT_BREAK_EVEN.get(odds_t, _PROJECT_BREAK_EVEN["standard"])
+            edge   = round((prob - be) * 100, 2)
+            if prob < min_prob or edge < min_edge:
+                continue
+            rows.append({
+                "player_name":    local_name,
+                "team":           row[1] or "",
+                "opponent":       row[2] or "",
+                "prop_type":      row[3] or "",
+                "line":           row[4],
+                "odds_type":      odds_t,
+                "ai_prediction":  row[6] or "",
+                "ai_probability": prob,
+                "ai_edge":        edge,
+                "ai_tier":        row[8] or "—",
+                "ai_ev_4leg":     None,
+                "game_time":      None,
+            })
+        return rows
+
+    try:
+        turso_rows = _asyncio.run(_turso_picks(sport.lower()))
+    except Exception:
+        turso_rows = []
+
+    if turso_rows:
+        _filtered = []
+        for p in turso_rows:
+            if direction and p["ai_prediction"] != direction:
+                continue
+            tier = p["ai_tier"]
+            if tier_filter and tier not in tier_filter:
+                continue
+            p["matchup"] = f"{p['team']} vs {p['opponent']}"
+            _filtered.append(p)
+        if _filtered:
+            df = pd.DataFrame(_filtered)
+            df["Prob"]     = (df["ai_probability"] * 100).round(1).astype(str) + "%"
+            df["Edge"]     = df["ai_edge"].round(1).apply(lambda x: f"+{x}%" if x >= 0 else f"{x}%")
+            df["EV 4-leg"] = "---"
+            df["Line"]     = df["ai_prediction"] + " " + df["line"].astype(str)
+            df["Prop"]     = df["prop_type"].str.upper().str.replace("_", " ")
+            df["Matchup"]  = df["matchup"]
+            df["Time"]     = df["game_time"].apply(_fmt_time)
+            return df
+
+    # ── 2. SmartPickSelector (local SQLite — only fresh when pipeline runs locally) ──
     try:
         from smart_pick_selector import SmartPickSelector
         selector = SmartPickSelector(sport.lower())
@@ -909,10 +1034,107 @@ def get_ml_model_info() -> dict:
     return info
 
 
+def _enrich_game_time(df: "pd.DataFrame", sport: str, game_date: str) -> "pd.DataFrame":
+    """Enrich a game_predictions DataFrame with game_time from PP lines / MLB API."""
+    import os, sqlite3 as _sq2
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _PP_TO_STD = {'LA': 'LAK', 'NJ': 'NJD', 'SJ': 'SJS', 'TB': 'TBL'}
+    try:
+        pp_db = os.path.join(PROJECT_ROOT, "shared", "prizepicks_lines.db")
+        if os.path.exists(pp_db):
+            pp_conn = _sq2.connect(pp_db)
+            time_rows = pp_conn.execute("""
+                SELECT team, MIN(start_time) as start_time FROM prizepicks_lines
+                WHERE substr(start_time, 1, 10) = ? AND league = ? AND team NOT LIKE '%/%'
+                GROUP BY team
+            """, [game_date, sport.upper()]).fetchall()
+            pp_conn.close()
+            team_times = {}
+            for row in time_rows:
+                if not row[1]:
+                    continue
+                pp_abbr = row[0].upper()
+                team_times[pp_abbr] = row[1]
+                std_abbr = _PP_TO_STD.get(pp_abbr)
+                if std_abbr:
+                    team_times[std_abbr] = row[1]
+            if team_times:
+                df["game_time"] = df["home_team"].apply(lambda t: team_times.get(str(t).upper()))
+    except Exception:
+        pass
+    if sport.upper() == "MLB" and df["game_time"].isna().all():
+        try:
+            import requests as _req
+            resp = _req.get(
+                f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date}&hydrate=team",
+                timeout=5)
+            if resp.status_code == 200:
+                mlb_times = {}
+                for date_entry in resp.json().get("dates", []):
+                    for game in date_entry.get("games", []):
+                        home = game.get("teams", {}).get("home", {}).get("team", {})
+                        abbr = home.get("abbreviation", "").upper()
+                        gt = game.get("gameDate", "")
+                        if abbr and gt:
+                            mlb_times[abbr] = gt
+                if mlb_times:
+                    df["game_time"] = df["home_team"].apply(lambda t: mlb_times.get(str(t).upper()))
+        except Exception:
+            pass
+    return df
+
+
 @st.cache_data(ttl=300)
 def fetch_game_predictions(sport: str, game_date: str) -> pd.DataFrame:
-    """Fetch game predictions from SQLite (local) for the Game Lines tab."""
-    import sqlite3, os
+    """Fetch game predictions for the Game Lines tab. Tries Turso first, falls back to local SQLite."""
+    import sqlite3, os, asyncio as _aio
+
+    # --- Turso path (primary after VPS migration) ---
+    _GAME_TURSO_CFG = {
+        "NHL": ("TURSO_NHL_URL",  "TURSO_NHL_TOKEN"),
+        "NBA": ("TURSO_NBA_URL",  "TURSO_NBA_TOKEN"),
+        "MLB": ("TURSO_MLB_URL",  "TURSO_MLB_TOKEN"),
+    }
+    turso_cfg = _GAME_TURSO_CFG.get(sport.upper())
+    if turso_cfg:
+        url_env, tok_env = turso_cfg
+        url   = _os.getenv(url_env, "").replace("libsql://", "https://")
+        token = _os.getenv(tok_env, "")
+        if url and token:
+            try:
+                import libsql_client as _lc
+
+                async def _fetch():
+                    client = _lc.create_client(url=url, auth_token=token)
+                    try:
+                        res = await client.execute(
+                            "SELECT home_team, away_team, bet_type, bet_side, line, "
+                            "prediction, probability, edge, confidence_tier, "
+                            "odds_american, implied_probability, "
+                            "model_type, home_elo, away_elo, elo_diff, game_date "
+                            "FROM game_predictions WHERE game_date = ? "
+                            "ORDER BY edge DESC",
+                            [game_date],
+                        )
+                        return res.rows
+                    except Exception:
+                        return None
+                    finally:
+                        await client.close()
+
+                rows = _aio.run(_fetch())
+                if rows:
+                    cols = ["home_team", "away_team", "bet_type", "bet_side", "line",
+                            "prediction", "probability", "edge", "confidence_tier",
+                            "odds_american", "implied_probability",
+                            "model_type", "home_elo", "away_elo", "elo_diff", "game_date"]
+                    df = pd.DataFrame([dict(zip(cols, r)) for r in rows])
+                    df["game_time"] = None  # enriched below from prizepicks_lines
+                    return _enrich_game_time(df, sport, game_date)
+            except Exception:
+                pass  # fall through to local SQLite
+
+    # --- Local SQLite fallback ---
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     db_map = {
         "NHL": os.path.join(PROJECT_ROOT, "nhl", "database", "nhl_predictions_v2.db"),
@@ -948,70 +1170,7 @@ def fetch_game_predictions(sport: str, game_date: str) -> pd.DataFrame:
             """, conn, params=(game_date,))
             df["game_time"] = None
         conn.close()
-
-        # PP abbreviations differ from our game_lines abbreviations for some NHL teams.
-        # Expand lookup in both directions so either form matches.
-        _PP_TO_STD = {'LA': 'LAK', 'NJ': 'NJD', 'SJ': 'SJS', 'TB': 'TBL'}
-        _STD_TO_PP = {v: k for k, v in _PP_TO_STD.items()}
-
-        # Enrich with game_time from prizepicks_lines.db (same source fetch_picks uses)
-        try:
-            pp_db = os.path.join(PROJECT_ROOT, "shared", "prizepicks_lines.db")
-            if os.path.exists(pp_db):
-                import sqlite3 as _sq2
-                pp_conn = _sq2.connect(pp_db)
-                time_rows = pp_conn.execute("""
-                    SELECT team, MIN(start_time) as start_time
-                    FROM prizepicks_lines
-                    WHERE substr(start_time, 1, 10) = ?
-                      AND league = ?
-                      AND team NOT LIKE '%/%'
-                    GROUP BY team
-                """, [game_date, sport.upper()]).fetchall()
-                pp_conn.close()
-                # Build lookup with both PP and standard abbreviations as keys
-                team_times = {}
-                for row in time_rows:
-                    if not row[1]:
-                        continue
-                    pp_abbr = row[0].upper()
-                    team_times[pp_abbr] = row[1]
-                    # Also register under the standard abbreviation if it differs
-                    std_abbr = _PP_TO_STD.get(pp_abbr)
-                    if std_abbr:
-                        team_times[std_abbr] = row[1]
-                if team_times:
-                    df["game_time"] = df["home_team"].apply(
-                        lambda t: team_times.get(str(t).upper())
-                    )
-        except Exception:
-            pass  # game_time stays None — cards still render without it
-
-        # MLB: PP has no MLB lines so no start_time from above. Fetch from MLB stats API.
-        if sport.upper() == "MLB" and df["game_time"].isna().all():
-            try:
-                import requests as _req
-                resp = _req.get(
-                    f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={game_date}&hydrate=team",
-                    timeout=5
-                )
-                if resp.status_code == 200:
-                    mlb_times = {}  # home_team_abbr -> ISO game time string
-                    for date_entry in resp.json().get("dates", []):
-                        for game in date_entry.get("games", []):
-                            home = game.get("teams", {}).get("home", {}).get("team", {})
-                            abbr = home.get("abbreviation", "").upper()
-                            gt = game.get("gameDate", "")  # UTC ISO: "2026-04-04T17:10:00Z"
-                            if abbr and gt:
-                                mlb_times[abbr] = gt
-                    if mlb_times:
-                        df["game_time"] = df["home_team"].apply(
-                            lambda t: mlb_times.get(str(t).upper())
-                        )
-            except Exception:
-                pass  # still no times — cards render without it
-
-        return df
+        return _enrich_game_time(df, sport, game_date)
     except Exception:
         return pd.DataFrame()
 

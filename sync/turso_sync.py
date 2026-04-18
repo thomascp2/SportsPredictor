@@ -262,6 +262,61 @@ async def sync_grading(sport: str, game_date: str):
 
 
 # ---------------------------------------------------------------------------
+# sync_game_predictions — push game_predictions table to Turso
+# ---------------------------------------------------------------------------
+
+async def sync_game_predictions(sport: str, game_date: str):
+    """
+    Insert game_predictions rows for game_date from SQLite into Turso.
+    Creates the table if it doesn't exist. Uses INSERT OR IGNORE.
+    Supports NHL, NBA, MLB (golf has no game_predictions table).
+    """
+    cfg = SPORT_CONFIG.get(sport)
+    if not cfg:
+        return 0
+
+    db_path = cfg['db']
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM game_predictions WHERE game_date = ?", (game_date,)
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return 0
+
+    if not rows:
+        return 0
+
+    cols = list(rows[0].keys())
+    col_list = ', '.join(f'"{c}"' for c in cols)
+    placeholders = ', '.join(['?' for _ in cols])
+
+    # Ensure table exists in Turso with id as primary key for dedup
+    col_defs = ', '.join(
+        f'"{c}" {"INTEGER PRIMARY KEY" if c == "id" else "TEXT"}' for c in cols
+    )
+    create_sql = f'CREATE TABLE IF NOT EXISTS game_predictions ({col_defs})'
+    insert_sql = f'INSERT OR IGNORE INTO game_predictions ({col_list}) VALUES ({placeholders})'
+
+    client = _turso_client(sport)
+    inserted = 0
+    try:
+        await client.execute(create_sql)
+        for i in range(0, len(rows), BATCH_SIZE):
+            batch = rows[i:i + BATCH_SIZE]
+            stmts = [libsql_client.Statement(insert_sql, list(r)) for r in batch]
+            await _batch_execute(client, stmts)
+            inserted += len(batch)
+        print(f"  [{sport.upper()}] game_predictions: {inserted} rows synced to Turso.")
+    finally:
+        await client.close()
+
+    return inserted
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -277,6 +332,8 @@ async def run_sync(sports: list, operation: str, game_date: str):
                 await sync_smart_picks(sport, game_date)
             if operation in ('grading', 'all'):
                 await sync_grading(sport, game_date)
+            if operation in ('game-predictions', 'all'):
+                await sync_game_predictions(sport, game_date)
         except Exception as e:
             pname = sport.upper()
             print(f"  [{pname}] ERROR: {e}")
@@ -289,7 +346,7 @@ def main():
     parser.add_argument('--sport', default='all',
                         choices=['nhl', 'nba', 'mlb', 'golf', 'all'])
     parser.add_argument('--operation', default='all',
-                        choices=['predictions', 'smart-picks', 'grading', 'all'])
+                        choices=['predictions', 'smart-picks', 'grading', 'game-predictions', 'all'])
     parser.add_argument('--date', default=None,
                         help="Date to sync (default: today, YYYY-MM-DD)")
     args = parser.parse_args()

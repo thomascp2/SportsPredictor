@@ -3354,6 +3354,15 @@ class SportsOrchestrator:
 
             if result.returncode == 0:
                 print(f"[GAME PRED] {self.config.sport} game predictions generated")
+                # Push to Turso so the cloud dashboard can read them
+                if TURSO_SYNC_AVAILABLE:
+                    try:
+                        import asyncio as _aio
+                        from sync.turso_sync import sync_game_predictions as _sgp
+                        today = date.today().isoformat()
+                        _aio.run(_sgp(sport, today))
+                    except Exception as _te:
+                        print(f"[GAME PRED] Turso sync failed (non-fatal): {_te}")
                 return {"success": True}
             else:
                 print(f"[GAME PRED] Failed: {result.stderr[:500]}")
