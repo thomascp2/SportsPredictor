@@ -438,7 +438,7 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
         try:
             res = await client.execute(
                 "SELECT player_name, team, opponent, prop_type, line, odds_type, "
-                "prediction, probability, ai_tier "
+                "prediction, probability, ai_tier, game_time "
                 "FROM predictions "
                 "WHERE game_date = ? AND is_smart_pick = 1",
                 [game_date],
@@ -494,7 +494,7 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
                 "ai_edge":        edge,
                 "ai_tier":        row[8] or "—",
                 "ai_ev_4leg":     None,
-                "game_time":      None,
+                "game_time":      row[9] if len(row) > 9 else None,
             })
         return rows
 
