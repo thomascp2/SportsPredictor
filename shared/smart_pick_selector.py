@@ -746,15 +746,10 @@ class SmartPickSelector:
                 probability = pp_prob_under
                 baseline_prob = baseline_prob_under
 
-            # Cap at 0.80 to match prediction pipeline (PROBABILITY_CAP max).
-            # SmartPickSelector recalculates from lambda against the PP line, which
-            # bypasses the cap applied at prediction-store time — enforce it here.
-            probability = min(probability, 0.80)
-
             # Apply calibration correction (50%-damped; 0.0 if insufficient history)
             bucket = round(round(probability / 0.05) * 0.05, 2)
             calib_correction = calibration.get((prop_type, bucket), 0.0)
-            probability = max(0.45, min(0.80, probability + calib_correction))
+            probability = max(0.45, min(0.95, probability + calib_correction))
 
             # Calculate ML adjustment (how much better/worse than naive baseline)
             ml_adjustment = (probability - baseline_prob) * 100
