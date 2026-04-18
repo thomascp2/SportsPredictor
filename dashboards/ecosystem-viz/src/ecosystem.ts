@@ -206,6 +206,83 @@ export const NODES: EcoNode[] = [
     ],
   },
 
+  // ── GOLF ──────────────────────────────────────────────────────────────────
+  {
+    id: 'golf_source', label: 'PGA / ESPN Golf API', category: 'source', method: 'infra', val: 3,
+    desc: 'ESPN Golf API + PGA stats scraper — tournament schedules, round scores, strokes-gained, player rankings.',
+    details: [
+      'golf/scripts/espn_golf_api.py  |  pga_stats_scraper.py',
+      'fetch_tournament_schedule.py populates upcoming events',
+      'backfill_round_logs.py loaded historical rounds',
+    ],
+  },
+  {
+    id: 'golf_pipeline', label: 'Golf Pipeline', category: 'pipeline', method: 'statistical', val: 4,
+    desc: 'generate_predictions_daily.py — statistical model for PGA player props (strokes-gained, finish position).',
+    details: [
+      'LEARNING_MODE = True  |  MODEL_TYPE = "statistical"',
+      'golf/scripts/golf_config.py is the config authority',
+      'ML scaffold planned post-Masters once samples reach 700+',
+      'Props: top-20 finish, top-10 finish, made-cut, round score lines',
+    ],
+  },
+  {
+    id: 'golf_grader', label: 'Golf Grader', category: 'pipeline', method: 'infra', val: 3,
+    desc: 'auto_grade_daily.py — grades round-by-round outcomes from ESPN Golf API.',
+    details: [
+      'Grades after each round completes (not end-of-tournament)',
+      'Writes HIT/MISS to prediction_outcomes in golf_predictions.db',
+    ],
+  },
+  {
+    id: 'golf_models', label: 'Golf ML Models', category: 'ml', method: 'ml_dormant', val: 3,
+    desc: 'Not yet built — ML scaffold planned for post-Masters 2026 once 700+ graded samples exist.',
+    details: [
+      'Target threshold: 700 samples (lower than NHL/NBA due to weekly cadence)',
+      'Likely model: XGBoost on strokes-gained features',
+      'No model registry entries yet',
+    ],
+  },
+  {
+    id: 'golf_db', label: 'Golf SQLite DB', category: 'storage', method: 'infra', val: 3,
+    desc: 'golf/database/golf_predictions.db — predictions, outcomes, round logs.',
+    details: [
+      'Backed up before each grading run',
+      'Not yet synced to Turso or Supabase',
+    ],
+  },
+
+  // ── GAME LINES ────────────────────────────────────────────────────────────
+  {
+    id: 'game_context_source', label: 'Game Context API', category: 'source', method: 'infra', val: 3,
+    desc: 'ESPN + weather APIs for game-level context: park factors, wind, game totals, Vegas lines.',
+    details: [
+      'shared/fetch_game_odds.py — ESPN moneyline / spread / total',
+      'PEGASUS/pipeline/mlb_game_context.py — park factors (32 stadiums), wind advisory',
+      'game_context table: 273 rows since Mar 25, 2026',
+    ],
+  },
+  {
+    id: 'game_context_engine', label: 'MLB Game Context', category: 'pegasus', method: 'statistical', val: 4,
+    desc: 'PEGASUS/pipeline/mlb_game_context.py — park factors, wind advisory, game total advisory injected as flags on MLB picks.',
+    details: [
+      'Outputs: game_context_flag + game_context_notes on each PEGASUSPick',
+      'HR_SUPPRESS, HIGH_TOTAL, WIND_OUT advisory flags',
+      'Advisory only — does NOT modify probability or edge values',
+      'Step 11a XGBoost planned Jun 2026 (~700 rows)',
+    ],
+  },
+  {
+    id: 'game_lines_ml', label: 'Game Lines ML (Step 11)', category: 'ml', method: 'ml_dormant', val: 4,
+    desc: 'Full game lines models (moneyline / spread / totals) — gated until Oct 2026 when full-season game_context data is available.',
+    details: [
+      'NBA + NHL game_context collection started Mar 2026 (need full 2026-27 season)',
+      'MLB Step 11a possible Jun 2026 once ~700 rows validated',
+      'Will output game_context_score (0.8–1.2×) as continuous modifier',
+      'Not a pick generator — adjusts player prop edges based on game environment',
+    ],
+  },
+
   // ── STORAGE ───────────────────────────────────────────────────────────────
   {
     id: 'nhl_db', label: 'NHL SQLite DB', category: 'storage', method: 'infra', val: 6,
@@ -445,4 +522,22 @@ export const LINKS: EcoLink[] = [
   { source: 'supabase',    target: 'mobile',    label: 'user data / auth' },
   { source: 'supabase',    target: 'dashboard', label: 'results + picks' },
   { source: 'orchestrator', target: 'tui',      label: 'live status' },
+
+  // Golf
+  { source: 'golf_source',   target: 'golf_pipeline', label: 'scores + stats' },
+  { source: 'golf_source',   target: 'golf_grader',   label: 'round actuals' },
+  { source: 'orchestrator',  target: 'golf_pipeline', type: 'control', label: 'daily' },
+  { source: 'orchestrator',  target: 'golf_grader',   type: 'control' },
+  { source: 'golf_pipeline', target: 'golf_db',       label: 'predictions' },
+  { source: 'golf_grader',   target: 'golf_db',       label: 'HIT / MISS' },
+  { source: 'golf_db',       target: 'ml_engine',     label: 'training data (future)' },
+  { source: 'ml_engine',     target: 'golf_models',   label: 'trains (future)', type: 'feedback' },
+  { source: 'golf_models',   target: 'golf_pipeline', label: 'inactive', type: 'feedback' },
+
+  // Game Context / Game Lines
+  { source: 'game_context_source',  target: 'game_context_engine', label: 'park + weather + totals' },
+  { source: 'game_context_engine',  target: 'pegasus_selector',    label: 'advisory flags' },
+  { source: 'game_context_source',  target: 'game_lines_ml',       label: 'raw data', type: 'feedback' },
+  { source: 'game_lines_ml',        target: 'pegasus_selector',    label: 'score modifier (Oct 2026)', type: 'feedback' },
+  { source: 'mlb_db',               target: 'game_context_engine', label: 'game_context table' },
 ];
