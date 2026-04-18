@@ -503,10 +503,23 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
             })
         return rows
 
-    try:
-        turso_rows = _asyncio.run(_turso_picks(sport.lower()))
-    except Exception:
-        turso_rows = []
+    # Run async Turso call in a dedicated thread+loop to avoid Streamlit's
+    # event-loop conflict (asyncio.run() raises RuntimeError if a loop is
+    # already running in the main thread, which Streamlit can trigger).
+    import threading as _threading
+    _turso_result: list = []
+    def _run_turso():
+        _loop = _asyncio.new_event_loop()
+        try:
+            _turso_result.extend(_loop.run_until_complete(_turso_picks(sport.lower())))
+        except Exception:
+            pass
+        finally:
+            _loop.close()
+    _t = _threading.Thread(target=_run_turso)
+    _t.start()
+    _t.join(timeout=15)
+    turso_rows = _turso_result
 
     if turso_rows:
         _filtered = []
@@ -543,63 +556,7 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
         picks = None
 
     if not picks:
-        # ── Supabase fallback (Streamlit Cloud — no local SQLite) ──────────────
-        sb = get_supabase()
-        if sb is None:
-            return pd.DataFrame()
-        try:
-            r = (sb.table("daily_props")
-                   .select("player_name,team,opponent,prop_type,line,odds_type,"
-                           "ai_prediction,ai_probability,ai_edge,ai_tier,"
-                           "ai_ev_4leg,game_time")
-                   .eq("sport", sport)
-                   .eq("game_date", game_date)
-                   .eq("is_smart_pick", True)
-                   .neq("status", "cancelled")
-                   .lt("ai_probability", 0.95)
-                   .gte("ai_edge", min_edge)
-                   .gte("ai_probability", min_prob)
-                   .execute())
-            sb_rows = r.data or []
-        except Exception:
-            sb_rows = []
-        if not sb_rows:
-            return pd.DataFrame()
-        rows = []
-        for p in sb_rows:
-            if direction and p.get("ai_prediction") != direction:
-                continue
-            tier = p.get("ai_tier") or "—"
-            if tier_filter and tier not in tier_filter:
-                continue
-            rows.append({
-                "player_name":    p.get("player_name", ""),
-                "team":           p.get("team", ""),
-                "opponent":       p.get("opponent", ""),
-                "prop_type":      p.get("prop_type", ""),
-                "line":           p.get("line", 0),
-                "odds_type":      p.get("odds_type", "standard"),
-                "ai_prediction":  p.get("ai_prediction", ""),
-                "ai_probability": float(p.get("ai_probability") or 0),
-                "ai_edge":        float(p.get("ai_edge") or 0),
-                "ai_tier":        tier,
-                "ai_ev_4leg":     p.get("ai_ev_4leg"),
-                "game_time":      p.get("game_time"),
-                "matchup":        f"{p.get('team','')} vs {p.get('opponent','')}",
-            })
-        if not rows:
-            return pd.DataFrame()
-        df = pd.DataFrame(rows)
-        df["Prob"]     = (df["ai_probability"] * 100).round(1).astype(str) + "%"
-        df["Edge"]     = df["ai_edge"].round(1).apply(lambda x: f"+{x}%" if x >= 0 else f"{x}%")
-        df["EV 4-leg"] = df["ai_ev_4leg"].apply(
-            lambda x: f"+{x*100:.1f}%" if x and x > 0 else ("---" if not x else f"{x*100:.1f}%")
-        )
-        df["Line"]     = df["ai_prediction"] + " " + df["line"].astype(str)
-        df["Prop"]     = df["prop_type"].str.upper().str.replace("_", " ")
-        df["Matchup"]  = df["matchup"]
-        df["Time"]     = df["game_time"].apply(_fmt_time)
-        return df
+        return pd.DataFrame()
 
     rows = []
     for p in picks:
