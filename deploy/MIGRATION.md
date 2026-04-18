@@ -245,3 +245,22 @@ timedatectl  # verify
 ## Session Bookmarks
 
 - **2026-04-17**: Migration started. Path audit complete (all clear). Service files created. Transfer script ready. Next: execute Steps 2–9 on actual VPS.
+- **2026-04-17 (evening)**: **MIGRATION COMPLETE.** VPS fully live. All services running. Discord bot confirmed responding. PEGASUS API health check passed (NBA:130, NHL:44, MLB:168). Databases transferred via scp. Desktop orchestrator and bot stopped. Dashboard still running locally — add to VPS next session.
+
+## Step 9: Cutover Checklist — COMPLETED 2026-04-17
+
+- [x] VPS orchestrator running (systemd, auto-restart)
+- [x] VPS Discord bot responding to !status with DB counts
+- [x] PEGASUS API /health returns 200, Turso connected
+- [x] All databases transferred (NBA 247MB, NHL 89MB, MLB 97MB, models 97MB)
+- [x] Desktop orchestrator and bot stopped
+- [ ] PEGASUS run_daily.py confirmed run on VPS (monitor tomorrow)
+- [ ] Overnight grading + predictions confirmed (monitor tomorrow AM)
+- [ ] Dashboard moved to VPS (next session)
+- [ ] Mobile app API URL updated to VPS (next session)
+
+## Known VPS Gotcha — Password Auth
+DigitalOcean has two override files that disable password auth by default.
+Already fixed during migration — both set to yes:
+- `/etc/ssh/sshd_config.d/50-cloud-init.conf`
+- `/etc/ssh/sshd_config.d/60-cloudimg-settings.conf`
