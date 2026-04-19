@@ -76,62 +76,63 @@ class NBAStatisticalPredictor:
                 'prediction': 'UNDER',
                 'probability': 0.50,
                 'features': features,
+                'expected_value': line,
                 'method': 'insufficient_data'
             }
 
-        # Base rate from season success rate
-        base_prob = features['f_season_success_rate']
+        # Compute absolute expected stat value (weighted recent average)
+        l5 = features['f_l5_avg']
+        l10 = features['f_l10_avg']
+        season = features['f_season_avg']
+        mu = 0.40 * l5 + 0.35 * l10 + 0.25 * season
 
-        # Adjustments based on other features
-        adjustments = 0.0
+        # Trend adjustment in stat units (matches continuous method)
+        mu += features['f_trend_slope'] * 2
 
-        # Recent form (L5 vs season)
-        if features['f_l5_success_rate'] > features['f_season_success_rate']:
-            adjustments += 0.05
-        elif features['f_l5_success_rate'] < features['f_season_success_rate']:
-            adjustments -= 0.05
-
-        # Streak momentum
-        if features['f_current_streak'] > 3:
-            adjustments += 0.03
-        elif features['f_current_streak'] < -3:
-            adjustments -= 0.03
-
-        # Trend
-        if features['f_trend_slope'] > 0.5:
-            adjustments += 0.02
-        elif features['f_trend_slope'] < -0.5:
-            adjustments -= 0.02
-
-        # Home/Away split
-        adjustments += features['f_home_away_split'] * 0.1
-
-        # Opponent defensive adjustments (NEW)
-        if opponent_team and f'opp_{stat_type}_defensive_trend' in features:
-            opp_trend = features[f'opp_{stat_type}_defensive_trend']
-            opp_rating = features.get(f'opp_{stat_type}_defensive_rating', 0.0)
-
-            # Defense getting worse (trending positive) = easier matchup
-            if opp_trend > 0.3:
-                adjustments += 0.03
-            elif opp_trend < -0.3:  # Defense improving = harder matchup
-                adjustments -= 0.03
-
-            # Compare opponent defense to league average
+        # Opponent defensive adjustments to mu (in stat units, not probability)
+        if opponent_team:
             league_avg = {
                 'points': 14.5, 'rebounds': 6.5, 'assists': 4.5,
-                'threes': 2.0, 'stocks': 1.5
+                'threes': 2.0, 'stocks': 1.5, 'steals': 1.0,
+                'blocked_shots': 0.5, 'turnovers': 2.5
             }.get(stat_type, 0.0)
 
             if league_avg > 0:
-                if opp_rating > league_avg + 2:  # Weak defense
-                    adjustments += 0.04
-                elif opp_rating < league_avg - 2:  # Strong defense
-                    adjustments -= 0.04
+                opp_rating = features.get(f'opp_{stat_type}_defensive_rating', 0.0)
+                if opp_rating > league_avg + 3:
+                    mu += 1.5   # Weak defense — expect more
+                elif opp_rating > league_avg + 1.5:
+                    mu += 0.75
+                elif opp_rating < league_avg - 3:
+                    mu -= 1.5   # Strong defense — expect less
+                elif opp_rating < league_avg - 1.5:
+                    mu -= 0.75
 
-        # Final probability
-        probability = base_prob + adjustments
-        probability = max(0.0, min(1.0, probability))  # Clip to [0, 1]
+            opp_trend = features.get(f'opp_{stat_type}_defensive_trend', 0.0)
+            if opp_trend > 0.3:   # Defense getting worse
+                mu += 0.5
+            elif opp_trend < -0.3:  # Defense improving
+                mu -= 0.5
+
+        mu = max(mu, 0.0)
+
+        # Sigma from stored rolling std; fall back to Poisson approximation
+        sigma = features['f_l10_std'] if features['f_l10_std'] > 0 else features['f_season_std']
+        if sigma <= 0:
+            sigma = max(math.sqrt(mu), mu * 0.20, 0.5)
+
+        # Convert to probability via normal CDF
+        try:
+            _, norm = _get_scipy()
+            probability = float(1.0 - norm.cdf(line, loc=mu, scale=sigma))
+        except Exception:
+            probability = 0.5
+
+        probability = max(0.0, min(1.0, probability))
+
+        # Home/away split is in probability units — apply as fine-tuning
+        adjustments = features['f_home_away_split'] * 0.1
+        probability = max(0.0, min(1.0, probability + adjustments))
 
         # B2B / rest fatigue adjustment
         days_rest = features.get('f_days_rest', 3)
@@ -168,7 +169,8 @@ class NBAStatisticalPredictor:
             'prediction': prediction,
             'probability': probability,
             'features': features,
-            'method': 'statistical_binary'
+            'expected_value': mu,
+            'method': 'statistical_binary_ev'
         }
 
     def predict_continuous_prop(self, player_name, stat_type, line, game_date, home_away='H', opponent_team=None):

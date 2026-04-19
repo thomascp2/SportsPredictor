@@ -573,8 +573,8 @@ class NBADailyPredictorV6:
                  f_max_streak, f_trend_slope, f_home_away_split, f_games_played,
                  f_insufficient_data, f_season_avg, f_l10_avg, f_l5_avg,
                  f_season_std, f_l10_std, f_trend_acceleration, f_avg_minutes,
-                 f_consistency_score, features_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 f_consistency_score, features_json, expected_value)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 game_id, game_date, player_name, team, opponent, home_away,
                 prop_type, line, result['prediction'], result['probability'],
@@ -598,6 +598,7 @@ class NBADailyPredictorV6:
                 features.get('f_avg_minutes', 0),
                 features.get('f_consistency_score', 0),
                 features_json,
+                result.get('expected_value'),
             ))
         except sqlite3.IntegrityError:
             pass  # Duplicate prediction
