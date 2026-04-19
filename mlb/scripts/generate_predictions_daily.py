@@ -39,7 +39,7 @@ from mlb_config import (
     DB_PATH, BACKUPS_DIR, CORE_PROPS, PITCHER_PROPS, BATTER_PROPS,
     get_player_type, get_db_connection, initialize_database,
     mlb_has_games, MIN_PITCHER_STARTS_FOR_PREDICTION, MIN_BATTER_GAMES_FOR_PREDICTION,
-    is_over_only_line,
+    is_over_only_line, MODEL_TYPE,
 )
 from fetch_game_schedule import GameScheduleFetcher
 from statistical_predictions import MLBStatisticalEngine
@@ -75,9 +75,9 @@ class MLBDailyPredictor:
         self.opponent_feats   = OpponentFeatureExtractor(self.db_path)
         self.context_feats    = GameContextExtractor(self.db_path)
 
-        # ML predictor — wraps statistical with trained models where available
+        # ML predictor — only active when MODEL_TYPE != "statistical_only"
         self.ml_predictor = None
-        if ML_AVAILABLE:
+        if ML_AVAILABLE and MODEL_TYPE != "statistical_only":
             try:
                 registry_dir = Path(__file__).parent.parent.parent / 'ml_training' / 'model_registry'
                 self.ml_predictor = ProductionPredictor(str(registry_dir))
