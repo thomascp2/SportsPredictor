@@ -8,6 +8,37 @@ architectural insight about prediction storage.
 
 ---
 
+## Session 2 — MLB Training Fix + NBA EV Wiring (Apr 19, 2026 evening)
+
+### Completed
+
+1. **NBA `statistical_predictions.py`** — `predict_binary_prop()` rewritten from naive
+   `f_season_success_rate` baseline to proper `mu → normal CDF` approach (matches
+   `predict_continuous_prop()`). `expected_value` now returns `mu` (projected stat value).
+
+2. **NBA predictions table** — `expected_value` column added; all 206K existing rows
+   backfilled with `0.40*f_l5_avg + 0.35*f_l10_avg + 0.25*f_season_avg`.
+
+3. **NBA `generate_predictions_daily_V6.py`** — `_save_prediction()` wired to INSERT
+   `expected_value` for all future NBA predictions.
+
+4. **`ml_training/train_models.py`** — two fixes:
+   - Temporal split boundary snapping (day-level, prevents same-day leakage across partitions)
+   - NaN median fallback: columns entirely NaN in train partition produced NaN medians;
+     `train_median.fillna(0)` ensures fillna() actually removes NaN before sklearn sees it.
+   - Assertion tolerance widened 2% → 8% to handle day-snapping on small prop datasets.
+
+5. **MLB training completed** — 13 models saved to `ml_training/model_registry/mlb/`
+   (version `v20260419_005`). `hits O0.5` (previously crashing with NaN) now trains
+   successfully (Brier 0.2320). MLB `generate_predictions_daily.py` auto-loads them
+   via `ProductionPredictor`.
+
+### Commit
+
+`03e27c25` — "Fix MLB training NaN crash; add NBA expected_value; improve temporal splits"
+
+---
+
 ## What We Did
 
 ### Pipeline Recovery
