@@ -172,3 +172,60 @@ python orchestrator.py --sport golf --mode once --operation prediction
 
 NBA V6 hardcodes `today` for PP line lookup (`generate_predictions_daily_V6.py:140`).
 A minor fix would pass `target_date` instead — worth doing when adding EV column.
+
+---
+
+## Golf Path Forward
+
+### Current State (Apr 19, 2026)
+- **3,816 predictions**, 2,767 graded, 70.6% Apr accuracy
+- **Props**: `round_score` (72.5% acc, 2,649 graded) and `make_cut` (37.3% acc, 118 graded)
+- **Active tournament**: RBC Heritage (Apr 16–19) — 232 predictions today
+- **107K round logs** stored — rich historical base
+- No `expected_value` column
+- No ML scaffolding yet
+
+### make_cut Accuracy Problem
+37.3% on `make_cut` is below the ~50% random baseline — the model is actively
+mispredicting cuts. Root causes to investigate:
+- Cut line varies by field size and scoring conditions (not a fixed threshold)
+- Current model likely uses rolling score average without field-quality normalization
+- A player who averages 70 in weak fields may miss the cut in a major
+
+### expected_value for Golf
+Golf EV = projected round score. The model already computes this (rolling Strokes
+Gained + historical scoring average at course type). Adding the column:
+- Schema: `ALTER TABLE predictions ADD COLUMN expected_value REAL`
+- Backfill: derive from `features_json` (projected score stored there)
+- Going forward: store before OVER/UNDER comparison in prediction script
+
+### Feature Gaps
+Current features are player-historical only. Missing:
+
+| Feature | Impact | Source |
+|---|---|---|
+| Strokes Gained at this specific venue | High | PGA Tour SG data |
+| Course fit score (ball-striking vs putting) | High | Course profile + player SG splits |
+| Wind speed + direction | High | Weather API (already in MLB pipeline) |
+| Field quality (avg world ranking) | Medium | PGA Tour API |
+| Round-over-round momentum (R1 → R2) | Medium | Already in round_logs |
+| Cut line historical at this venue | Medium | PGA Tour historical |
+
+### ML Training Gate
+- **Current**: 3,816 predictions, ~2,800 graded
+- **Target**: 700+ graded samples per prop/line combo before training
+- `round_score` is close — likely ready for a first model by mid-summer 2026
+- `make_cut` has only 118 graded — needs a full season before ML is viable
+- **Plan**: build scaffold after Masters 2026 (already past), target first retrain Oct 2026 alongside NHL/NBA
+
+### Tournament Coverage Gap
+Golf predictions run tournament-by-tournament. Verify the orchestrator is picking
+up every PGA Tour event — some weeks have multiple events (e.g. opposite-field).
+Check that `fetch_golf_schedule` is current through end of 2025-26 PGA season.
+
+### Immediate Golf Actions
+1. Fix `make_cut` — investigate why accuracy is below random, likely field normalization
+2. Add `expected_value` column (same session as NBA EV work)
+3. Add weather API integration (reuse MLB `weather_client.py`)
+4. Add venue-specific Strokes Gained history to `player_round_logs`
+5. Verify tournament schedule coverage through PGA season end
