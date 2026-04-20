@@ -3394,6 +3394,14 @@ class SportsOrchestrator:
 
             if result.returncode == 0:
                 print(f"[GAME GRADE] {self.config.sport} game predictions graded")
+                if TURSO_SYNC_AVAILABLE:
+                    try:
+                        import asyncio as _aio
+                        from sync.turso_sync import sync_game_prediction_outcomes as _sgpo
+                        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+                        _aio.run(_sgpo(sport, yesterday))
+                    except Exception as _te:
+                        print(f"[GAME GRADE] Turso outcomes sync failed (non-fatal): {_te}")
                 return {"success": True}
             else:
                 print(f"[GAME GRADE] Failed: {result.stderr[:500]}")

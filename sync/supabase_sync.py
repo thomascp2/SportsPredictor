@@ -366,9 +366,9 @@ class SupabaseSync:
                 for pick in picks:
                     local_name = pick.local_player_name if pick.local_player_name else pick.player_name
                     c.execute(
-                        "UPDATE predictions SET is_smart_pick=1, ai_tier=? "
+                        "UPDATE predictions SET is_smart_pick=1, ai_tier=?, odds_type=? "
                         "WHERE game_date=? AND player_name=? AND prop_type=? AND line=?",
-                        (pick.tier, game_date, local_name, pick.prop_type, pick.pp_line),
+                        (pick.tier, pick.pp_odds_type, game_date, local_name, pick.prop_type, pick.pp_line),
                     )
                     sqlite_updated += c.rowcount
                 conn.commit()

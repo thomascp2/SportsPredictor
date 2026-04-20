@@ -162,7 +162,7 @@ async def sync_smart_picks(sport: str, game_date: str):
 
     # Only fetch rows that have smart pick data set
     rows = conn.execute('''
-        SELECT player_name, prop_type, line, is_smart_pick, ai_tier
+        SELECT player_name, prop_type, line, is_smart_pick, ai_tier, odds_type
         FROM predictions
         WHERE game_date = ?
           AND is_smart_pick IS NOT NULL
@@ -184,19 +184,20 @@ async def sync_smart_picks(sport: str, game_date: str):
         stmts_norm = []
         update_sql = '''UPDATE predictions
                         SET is_smart_pick = ?,
-                            ai_tier = ?
+                            ai_tier = ?,
+                            odds_type = ?
                         WHERE game_date = ?
                           AND player_name = ?
                           AND prop_type = ?
                           AND line = ?'''
         for row in rows:
-            player_name, prop_type, line, is_smart, ai_tier = row
+            player_name, prop_type, line, is_smart, ai_tier, odds_type = row
             norm = _normalize_name(player_name)
-            vals = [is_smart, ai_tier, game_date, player_name, prop_type, line]
+            vals = [is_smart, ai_tier, odds_type or 'standard', game_date, player_name, prop_type, line]
             stmts_exact.append(libsql_client.Statement(update_sql, vals))
             # Also push normalized variant for diacritics stored without accents
             if norm != player_name:
-                vals_norm = [is_smart, ai_tier, game_date, norm, prop_type, line]
+                vals_norm = [is_smart, ai_tier, odds_type or 'standard', game_date, norm, prop_type, line]
                 stmts_norm.append(libsql_client.Statement(update_sql, vals_norm))
 
         all_stmts = stmts_exact + stmts_norm
@@ -317,6 +318,60 @@ async def sync_game_predictions(sport: str, game_date: str):
 
 
 # ---------------------------------------------------------------------------
+# sync_game_prediction_outcomes — push grading results to Turso
+# ---------------------------------------------------------------------------
+
+async def sync_game_prediction_outcomes(sport: str, game_date: str):
+    """
+    Upsert game_prediction_outcomes rows for game_date from SQLite into Turso.
+    Uses INSERT OR REPLACE so re-grading overwrites stale rows.
+    Supports NHL, NBA, MLB.
+    """
+    cfg = SPORT_CONFIG.get(sport)
+    if not cfg:
+        return 0
+
+    db_path = cfg['db']
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM game_prediction_outcomes WHERE game_date = ?", (game_date,)
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return 0
+
+    if not rows:
+        return 0
+
+    cols = list(rows[0].keys())
+    col_list = ', '.join(f'"{c}"' for c in cols)
+    placeholders = ', '.join(['?' for _ in cols])
+
+    col_defs = ', '.join(
+        f'"{c}" {"INTEGER PRIMARY KEY" if c == "id" else "TEXT"}' for c in cols
+    )
+    create_sql = f'CREATE TABLE IF NOT EXISTS game_prediction_outcomes ({col_defs})'
+    upsert_sql = f'INSERT OR REPLACE INTO game_prediction_outcomes ({col_list}) VALUES ({placeholders})'
+
+    client = _turso_client(sport)
+    inserted = 0
+    try:
+        await client.execute(create_sql)
+        for i in range(0, len(rows), BATCH_SIZE):
+            batch = rows[i:i + BATCH_SIZE]
+            stmts = [libsql_client.Statement(upsert_sql, list(r)) for r in batch]
+            await _batch_execute(client, stmts)
+            inserted += len(batch)
+        print(f"  [{sport.upper()}] game_prediction_outcomes: {inserted} rows synced to Turso.")
+    finally:
+        await client.close()
+
+    return inserted
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -334,6 +389,8 @@ async def run_sync(sports: list, operation: str, game_date: str):
                 await sync_grading(sport, game_date)
             if operation in ('game-predictions', 'all'):
                 await sync_game_predictions(sport, game_date)
+            if operation in ('game-outcomes', 'all'):
+                await sync_game_prediction_outcomes(sport, game_date)
         except Exception as e:
             pname = sport.upper()
             print(f"  [{pname}] ERROR: {e}")
@@ -346,7 +403,8 @@ def main():
     parser.add_argument('--sport', default='all',
                         choices=['nhl', 'nba', 'mlb', 'golf', 'all'])
     parser.add_argument('--operation', default='all',
-                        choices=['predictions', 'smart-picks', 'grading', 'game-predictions', 'all'])
+                        choices=['predictions', 'smart-picks', 'grading', 'game-predictions',
+                                 'game-outcomes', 'all'])
     parser.add_argument('--date', default=None,
                         help="Date to sync (default: today, YYYY-MM-DD)")
     args = parser.parse_args()

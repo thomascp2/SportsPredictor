@@ -553,6 +553,27 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
             _filtered.append(p)
         if _filtered:
             df = pd.DataFrame(_filtered)
+            # Enrich game_time from prizepicks_lines.db (same source as pp-sync)
+            try:
+                import sqlite3 as _sq3t
+                _ppdb_t = root / "shared" / "prizepicks_lines.db"
+                if _ppdb_t.exists():
+                    _ppc_t = _sq3t.connect(str(_ppdb_t))
+                    _time_rows = _ppc_t.execute(
+                        "SELECT team, MIN(start_time) FROM prizepicks_lines "
+                        "WHERE substr(start_time,1,10)=? AND league=? AND team NOT LIKE '%/%' "
+                        "GROUP BY team",
+                        [game_date, sport.upper()],
+                    ).fetchall()
+                    _ppc_t.close()
+                    _team_times = {}
+                    for _tm, _iso in _time_rows:
+                        _ts = _iso[:19] + _iso[23:] if _iso and '.' in _iso else _iso
+                        if _ts:
+                            _team_times[_tm.upper()] = _ts
+                    df["game_time"] = df["team"].apply(lambda t: _team_times.get(str(t).upper()))
+            except Exception:
+                pass  # game_time stays None
             df["Prob"]     = (df["ai_probability"] * 100).round(1).astype(str) + "%"
             df["PP Impl"]  = (df["pp_implied"] * 100).round(0).astype(int).astype(str) + "%"
             df["Edge"]     = df["ai_edge"].round(1).apply(lambda x: f"+{x}%" if x >= 0 else f"{x}%")
@@ -1293,8 +1314,52 @@ def fetch_game_predictions(sport: str, game_date: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def fetch_game_outcomes(sport: str, days: int = 30) -> pd.DataFrame:
-    """Fetch game prediction outcomes for performance tracking."""
-    import sqlite3, os
+    """Fetch game prediction outcomes. Tries Turso first, falls back to local SQLite."""
+    import sqlite3, os, asyncio as _aio
+    from datetime import date, timedelta
+
+    _OUTCOME_COLS = ["game_date", "bet_type", "bet_side", "confidence_tier",
+                     "prediction", "outcome", "profit", "odds_american",
+                     "home_score", "away_score", "actual_margin", "actual_total"]
+    _TURSO_CFG = {
+        "NHL": ("TURSO_NHL_URL",  "TURSO_NHL_TOKEN"),
+        "NBA": ("TURSO_NBA_URL",  "TURSO_NBA_TOKEN"),
+        "MLB": ("TURSO_MLB_URL",  "TURSO_MLB_TOKEN"),
+    }
+    turso_cfg = _TURSO_CFG.get(sport.upper())
+    if turso_cfg:
+        url_env, tok_env = turso_cfg
+        url   = _os.getenv(url_env, "").replace("libsql://", "https://")
+        token = _os.getenv(tok_env, "")
+        if url and token:
+            try:
+                import libsql_client as _lc
+                cutoff = (date.today() - timedelta(days=days)).isoformat()
+
+                async def _fetch():
+                    client = _lc.create_client(url=url, auth_token=token)
+                    try:
+                        res = await client.execute(
+                            "SELECT game_date, bet_type, bet_side, confidence_tier, "
+                            "prediction, outcome, profit, odds_american, "
+                            "home_score, away_score, actual_margin, actual_total "
+                            "FROM game_prediction_outcomes "
+                            "WHERE game_date >= ? AND outcome IN ('HIT','MISS','PUSH') "
+                            "ORDER BY game_date DESC",
+                            [cutoff],
+                        )
+                        return res.rows
+                    except Exception:
+                        return None
+                    finally:
+                        await client.close()
+
+                rows = _aio.run(_fetch())
+                if rows is not None:
+                    return pd.DataFrame([dict(zip(_OUTCOME_COLS, r)) for r in rows])
+            except Exception:
+                pass  # fall through to local SQLite
+
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     db_map = {
         "NHL": os.path.join(PROJECT_ROOT, "nhl", "database", "nhl_predictions_v2.db"),
@@ -2191,9 +2256,9 @@ def main():
                       "Src": "Src"}
 
         with pt1:
-            sort_by = st.selectbox("Sort by", ["Edge", "Probability", "Tier"], key=f"{kp}_sort_all")
-            sort_map = {"Edge": "ai_edge", "Probability": "ai_probability", "Tier": "ai_tier"}
-            df_sorted = df.sort_values(sort_map[sort_by], ascending=(sort_by == "Tier"))
+            sort_by = st.selectbox("Sort by", ["Edge", "Probability", "Prop", "Tier"], key=f"{kp}_sort_all")
+            sort_map = {"Edge": "ai_edge", "Probability": "ai_probability", "Prop": "Prop", "Tier": "ai_tier"}
+            df_sorted = df.sort_values(sort_map[sort_by], ascending=(sort_by in ("Tier", "Prop")))
             _safe_cols = [c for c in display_cols if c in df_sorted.columns]
             st.dataframe(df_sorted[_safe_cols].rename(columns=col_labels),
                          use_container_width=True, hide_index=True, height=420)
