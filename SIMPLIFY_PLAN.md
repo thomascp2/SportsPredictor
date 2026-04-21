@@ -64,9 +64,11 @@
   mirrors Supabase daily_games schema exactly.
 - [x] Step 5: game_sync.py fully rewritten — Turso HTTP pipeline replaces Supabase client.
   Removed _lock_started_games (was locking daily_props, a Supabase-only concept).
-- [ ] Step 6: Backfill historical ai_edge — run next session:
-  `python -m sync.turso_sync --sport all --operation smart-picks --date YYYY-MM-DD`
-  for the last ~30 days of active prediction dates.
+- [x] Step 6: Backfill historical ai_edge — complete (f82ec62a):
+  - Ran turso_migrate --fix-schema to add ai_edge/ai_ev_*/game_time to all 4 Turso DBs
+  - Computed ai_edge directly from probability + breakeven formula for 131,559 SQLite rows
+  - Synced to Turso: NBA 52,458 rows (32 dates), NHL 18,606 (32 dates), MLB 25,285 (15 dates)
+  - Fixed pp-sync: added SmartPickSelector write-back as step 2 so future runs populate ai_edge in SQLite before Turso reads it
 
 ### 3C — Remove Supabase from Dashboard ✅ COMPLETE (4fb6a81d)
 
@@ -157,11 +159,7 @@ CURRENT STATE (all committed, pushed to master):
 
 REMAINING TASKS:
 
-1. Backfill ai_edge into Turso for recent dates:
-   python -m sync.turso_sync --sport nba --operation smart-picks --date 2026-04-21
-   (repeat for each date; can loop over date range)
-
-2. Phase 4 — Streamlit Cloud deploy for remote access:
+1. Phase 4 — Streamlit Cloud deploy for remote access:
    Dashboard already reads Turso. Set TURSO_*_URL + TURSO_*_TOKEN in Streamlit Cloud secrets.
    Deploy dashboards/cloud_dashboard.py to share.streamlit.io → permanent public URL.
 
