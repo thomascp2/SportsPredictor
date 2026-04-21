@@ -3,13 +3,14 @@
 FreePicks Cloud Dashboard
 =========================
 
-Mobile-friendly monitoring dashboard backed by Supabase.
-Reads from daily_props, model_performance, and daily_games tables.
+Monitoring dashboard backed by Turso (cloud SQLite) + local SQLite fallback.
+Reads picks, outcomes, and game data from Turso; falls back to local DB when
+running on the local machine.
 
 Deploy to Streamlit Community Cloud:
   1. Push this repo to GitHub
-  2. Go to share.streamlit.io → New app → select this file
-  3. Add secrets: SUPABASE_URL and SUPABASE_KEY in the Streamlit Cloud UI
+  2. Go to share.streamlit.io -> New app -> select this file
+  3. Add Turso secrets (TURSO_*_URL, TURSO_*_TOKEN) in the Streamlit Cloud UI
 
 Run locally:
   streamlit run dashboards/cloud_dashboard.py
@@ -332,25 +333,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ── Supabase client ───────────────────────────────────────────────────────────
-@st.cache_resource
+# Supabase deprecated — stub returns None so all fallback branches short-circuit safely.
+# TODO: remove remaining sb call sites once Turso has full data parity.
 def get_supabase():
-    try:
-        from supabase import create_client
-        # Streamlit Cloud: secrets set in UI
-        # Local: falls back to env vars
-        try:
-            url = st.secrets["SUPABASE_URL"]
-            key = st.secrets["SUPABASE_KEY"]
-        except Exception:
-            import os
-            url = os.getenv("SUPABASE_URL", "")
-            key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-        if not url or not key:
-            return None
-        return create_client(url, key)
-    except ImportError:
-        return None
+    return None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1388,28 +1374,23 @@ def fetch_game_outcomes(sport: str, days: int = 30) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def fetch_pipeline_status() -> dict:
-    """Last prediction date + count per sport from daily_props."""
-    sb = get_supabase()
-    if sb is None:
-        return {}
+    """Last prediction date + count per sport from Turso predictions table."""
+    sport_keys = {"NBA": "nba", "NHL": "nhl", "MLB": "mlb"}
     status = {}
-    for sport in ["NBA", "NHL", "MLB"]:
-        r = (sb.table("daily_props")
-               .select("game_date,status", count="exact")
-               .eq("sport", sport)
-               .order("game_date", desc=True)
-               .limit(1)
-               .execute())
-        if r.data:
-            last_date = r.data[0]["game_date"]
-            r2 = (sb.table("daily_props")
-                    .select("id", count="exact")
-                    .eq("sport", sport)
-                    .eq("game_date", last_date)
-                    .execute())
-            status[sport] = {"last_date": last_date, "count": r2.count or 0}
-        else:
-            status[sport] = {"last_date": "—", "count": 0}
+    sql_date = "SELECT MAX(game_date) FROM predictions"
+    for sport_label, sport_key in sport_keys.items():
+        try:
+            rows = _turso_request(sport_key, sql_date)
+            last_date = _turso_cell(rows[0][0]) if rows else None
+            if last_date:
+                sql_count = "SELECT COUNT(*) FROM predictions WHERE game_date = ?"
+                count_rows = _turso_request(sport_key, sql_count, [last_date])
+                count = int(_turso_cell(count_rows[0][0]) or 0) if count_rows else 0
+                status[sport_label] = {"last_date": last_date, "count": count}
+            else:
+                status[sport_label] = {"last_date": "—", "count": 0}
+        except Exception:
+            status[sport_label] = {"last_date": "—", "count": 0}
     return status
 
 
@@ -1423,40 +1404,8 @@ def fetch_season_projections(stat_filter: str = None,
     import sqlite3 as _sqlite3
     root = _Path(__file__).parent.parent
     db_path = root / 'mlb' / 'database' / 'mlb_predictions.db'
-    _local_ok = db_path.exists()
-    if not _local_ok:
-        # ── Supabase fallback (Streamlit Cloud) ────────────────────────────────
-        sb = get_supabase()
-        if sb is None:
-            return pd.DataFrame()
-        try:
-            r_season = (sb.table("mlb_season_projections")
-                          .select("season").order("season", desc=True).limit(1).execute())
-            if not r_season.data:
-                return pd.DataFrame()
-            latest_season = r_season.data[0]["season"]
-            q = (sb.table("mlb_season_projections")
-                   .select("player_name,team,player_type,stat,projection,"
-                           "std_dev,confidence,seasons_used,age")
-                   .eq("season", latest_season))
-            if stat_filter and stat_filter != "All":
-                q = q.eq("stat", stat_filter)
-            if player_type and player_type != "All":
-                q = q.eq("player_type", player_type.lower())
-            if team_filter and team_filter != "All":
-                q = q.eq("team", team_filter)
-            r = q.order("projection", desc=True).execute()
-            rows = r.data or []
-        except Exception:
-            rows = []
-        if not rows:
-            return pd.DataFrame()
-        conf_order = {"HIGH": 3, "MEDIUM": 2, "LOW": 1, "VERY LOW": 0}
-        min_conf_val = conf_order.get(min_confidence, 0)
-        df = pd.DataFrame(rows)
-        df["_conf_val"] = df["confidence"].map(conf_order).fillna(0)
-        df = df[df["_conf_val"] >= min_conf_val].drop(columns=["_conf_val"])
-        return df
+    if not db_path.exists():
+        return pd.DataFrame()
     try:
         conn = _sqlite3.connect(str(db_path))
         query = '''
