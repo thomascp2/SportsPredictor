@@ -68,39 +68,28 @@
   `python -m sync.turso_sync --sport all --operation smart-picks --date YYYY-MM-DD`
   for the last ~30 days of active prediction dates.
 
-### 3C — Remove Supabase from Dashboard (PARTIAL)
+### 3C — Remove Supabase from Dashboard ✅ COMPLETE (4fb6a81d)
 
-**Done:**
-- [x] Replaced fetch_pipeline_status() with Turso version
-- [x] Removed Supabase fallback from fetch_season_projections()
-- [x] get_supabase() stub → returns None (safe — all remaining callers check `if sb is None`)
-- [x] Changed dashboard docstring to reference Turso
+- [x] Remove 4 remaining get_supabase() call sites (all `if not db_path.exists():` guards → early return)
+- [x] Replace "Supabase Sync" System tab section with Turso row count query (4 sports)
+- [x] Remove get_supabase() stub
+- [x] Clean up Supabase references in docstrings
 
-**Still TODO (3B is done — safe to finish now):**
-- [ ] Remove 4 remaining get_supabase() call sites:
-  - ~line 1454: fetch_ml_szln_picks() if-not-local-ok fallback
-  - ~line 1541: fetch_player_projection() if-not-local-ok fallback
-  - ~line 1647: fetch_hb_picks() if-not-local-ok fallback
-  - ~line 1703: fetch_hb_history() if-not-local-ok fallback
-  - ALL are `if not db_path.exists():` guards → just change to `return pd.DataFrame()` / `return {}` / `return []`
-- [ ] Remove "Supabase Sync" section from System tab (~line 3585-3611) → replace with Turso row count query
-- [ ] Remove get_supabase() stub once all call sites gone
+### 3D — Remove Supabase from Orchestrator Write Path ✅ COMPLETE (4fb6a81d)
 
-### 3D — Remove Supabase from Orchestrator Write Path (TODO — do AFTER 3B+3C)
+- [x] `SUPABASE_SYNC_AVAILABLE = False` (removed import block)
+- [x] Prediction sync: replaced Supabase block with Turso-only call
+- [x] Grading sync: extracted Turso from inside Supabase block, removed Supabase block
+- [x] pp-sync: removed early-return check + full Supabase block; Turso-only now
+- [x] supabase_local_sync imports removed from H+B and SZLN operations
 
-In orchestrator.py:
-- Line 123: `from sync.supabase_sync import SupabaseSync` → delete
-- Line 124: `SUPABASE_SYNC_AVAILABLE = True` → hardcode False
-- Lines 760, 933: supabase_sync calls after predictions/grading → delete (guarded by flag, so just set flag False)
-- Line 2601: supabase check in pp-sync → delete
-- Lines 3514, 3556: supabase_local_sync imports → delete
-
-Move game_time sync and odds_type sync logic (currently in supabase_sync) into turso_sync as standalone operations.
-
-### 3E — Archive Supabase Sync Code (TODO — after 3D confirmed working)
-- Move sync/supabase_sync.py → _archive/supabase_sync.py
-- Move sync/game_sync.py → update in place (Turso version) 
-- Supabase account: leave dormant for 2 weeks before deleting
+### 3E — Archive Supabase Sync Code ✅ COMPLETE (4fb6a81d)
+- [x] sync/supabase_sync.py → _archive/supabase_sync.py
+- [x] sync/backfill_smart_picks.py → _archive/
+- [x] sync/backfill_supabase.py → _archive/
+- [x] sync/purge_stale_rows.py → _archive/
+- [x] sync/config.py: removed SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+- [ ] Supabase account: leave dormant for 2 weeks before deleting
 
 ---
 
@@ -114,12 +103,14 @@ Move game_time sync and odds_type sync logic (currently in supabase_sync) into t
 
 ---
 
-## Phase 5 — Remaining File Cleanup (TODO — after Phase 3)
+## Phase 5 — Remaining File Cleanup (PARTIAL)
 
-**Delete these files:**
-- mlb/database/mlb_game_predictions.db (0 bytes, unused)
-- nhl/database/nhl_predictions.db (0 bytes, deprecated)
-- nhl/database/hits_blocks.db (experimental, no sync plan)
+**Deleted:**
+- [x] mlb/database/mlb_game_predictions.db (0 bytes)
+- [x] nhl/database/nhl_predictions.db (0 bytes, deprecated)
+
+**Still TODO:**
+- [ ] nhl/database/hits_blocks.db (experimental, no sync plan — delete when NHL season confirmed over)
 
 **Archive these files (to _archive/):**
 - sync/supabase_sync.py (after orchestrator write path removed in 3D)
@@ -142,74 +133,44 @@ Move game_time sync and odds_type sync logic (currently in supabase_sync) into t
 | grading | ✅ working | prediction_outcomes |
 | game-predictions | ✅ working | game_predictions |
 | game-outcomes | ✅ working | game_prediction_outcomes |
-| game-times | ❌ TODO | predictions (UPDATE game_time) |
-| game-scores | ❌ TODO | game_scores (new table) |
-| smart-picks edge | ❌ TODO | predictions (UPDATE ai_edge, ai_ev_*) |
+| game-times | ✅ working | predictions (UPDATE game_time) |
+| game-scores | ✅ working | game_scores (new table) |
+| smart-picks edge | ✅ working | predictions (UPDATE ai_edge, ai_ev_*) |
 
 ---
 
 ## Handoff Prompt (paste at start of next session)
 
 ```
-We are mid-execution on simplifying SportsPredictor to SQLite local + Turso cloud only.
-VPS is killed. Supabase is being deprecated. FreePicks mobile app is intentionally dead.
+We are finishing the simplification of SportsPredictor to SQLite local + Turso cloud only.
+VPS is killed. Supabase is fully removed from code. FreePicks mobile app is dead.
 
 CURRENT STATE (all committed, pushed to master):
 - Phase 1 ✅ Git cleanup (4b5bc02b)
 - Phase 2 ✅ VPS archived (ac6eb42b)
 - Phase 3A ✅ Turso gap audit complete
-- Phase 3B ✅ Turso gaps filled (6f032dd1):
-    - All 4 SQLite DBs: added ai_edge, ai_ev_2/3/4leg, game_time, golf+odds_type
-    - supabase_sync.py write-back now persists ai_edge + ai_ev_* to SQLite
-    - turso_sync.py: sync_smart_picks now syncs ai_edge + ai_ev_*
-    - turso_sync.py: added sync_game_times() and sync_game_scores()
-    - game_sync.py: fully rewritten to Turso, Supabase entirely removed from it
-- Phase 3C PARTIAL (0bfe63ab): dashboard get_supabase() stubbed to return None (safe)
+- Phase 3B ✅ Turso gaps filled (6f032dd1)
+- Phase 3C ✅ Dashboard: all Supabase call sites removed, System tab replaced (4fb6a81d)
+- Phase 3D ✅ Orchestrator: SUPABASE_SYNC_AVAILABLE=False, all sync paths → Turso (4fb6a81d)
+- Phase 3E ✅ Archived: supabase_sync.py, backfill_*.py, purge_stale_rows.py, config.py cleaned (4fb6a81d)
+- Phase 5 PARTIAL: deleted mlb_game_predictions.db, nhl_predictions.db (0-byte files)
 
-RULE: SQLite write-back in supabase_sync.py must STAY even after Supabase is removed.
-It is now the mechanism that writes ai_edge/ai_ev_* from SmartPickSelector into SQLite
-so Turso can pick them up. Do NOT delete that block.
+REMAINING TASKS:
 
-NEXT TASKS in order:
-
-1. Backfill ai_edge into Turso for recent dates (last 30 days of active picks):
+1. Backfill ai_edge into Turso for recent dates:
    python -m sync.turso_sync --sport nba --operation smart-picks --date 2026-04-21
-   (repeat for each date with predictions; can loop over date range)
+   (repeat for each date; can loop over date range)
 
-2. Finish Phase 3C — dashboard cleanup (dashboards/cloud_dashboard.py):
-   Remove 4 remaining get_supabase() call sites — all are `if not db_path.exists():` guards:
-   - ~line 1454: fetch_ml_szln_picks() → replace fallback block with `return pd.DataFrame()`
-   - ~line 1541: fetch_player_projection() → replace fallback block with `return None`
-   - ~line 1647: fetch_hb_picks() → replace fallback block with `return {}`
-   - ~line 1703: fetch_hb_history() → replace fallback block with `return []`
-   Then remove the `def get_supabase(): return None` stub.
-   Then replace "Supabase Sync" System tab section (~line 3585-3611) with Turso row count query.
-
-3. Phase 3D — remove Supabase from orchestrator write path (orchestrator.py):
-   - Lines ~123-126: remove supabase_sync import, hardcode SUPABASE_SYNC_AVAILABLE = False
-   - Lines ~760, 933: supabase_sync calls already guarded — will auto-skip with flag=False
-   - Lines ~2601: supabase check in pp-sync → just remove the early-return check
-   - Lines ~3514, 3556: supabase_local_sync imports → delete (wrap in try/except or delete)
-   Also: remove sync_odds_types() and sync_game_times() calls from orchestrator since Supabase
-   is where those wrote to; turso_sync now handles game_times via 'all' operation.
-
-4. Phase 3E — archive supabase code:
-   Move sync/supabase_sync.py → _archive/supabase_sync.py
-   sync/config.py: remove SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY lines
-
-5. Phase 4 — Streamlit Cloud deploy for remote access:
+2. Phase 4 — Streamlit Cloud deploy for remote access:
    Dashboard already reads Turso. Set TURSO_*_URL + TURSO_*_TOKEN in Streamlit Cloud secrets.
    Deploy dashboards/cloud_dashboard.py to share.streamlit.io → permanent public URL.
 
-6. Phase 5 — delete dead files:
-   mlb/database/mlb_game_predictions.db (0 bytes)
-   nhl/database/nhl_predictions.db (0 bytes, deprecated)
+3. Phase 5 remaining:
+   - Delete nhl/database/hits_blocks.db when NHL season confirmed over
 
 Key files:
-- SIMPLIFY_PLAN.md — this plan (update as you go)
-- dashboards/cloud_dashboard.py — 4 get_supabase() call sites + System tab section
-- orchestrator.py — supabase_sync calls at ~760, 933, 2601, 3514, 3556
-- sync/supabase_sync.py — archive after orchestrator is clean; keep SQLite write-back logic
-- sync/turso_sync.py — new sync_game_times + sync_game_scores already added
-- sync/config.py — remove Supabase vars after orchestrator cleaned
+- SIMPLIFY_PLAN.md — this plan
+- dashboards/cloud_dashboard.py — Turso-only, no Supabase
+- orchestrator.py — SUPABASE_SYNC_AVAILABLE=False, all writes go to Turso
+- sync/turso_sync.py — the only cloud sync layer
 ```
