@@ -2537,7 +2537,47 @@ class SportsOrchestrator:
             except Exception as _hb_err:
                 print(f"[PP-SYNC] Hits/blocks refresh check failed (non-fatal): {_hb_err}")
 
-        # Sync to Turso (cloud SQLite)
+        # Step 2: Run SmartPickSelector — writes ai_edge/ai_tier/odds_type back to SQLite.
+        # This is the authoritative write; Turso sync (step 3) reads from SQLite.
+        try:
+            sys.path.insert(0, str(self.root / 'shared'))
+            from smart_pick_selector import SmartPickSelector
+            import sqlite3 as _sqlite3
+            selector = SmartPickSelector(self.config.sport.lower())
+            picks = selector.get_smart_picks(
+                game_date=target_date,
+                min_edge=-100.0,   # include all tiers so we write back all smart rows
+                min_prob=0.0,
+                odds_types=['standard', 'goblin', 'demon'],
+                refresh_lines=False,  # lines already fetched in step 1
+            )
+            if picks:
+                db_path = str(selector.pred_db_path)
+                conn = _sqlite3.connect(db_path)
+                c = conn.cursor()
+                updated = 0
+                for pick in picks:
+                    local_name = pick.local_player_name if pick.local_player_name else pick.player_name
+                    c.execute(
+                        "UPDATE predictions "
+                        "SET is_smart_pick=1, ai_tier=?, odds_type=?, "
+                        "    ai_edge=?, ai_ev_2leg=?, ai_ev_3leg=?, ai_ev_4leg=? "
+                        "WHERE game_date=? AND player_name=? AND prop_type=? AND line=?",
+                        (pick.tier, pick.pp_odds_type,
+                         round(pick.edge, 4), round(pick.ev_2leg, 4),
+                         round(pick.ev_3leg, 4), round(pick.ev_4leg, 4),
+                         target_date, local_name, pick.prop_type, pick.pp_line),
+                    )
+                    updated += c.rowcount
+                conn.commit()
+                conn.close()
+                print(f"[PP-SYNC] SmartPickSelector: {len(picks)} picks, {updated} SQLite rows updated")
+            else:
+                print(f"[PP-SYNC] SmartPickSelector: no picks found for {target_date}")
+        except Exception as _sps_err:
+            print(f"[PP-SYNC] SmartPickSelector write-back failed (non-fatal): {_sps_err}")
+
+        # Step 3: Sync to Turso (cloud SQLite) — reads ai_edge/ai_tier from SQLite
         if TURSO_SYNC_AVAILABLE:
             try:
                 asyncio.run(_turso_sync_predictions(self.config.sport.lower(), target_date))
