@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Turso Sync — SQLite -> Turso (redundant write layer)
-=====================================================
-Mirrors prediction data to Turso alongside Supabase.
+Turso Sync — SQLite -> Turso (cloud write layer)
+=================================================
+Syncs prediction data from local SQLite to Turso cloud.
 Writes to the same SQLite-schema tables already migrated by turso_migrate.py.
 
 Operations:
@@ -388,7 +388,6 @@ async def sync_game_prediction_outcomes(sport: str, game_date: str):
 async def sync_game_times(sport: str, game_date: str):
     """
     Update predictions.game_time in Turso using PrizePicks start_time data.
-    Replaces the supabase_sync.sync_game_times() role for Turso.
     Reads shared/prizepicks_lines.db, groups by team, pushes earliest start_time.
     """
     import os as _os
@@ -443,7 +442,6 @@ async def sync_game_times(sport: str, game_date: str):
 
 # ---------------------------------------------------------------------------
 # sync_game_scores — upsert live game scores into Turso game_scores table
-# (replaces Supabase daily_games; called by game_sync.py)
 # ---------------------------------------------------------------------------
 
 GAME_SCORES_DDL = '''

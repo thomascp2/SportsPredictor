@@ -333,11 +333,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# Supabase deprecated — stub returns None so all fallback branches short-circuit safely.
-# TODO: remove remaining sb call sites once Turso has full data parity.
-def get_supabase():
-    return None
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _fmt_time(ts):
@@ -364,27 +359,9 @@ def _fmt_time(ts):
 def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
                 direction: Optional[str], tier_filter: list) -> pd.DataFrame:
     """
-    Load today's smart picks directly from SQLite via SmartPickSelector (primary).
-    Supabase is the fallback for Streamlit Cloud where local SQLite is unavailable.
-
-    WHY SQLite is primary (verified 2026-04-06):
-    - MLB has 0 is_smart_pick=True rows in Supabase (pp-sync never sets the flag for MLB),
-      so Supabase-primary silently returns an empty picks list for every MLB game day.
-    - Golf is entirely absent from Supabase (0 rows).
-    - Supabase daily_props accumulates stale rows from superseded PP lines on upsert
-      (unique key is game_date+player+prop+line, so old lines linger when PP adjusts),
-      making Supabase counts inflate over time (~10-15% more rows than SQLite per day).
-    - SmartPickSelector always reads the live SQLite prediction DB + today's PP lines,
-      so it reflects the latest pp-sync output without stale accumulation.
-    - Supabase free tier is ~85% full (~290k rows); SQLite stays local and doesn't count.
-
-    Revert history: was briefly flipped to Supabase-primary on 2026-04-06; reverted
-    same day after data audit showed MLB picks disappeared from the dashboard.
-
-    Priority order post-VPS migration (2026-04-18):
-      1. Turso  — VPS syncs predictions here; always current; works from any machine
+    Load today's smart picks. Priority order:
+      1. Turso  — cloud SQLite; always current; works from any machine
       2. SmartPickSelector (local SQLite) — only fresh when running locally with active pipeline
-      3. Supabase — fallback; NHL/Golf/MLB often missing is_smart_pick
     """
     import sys, asyncio as _asyncio
     from pathlib import Path
@@ -611,7 +588,7 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
             "ai_edge": p.edge,
             "ai_tier": p.tier,
             "ai_ev_4leg": p.ev_4leg,
-            "game_time": None,   # not on SmartPick object; filled below from Supabase
+            "game_time": None,   # filled below from prizepicks_lines.db
             "matchup": f"{p.team} vs {p.opponent}",
         })
 
@@ -919,7 +896,7 @@ def fetch_performance(sport: str) -> pd.DataFrame:
 def fetch_pnl_local(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
     """
     Read profit/outcome data directly from local SQLite prediction_outcomes.
-    Used for the investor P&L section since Supabase daily_props lacks profit.
+    Used for the investor P&L section. Reads directly from local SQLite.
     Returns one row per graded prediction with columns:
         game_date, outcome, profit, ai_tier (if available)
     """
@@ -1455,30 +1432,7 @@ def fetch_szln_picks(stat_filter: str = None,
     db_path = root / 'mlb' / 'database' / 'mlb_predictions.db'
     _local_ok = db_path.exists()
     if not _local_ok:
-        # ── Supabase fallback (Streamlit Cloud) ────────────────────────────────
-        sb = get_supabase()
-        if sb is None:
-            return pd.DataFrame()
-        try:
-            q = (sb.table("mlb_szln_picks")
-                   .select("player_name,team,player_type,stat,pp_stat_type,"
-                           "line,direction,probability,edge,projection,std_dev,"
-                           "confidence,model_used,recommendation,fetched_at"))
-            if stat_filter and stat_filter != "All":
-                q = q.eq("stat", stat_filter)
-            if direction_filter and direction_filter != "All":
-                q = q.eq("direction", direction_filter)
-            if player_type_filter and player_type_filter != "All":
-                q = q.eq("player_type", player_type_filter.lower())
-            if min_edge and min_edge > 0:
-                q = q.gte("edge", min_edge)
-            r = q.order("edge", desc=True).execute()
-            rows = r.data or []
-        except Exception:
-            rows = []
-        if not rows:
-            return pd.DataFrame()
-        return pd.DataFrame(rows)
+        return pd.DataFrame()
     try:
         conn = _sqlite3.connect(str(db_path))
         # Check table exists
@@ -1542,57 +1496,7 @@ def _evaluate_line(player_name: str, stat: str, line: float,
     db_path = root / 'mlb' / 'database' / 'mlb_predictions.db'
     _local_ok = db_path.exists()
     if not _local_ok:
-        # ── Supabase fallback (Streamlit Cloud) ────────────────────────────────
-        sb = get_supabase()
-        if sb is None:
-            return None
-        try:
-            r = (sb.table("mlb_season_projections")
-                   .select("projection,std_dev,confidence,seasons_used,age,team")
-                   .ilike("player_name", f"%{player_name.strip()}%")
-                   .eq("stat", stat)
-                   .order("confidence", desc=True)
-                   .limit(1)
-                   .execute())
-            row_data = r.data[0] if r.data else None
-        except Exception:
-            row_data = None
-        if not row_data:
-            return None
-        proj     = row_data["projection"]
-        std_dev  = row_data["std_dev"] or max(proj * 0.18, 1.0)
-        conf     = row_data["confidence"]
-        seasons  = row_data["seasons_used"]
-        age      = row_data["age"]
-        team     = row_data["team"]
-        # --- shared probability calc (duplicated below for SQLite path) ---
-        z = (line - proj) / std_dev
-        def _erf(x):
-            sign = 1 if x >= 0 else -1
-            x = abs(x)
-            t = 1.0 / (1.0 + 0.3275911 * x)
-            y = 1.0 - (((((1.061405429*t - 1.453152027)*t) + 1.421413741)*t
-                          - 0.284496736)*t + 0.254829592)*t*(_math.exp(-x*x))
-            return sign * y
-        p_over = 0.5 * (1 - _erf(z / 1.4142))
-        prob = p_over if direction == "OVER" else (1 - p_over)
-        edge = round((prob - 0.524) * 100, 2)
-        if abs(edge) < 3:
-            rec = "PASS — too close to line"
-        elif prob >= 0.65:
-            rec = f"STRONG {direction}"
-        elif prob >= 0.57:
-            rec = f"LEAN {direction}"
-        else:
-            rec = "PASS — edge insufficient"
-        return {
-            "player_name": player_name, "stat": stat, "line": line,
-            "direction": direction, "projection": round(proj, 1),
-            "probability": round(prob * 100, 1),
-            "edge": edge, "recommendation": rec,
-            "confidence": conf, "seasons_used": seasons,
-            "age": age, "team": team,
-        }
+        return None
     try:
         conn = _sqlite3.connect(str(db_path))
         row = conn.execute('''
@@ -1648,25 +1552,7 @@ def fetch_hb_picks(run_date: str = None) -> dict:
     db_path = _Path(__file__).parent.parent / "nhl" / "database" / "hits_blocks.db"
     _local_ok = db_path.exists()
     if not _local_ok:
-        # ── Supabase fallback (Streamlit Cloud) ────────────────────────────────
-        sb = get_supabase()
-        if sb is None:
-            return {}
-        try:
-            q = (sb.table("nhl_hits_blocks_picks")
-                   .select("run_date,generated_at,raw_output,model,"
-                           "prompt_tokens,completion_tokens,games_count"))
-            if run_date:
-                q = q.eq("run_date", run_date)
-            else:
-                q = q.order("run_date", desc=True).limit(1)
-            r = q.execute()
-            row_data = r.data[0] if r.data else None
-        except Exception:
-            row_data = None
-        if not row_data:
-            return {}
-        return row_data
+        return {}
     try:
         conn = _sqlite3.connect(str(db_path))
         exists = conn.execute(
@@ -1705,19 +1591,7 @@ def fetch_hb_history(n: int = 14) -> list:
     db_path = _Path(__file__).parent.parent / "nhl" / "database" / "hits_blocks.db"
     _local_ok = db_path.exists()
     if not _local_ok:
-        # ── Supabase fallback (Streamlit Cloud) ────────────────────────────────
-        sb = get_supabase()
-        if sb is None:
-            return []
-        try:
-            r = (sb.table("nhl_hits_blocks_picks")
-                   .select("run_date")
-                   .order("run_date", desc=True)
-                   .limit(n)
-                   .execute())
-            return [row["run_date"] for row in (r.data or [])]
-        except Exception:
-            return []
+        return []
     try:
         conn = _sqlite3.connect(str(db_path))
         rows = conn.execute(
@@ -3531,33 +3405,38 @@ QUERY PATTERNS:
 </div>"""
                 col.markdown(panel_html, unsafe_allow_html=True)
 
-        # ── Cloud sync totals ──────────────────────────────────────────────────
+        # ── Turso cloud sync totals ────────────────────────────────────────────
         st.divider()
-        st.markdown("#### Supabase Sync")
-        st.caption("Counts reflect data synced to Supabase. Local SQLite holds full history.")
+        st.markdown("#### Turso Cloud Sync")
+        st.caption("Row counts in Turso cloud DBs (predictions + outcomes).")
 
-        sync_cols = st.columns(3)
-        for col, sport_name in zip(sync_cols, ["NBA", "NHL", "MLB"]):
+        import requests as _sys_req
+        sync_cols = st.columns(4)
+        for col, sport_key in zip(sync_cols, ["nba", "nhl", "mlb", "golf"]):
+            url_env = f"TURSO_{sport_key.upper()}_URL"
+            tok_env = f"TURSO_{sport_key.upper()}_TOKEN"
+            base_url = _os.getenv(url_env, "").replace("libsql://", "https://")
+            token = _os.getenv(tok_env, "")
+            if not base_url or not token:
+                col.metric(sport_key.upper(), "no creds")
+                continue
             try:
-                r = (sb.table("daily_props")
-                       .select("id", count="exact")
-                       .eq("sport", sport_name)
-                       .execute())
-                graded = (sb.table("daily_props")
-                            .select("id", count="exact")
-                            .eq("sport", sport_name)
-                            .not_.is_("result", "null")
-                            .execute())
-                synced = r.count or 0
-                graded_n = graded.count or 0
-                pct_graded = graded_n / synced * 100 if synced else 0
-                col.metric(
-                    f"{sport_name}",
-                    f"{synced:,} synced",
-                    delta=f"{graded_n:,} graded ({pct_graded:.0f}%)",
+                resp = _sys_req.post(
+                    f"{base_url}/v2/pipeline",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                    json={"requests": [
+                        {"type": "execute", "stmt": {"sql": "SELECT COUNT(*) FROM predictions"}},
+                        {"type": "execute", "stmt": {"sql": "SELECT COUNT(*) FROM prediction_outcomes"}},
+                        {"type": "close"},
+                    ]},
+                    timeout=8,
                 )
+                data = resp.json()
+                pred_n = data["results"][0]["response"]["result"]["rows"][0][0]["value"]
+                out_n  = data["results"][1]["response"]["result"]["rows"][0][0]["value"]
+                col.metric(sport_key.upper(), f"{int(pred_n):,} preds", delta=f"{int(out_n):,} graded")
             except Exception:
-                col.metric(sport_name, "—")
+                col.metric(sport_key.upper(), "—")
 
 
 if __name__ == "__main__":

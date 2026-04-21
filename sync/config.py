@@ -1,11 +1,11 @@
 """
 Sync Configuration
 ==================
-Supabase connection settings and sync parameters.
+Turso connection settings and sync parameters.
 
-Set environment variables:
-  SUPABASE_URL=https://your-project.supabase.co
-  SUPABASE_SERVICE_ROLE_KEY=eyJ...
+Turso credentials are read from environment variables:
+  TURSO_{SPORT}_URL=libsql://...
+  TURSO_{SPORT}_TOKEN=eyJ...
 """
 
 import os
@@ -19,10 +19,6 @@ if _env_path.exists():
         if line and not line.startswith('#') and '=' in line:
             key, _, value = line.partition('=')
             os.environ.setdefault(key.strip(), value.strip())
-
-# Supabase connection
-SUPABASE_URL = os.getenv('SUPABASE_URL', '')
-SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')
 
 # Sync settings
 SYNC_BATCH_SIZE = 100          # Rows per upsert batch

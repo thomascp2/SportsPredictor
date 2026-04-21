@@ -118,13 +118,7 @@ except ImportError:
     API_MONITOR_AVAILABLE = False
     print("NOTE: API health monitor not found. Self-healing unavailable.")
 
-# Optional: Supabase Sync (FreePicks cloud sync)
-try:
-    from sync.supabase_sync import SupabaseSync
-    SUPABASE_SYNC_AVAILABLE = True
-except ImportError:
-    SUPABASE_SYNC_AVAILABLE = False
-    print("NOTE: Supabase sync not available. Cloud sync disabled.")
+SUPABASE_SYNC_AVAILABLE = False  # Supabase deprecated — Turso is the cloud write path
 
 # Optional: Turso Sync (redundant cloud sync)
 try:
@@ -756,32 +750,7 @@ class SportsOrchestrator:
             if success:
                 self._post_smart_picks_to_discord(target_date)
 
-            # Sync predictions to Supabase (FreePicks cloud)
-            if success and SUPABASE_SYNC_AVAILABLE:
-                try:
-                    print(f"\n[SYNC] Syncing predictions to Supabase...")
-                    syncer = SupabaseSync()
-                    sync_result = syncer.sync_predictions(self.config.sport.lower(), target_date)
-                    smart_sync = syncer.sync_smart_picks(self.config.sport.lower(), target_date)
-                    # Fix odds_type labels (goblin/demon rows written as 'standard' by sync_predictions)
-                    odds_sync = syncer.sync_odds_types(self.config.sport.lower(), target_date)
-                    # Populate game_time from PP start_time so dashboard shows tip-off times
-                    time_sync = syncer.sync_game_times(self.config.sport.lower(), target_date)
-                    details['supabase_sync'] = {
-                        'predictions': sync_result,
-                        'smart_picks': smart_sync,
-                        'odds_types': odds_sync,
-                        'game_times': time_sync,
-                    }
-                    print(f"[SYNC] Complete: {sync_result.get('synced', 0)} predictions, "
-                          f"{smart_sync.get('synced', 0)} smart picks, "
-                          f"{odds_sync.get('updated', 0)} odds corrections, "
-                          f"{time_sync.get('updated', 0)} game times")
-                except Exception as e:
-                    warnings.append(f"Supabase sync failed: {str(e)}")
-                    print(f"[SYNC ERROR] {e}")
-
-            # Turso redundant sync (runs after Supabase, non-blocking)
+            # Sync predictions to Turso (cloud SQLite)
             if success and TURSO_SYNC_AVAILABLE:
                 try:
                     print(f"\n[TURSO] Syncing predictions to Turso...")
@@ -927,42 +896,14 @@ class SportsOrchestrator:
             # Send Discord notification
             self.send_grading_notification(yesterday, details)
 
-            # Sync grading results to Supabase + trigger user pick grading
-            # Run sync even if grading had non-fatal errors — partial results are
-            # better than no results in Supabase.
-            if SUPABASE_SYNC_AVAILABLE:
+            # Sync grading results to Turso
+            if TURSO_SYNC_AVAILABLE:
                 try:
-                    print(f"\n[SYNC] Syncing grading results to Supabase...")
-                    syncer = SupabaseSync()
-                    grading_sync = syncer.sync_grading(self.config.sport.lower(), yesterday)
-                    user_grading = syncer.trigger_user_grading(yesterday, self.config.sport)
-                    details['supabase_sync'] = {
-                        'grading': grading_sync,
-                        'user_grading': user_grading,
-                    }
-                    synced_count = grading_sync.get('synced', 0)
-                    print(f"[SYNC] Grading sync complete: {synced_count} results")
-                    if synced_count == 0:
-                        self._send_discord_alert(
-                            f"{self.config.emoji} GRADING SYNC WARNING {yesterday}",
-                            f"Grading ran but **0 results synced to Supabase**.\n"
-                            f"Mobile app will show stale data. Check sync logs."
-                        )
-
-                    # Turso redundant grading sync
-                    if TURSO_SYNC_AVAILABLE:
-                        try:
-                            asyncio.run(_turso_sync_grading(self.config.sport.lower(), yesterday))
-                        except Exception as te:
-                            print(f"[TURSO ERROR] Grading sync failed (non-fatal): {te}")
-                except Exception as e:
-                    warnings.append(f"Supabase grading sync failed: {str(e)}")
-                    print(f"[SYNC ERROR] {e}")
-                    self._send_discord_alert(
-                        f"{self.config.emoji} GRADING SYNC FAILED {yesterday}",
-                        f"Supabase sync threw an exception after grading:\n`{str(e)[:300]}`\n"
-                        f"Mobile app will show stale/ungraded data."
-                    )
+                    asyncio.run(_turso_sync_grading(self.config.sport.lower(), yesterday))
+                    print(f"[TURSO] Grading sync complete.")
+                except Exception as te:
+                    warnings.append(f"Turso grading sync failed (non-fatal): {str(te)}")
+                    print(f"[TURSO ERROR] Grading sync failed (non-fatal): {te}")
 
             return PipelineResult(
                 success=success,
@@ -2540,17 +2481,15 @@ class SportsOrchestrator:
 
     def run_pp_sync(self, target_date: str = None) -> Dict:
         """
-        Afternoon PP re-sync: fetch fresh PrizePicks lines and update smart picks in Supabase.
+        Afternoon PP re-sync: fetch fresh PrizePicks lines and update smart picks in Turso.
 
         Does NOT re-run the prediction script or write new rows to SQLite.
         Safe to run multiple times per day — all steps are upserts.
 
         Steps:
           1. Fetch fresh PrizePicks lines from API
-          2. Re-sync existing SQLite predictions to Supabase (upsert)
-          3. Re-match smart picks against new lines
-          4. Correct odds_type labels (goblin/demon)
-          5. Populate game_time fields
+          2. Re-run SmartPickSelector to update SQLite (ai_edge, ai_tier, odds_type)
+          3. Sync updated smart picks to Turso
 
         Designed for the afternoon run when the full PP slate is available.
         """
@@ -2598,50 +2537,16 @@ class SportsOrchestrator:
             except Exception as _hb_err:
                 print(f"[PP-SYNC] Hits/blocks refresh check failed (non-fatal): {_hb_err}")
 
-        if not SUPABASE_SYNC_AVAILABLE:
-            print(f"[PP-SYNC] Supabase not available — lines fetched but not synced")
-            return {'success': True, 'note': 'lines fetched, supabase unavailable'}
+        # Sync to Turso (cloud SQLite)
+        if TURSO_SYNC_AVAILABLE:
+            try:
+                asyncio.run(_turso_sync_predictions(self.config.sport.lower(), target_date))
+                asyncio.run(_turso_sync_smart_picks(self.config.sport.lower(), target_date))
+                print(f"[PP-SYNC] Turso sync complete.")
+            except Exception as te:
+                print(f"[TURSO ERROR] pp-sync Turso failed (non-fatal): {te}")
 
-        try:
-            syncer = SupabaseSync()
-
-            # Step 2: upsert existing predictions (safe to repeat, no new SQLite rows)
-            sync_result = syncer.sync_predictions(self.config.sport.lower(), target_date)
-
-            # Step 3: re-match smart picks against fresh lines
-            smart_sync = syncer.sync_smart_picks(self.config.sport.lower(), target_date)
-
-            # Step 4: correct goblin/demon odds_type labels
-            odds_sync = syncer.sync_odds_types(self.config.sport.lower(), target_date)
-
-            # Step 5: refresh game_time fields
-            time_sync = syncer.sync_game_times(self.config.sport.lower(), target_date)
-
-            print(f"[PP-SYNC] Complete: {sync_result.get('synced', 0)} predictions, "
-                  f"{smart_sync.get('synced', 0)} smart picks, "
-                  f"{odds_sync.get('updated', 0)} odds corrections, "
-                  f"{time_sync.get('updated', 0)} game times")
-
-            # Turso redundant sync (non-blocking)
-            if TURSO_SYNC_AVAILABLE:
-                try:
-                    asyncio.run(_turso_sync_predictions(self.config.sport.lower(), target_date))
-                    asyncio.run(_turso_sync_smart_picks(self.config.sport.lower(), target_date))
-                except Exception as te:
-                    print(f"[TURSO ERROR] pp-sync Turso failed (non-fatal): {te}")
-
-            return {
-                'success': True,
-                'predictions': sync_result.get('synced', 0),
-                'smart_picks': smart_sync.get('synced', 0),
-                'odds_corrections': odds_sync.get('updated', 0),
-                'game_times': time_sync.get('updated', 0),
-            }
-
-        except Exception as e:
-            print(f"[PP-SYNC ERROR] {e}")
-            self._log_error(traceback.format_exc(), "PP_SYNC_ERROR")
-            return {'success': False, 'error': str(e)}
+        return {'success': True}
 
     def get_prizepicks_filtered_picks(self, date: str, n: int = 5) -> List[Dict]:
         """
@@ -3506,16 +3411,6 @@ class SportsOrchestrator:
                 n_tok = result.get("prompt_tokens", 0) + result.get("completion_tokens", 0)
                 print(f"[H+B] Picks saved ({n_tok} tokens used)")
 
-            # Always sync to Supabase so the dashboard is current — idempotent upsert,
-            # safe to run whether picks were just generated or already existed today.
-            if not result.get("no_games"):
-                try:
-                    sys.path.insert(0, str(self.root / "shared"))
-                    from supabase_local_sync import sync_hits_blocks
-                    sr = sync_hits_blocks(verbose=False)
-                    print(f"[H+B] Supabase sync: {sr.get('synced', 0)} rows synced")
-                except Exception as _se:
-                    print(f"[H+B] Supabase sync skipped: {_se}")
             return result
         except ImportError as e:
             print(f"[H+B] daily_hits_blocks.py not available: {e}")
@@ -3550,16 +3445,6 @@ class SportsOrchestrator:
             n_picks = result.get('saved', 0)
             n_lines = result.get('lines_fetched', 0)
             print(f"[SZLN] Complete — {n_lines} lines fetched, {n_picks} picks saved")
-            # Push to Supabase so Streamlit Cloud dashboard sees updated SZLN picks
-            try:
-                sys.path.insert(0, str(self.root / "shared"))
-                from supabase_local_sync import sync_szln_picks, sync_season_projections
-                r1 = sync_szln_picks(verbose=False)
-                r2 = sync_season_projections(verbose=False)
-                print(f"[SZLN] Supabase sync: {r1.get('synced', 0)} SZLN picks, "
-                      f"{r2.get('synced', 0)} season projections synced")
-            except Exception as _se:
-                print(f"[SZLN] Supabase sync skipped: {_se}")
             return {'success': True, 'picks_saved': n_picks, 'lines_fetched': n_lines}
         except ImportError as e:
             print(f"[SZLN] season_props_ml.py not available: {e}")
