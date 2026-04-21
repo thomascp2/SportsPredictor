@@ -1,4 +1,4 @@
-  "We're in C:/Users/thoma/SportsPredictor/tui-terminal, working on Phase 3 of the TUI-terminal project. Please read
+  We're in C:/Users/thoma/SportsPredictor/tui-terminal, working on Phase 3 of the TUI-terminal project. Please read
   bookmark-5.md for full context before doing anything.                                                                 
   Quick state: the Gemini intelligence layer (intel/context_engine.py) is written and the NHL_HITS/MLB misclassification
    bug is fixed. The pending action is a clean dry-run to confirm zero false positives, then wiring action_force_intel()
@@ -6,8 +6,4 @@
 
   Start by running ./launch.sh to bring up all 3 terminals, then verify the dry-run output is clean (no 232 NHL_HITS
   false positives for MLB players). Once confirmed, wire the force-intel keybind and do a live Gemini test. After that
-  we move to Phase 4 (heatmap display)."
-
-  ---
-  Good stopping point — Kalshi markets open closer to game time anyway so the dry-run will have real data to react to in
-   the morning. See you then.
+  we move to Phase 4 (heatmap display). We ran the ./launch.sh command and all three windows open and immediately close. 

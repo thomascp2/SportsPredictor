@@ -57,6 +57,18 @@ PrizePicks Integrity*.txt
 Train MLB*.txt
 plan *.txt
 getting back*.txt
+"Next Session*.txt"
+Next Session*.txt
+vpslog*.txt
+
+# Out-of-scope / tool directories (not part of codebase)
+parlay_lottery/
+gsd_module/
+
+# DuckDB (MLB feature store — large binary, generated)
+*.duckdb
+mlb_feature_store/.venv/
+mlb_feature_store/data/
 
 # Secrets
 .env
