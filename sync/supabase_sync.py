@@ -354,9 +354,8 @@ class SupabaseSync:
 
         print(f"[SYNC] Synced {synced}/{len(picks)} {sport_upper} smart picks")
 
-        # Write is_smart_pick=1 and ai_tier back to the local SQLite predictions table.
-        # This is required for MLB and Golf, which have no Supabase rows — the dashboard
-        # reads SQLite directly for those sports. Also keeps NHL/NBA SQLite in sync.
+        # Write smart pick fields back to local SQLite — this is the authoritative write
+        # for all sports. Turso then picks up ai_edge/ai_ev_* via sync_smart_picks().
         sqlite_updated = 0
         db_path = self.db_paths.get(sport.lower())
         if db_path and picks:
@@ -366,14 +365,19 @@ class SupabaseSync:
                 for pick in picks:
                     local_name = pick.local_player_name if pick.local_player_name else pick.player_name
                     c.execute(
-                        "UPDATE predictions SET is_smart_pick=1, ai_tier=?, odds_type=? "
+                        "UPDATE predictions "
+                        "SET is_smart_pick=1, ai_tier=?, odds_type=?, "
+                        "    ai_edge=?, ai_ev_2leg=?, ai_ev_3leg=?, ai_ev_4leg=? "
                         "WHERE game_date=? AND player_name=? AND prop_type=? AND line=?",
-                        (pick.tier, pick.pp_odds_type, game_date, local_name, pick.prop_type, pick.pp_line),
+                        (pick.tier, pick.pp_odds_type,
+                         round(pick.edge, 4), round(pick.ev_2leg, 4),
+                         round(pick.ev_3leg, 4), round(pick.ev_4leg, 4),
+                         game_date, local_name, pick.prop_type, pick.pp_line),
                     )
                     sqlite_updated += c.rowcount
                 conn.commit()
                 conn.close()
-                print(f"[SYNC] SQLite write-back: {sqlite_updated} prediction rows flagged is_smart_pick=1")
+                print(f"[SYNC] SQLite write-back: {sqlite_updated} prediction rows updated with smart pick data")
             except Exception as e:
                 print(f"[SYNC WARN] SQLite write-back failed: {e}")
 

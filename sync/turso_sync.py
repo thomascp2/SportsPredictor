@@ -162,7 +162,8 @@ async def sync_smart_picks(sport: str, game_date: str):
 
     # Only fetch rows that have smart pick data set
     rows = conn.execute('''
-        SELECT player_name, prop_type, line, is_smart_pick, ai_tier, odds_type
+        SELECT player_name, prop_type, line, is_smart_pick, ai_tier, odds_type,
+               ai_edge, ai_ev_2leg, ai_ev_3leg, ai_ev_4leg
         FROM predictions
         WHERE game_date = ?
           AND is_smart_pick IS NOT NULL
@@ -185,19 +186,28 @@ async def sync_smart_picks(sport: str, game_date: str):
         update_sql = '''UPDATE predictions
                         SET is_smart_pick = ?,
                             ai_tier = ?,
-                            odds_type = ?
+                            odds_type = ?,
+                            ai_edge = ?,
+                            ai_ev_2leg = ?,
+                            ai_ev_3leg = ?,
+                            ai_ev_4leg = ?
                         WHERE game_date = ?
                           AND player_name = ?
                           AND prop_type = ?
                           AND line = ?'''
         for row in rows:
-            player_name, prop_type, line, is_smart, ai_tier, odds_type = row
+            player_name, prop_type, line, is_smart, ai_tier, odds_type, \
+                ai_edge, ai_ev_2leg, ai_ev_3leg, ai_ev_4leg = row
             norm = _normalize_name(player_name)
-            vals = [is_smart, ai_tier, odds_type or 'standard', game_date, player_name, prop_type, line]
+            vals = [is_smart, ai_tier, odds_type or 'standard',
+                    ai_edge, ai_ev_2leg, ai_ev_3leg, ai_ev_4leg,
+                    game_date, player_name, prop_type, line]
             stmts_exact.append(libsql_client.Statement(update_sql, vals))
             # Also push normalized variant for diacritics stored without accents
             if norm != player_name:
-                vals_norm = [is_smart, ai_tier, odds_type or 'standard', game_date, norm, prop_type, line]
+                vals_norm = [is_smart, ai_tier, odds_type or 'standard',
+                             ai_edge, ai_ev_2leg, ai_ev_3leg, ai_ev_4leg,
+                             game_date, norm, prop_type, line]
                 stmts_norm.append(libsql_client.Statement(update_sql, vals_norm))
 
         all_stmts = stmts_exact + stmts_norm
@@ -372,6 +382,123 @@ async def sync_game_prediction_outcomes(sport: str, game_date: str):
 
 
 # ---------------------------------------------------------------------------
+# sync_game_times — populate game_time on predictions from prizepicks_lines.db
+# ---------------------------------------------------------------------------
+
+async def sync_game_times(sport: str, game_date: str):
+    """
+    Update predictions.game_time in Turso using PrizePicks start_time data.
+    Replaces the supabase_sync.sync_game_times() role for Turso.
+    Reads shared/prizepicks_lines.db, groups by team, pushes earliest start_time.
+    """
+    import os as _os
+    pp_db_candidates = [
+        str(Path(__file__).parent.parent / 'shared' / 'prizepicks_lines.db'),
+        str(Path(__file__).parent.parent / 'data' / 'prizepicks_lines.db'),
+    ]
+    pp_db = next((p for p in pp_db_candidates if Path(p).exists()), None)
+    if not pp_db:
+        print(f"  [{sport.upper()}] game-times: prizepicks_lines.db not found — skipping.")
+        return 0
+
+    league_map = {'nhl': 'NHL', 'nba': 'NBA', 'mlb': 'MLB', 'golf': 'PGA'}
+    league = league_map.get(sport.lower(), sport.upper())
+
+    pp_conn = sqlite3.connect(pp_db)
+    team_times = {}
+    try:
+        rows = pp_conn.execute(
+            "SELECT team, MIN(start_time) as start_time "
+            "FROM prizepicks_lines "
+            "WHERE fetch_date = ? AND league = ? AND start_time IS NOT NULL "
+            "GROUP BY team",
+            (game_date, league)
+        ).fetchall()
+        team_times = {r[0]: r[1] for r in rows if r[1]}
+    finally:
+        pp_conn.close()
+
+    if not team_times:
+        print(f"  [{sport.upper()}] game-times: no PP lines for {game_date} — skipping.")
+        return 0
+
+    client = _turso_client(sport)
+    updated = 0
+    try:
+        stmts = []
+        for team, game_time in team_times.items():
+            stmts.append(libsql_client.Statement(
+                "UPDATE predictions SET game_time = ? WHERE game_date = ? AND team = ?",
+                [game_time, game_date, team]
+            ))
+        if stmts:
+            await _batch_execute(client, stmts)
+            updated = len(stmts)
+        print(f"  [{sport.upper()}] game-times: {updated} teams updated in Turso.")
+    finally:
+        await client.close()
+
+    return updated
+
+
+# ---------------------------------------------------------------------------
+# sync_game_scores — upsert live game scores into Turso game_scores table
+# (replaces Supabase daily_games; called by game_sync.py)
+# ---------------------------------------------------------------------------
+
+GAME_SCORES_DDL = '''
+CREATE TABLE IF NOT EXISTS game_scores (
+    game_date  TEXT NOT NULL,
+    sport      TEXT NOT NULL,
+    game_id    TEXT NOT NULL,
+    home_team  TEXT,
+    away_team  TEXT,
+    home_score INTEGER,
+    away_score INTEGER,
+    status     TEXT,
+    period     TEXT,
+    clock      TEXT,
+    start_time TEXT,
+    broadcast  TEXT,
+    PRIMARY KEY (game_date, sport, game_id)
+)
+'''
+
+async def sync_game_scores(sport: str, games: list):
+    """
+    Upsert a list of game score dicts into Turso game_scores table.
+    Called directly by game_sync.py instead of Supabase.
+    games: list of dicts with keys matching game_scores schema.
+    """
+    if not games:
+        return 0
+
+    client = _turso_client(sport)
+    inserted = 0
+    try:
+        await client.execute(GAME_SCORES_DDL)
+        cols = ['game_date', 'sport', 'game_id', 'home_team', 'away_team',
+                'home_score', 'away_score', 'status', 'period', 'clock',
+                'start_time', 'broadcast']
+        col_list = ', '.join(cols)
+        placeholders = ', '.join(['?' for _ in cols])
+        upsert_sql = (f'INSERT OR REPLACE INTO game_scores ({col_list}) '
+                      f'VALUES ({placeholders})')
+        stmts = []
+        for g in games:
+            vals = [g.get(c) for c in cols]
+            stmts.append(libsql_client.Statement(upsert_sql, vals))
+        for i in range(0, len(stmts), BATCH_SIZE):
+            await _batch_execute(client, stmts[i:i + BATCH_SIZE])
+            inserted += len(stmts[i:i + BATCH_SIZE])
+        print(f"  [{sport.upper()}] game-scores: {inserted} rows synced to Turso.")
+    finally:
+        await client.close()
+
+    return inserted
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -391,6 +518,8 @@ async def run_sync(sports: list, operation: str, game_date: str):
                 await sync_game_predictions(sport, game_date)
             if operation in ('game-outcomes', 'all'):
                 await sync_game_prediction_outcomes(sport, game_date)
+            if operation in ('game-times', 'all'):
+                await sync_game_times(sport, game_date)
         except Exception as e:
             pname = sport.upper()
             print(f"  [{pname}] ERROR: {e}")
@@ -404,7 +533,7 @@ def main():
                         choices=['nhl', 'nba', 'mlb', 'golf', 'all'])
     parser.add_argument('--operation', default='all',
                         choices=['predictions', 'smart-picks', 'grading', 'game-predictions',
-                                 'game-outcomes', 'all'])
+                                 'game-outcomes', 'game-times', 'all'])
     parser.add_argument('--date', default=None,
                         help="Date to sync (default: today, YYYY-MM-DD)")
     args = parser.parse_args()
