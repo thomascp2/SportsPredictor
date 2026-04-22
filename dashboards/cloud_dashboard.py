@@ -932,7 +932,7 @@ def fetch_pnl_local(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
         game_date, outcome, profit, ai_tier (if available)
     """
     # --- Turso path ---
-    sql = ("SELECT o.game_date, o.outcome, o.profit, p.confidence_tier as ai_tier "
+    sql = ("SELECT o.game_date, o.outcome, o.profit, p.ai_tier "
            "FROM prediction_outcomes o "
            "LEFT JOIN predictions p ON p.id = o.prediction_id "
            "WHERE o.game_date BETWEEN ? AND ? "
