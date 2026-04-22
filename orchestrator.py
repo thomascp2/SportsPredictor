@@ -2561,11 +2561,13 @@ class SportsOrchestrator:
                     c.execute(
                         "UPDATE predictions "
                         "SET is_smart_pick=1, ai_tier=?, odds_type=?, "
-                        "    ai_edge=?, ai_ev_2leg=?, ai_ev_3leg=?, ai_ev_4leg=? "
+                        "    ai_edge=?, ai_ev_2leg=?, ai_ev_3leg=?, ai_ev_4leg=?, "
+                        "    prediction=? "
                         "WHERE game_date=? AND player_name=? AND prop_type=? AND line=?",
                         (pick.tier, pick.pp_odds_type,
                          round(pick.edge, 4), round(pick.ev_2leg, 4),
                          round(pick.ev_3leg, 4), round(pick.ev_4leg, 4),
+                         pick.prediction,
                          target_date, local_name, pick.prop_type, pick.pp_line),
                     )
                     updated += c.rowcount

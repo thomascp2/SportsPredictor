@@ -163,7 +163,7 @@ async def sync_smart_picks(sport: str, game_date: str):
     # Only fetch rows that have smart pick data set
     rows = conn.execute('''
         SELECT player_name, prop_type, line, is_smart_pick, ai_tier, odds_type,
-               ai_edge, ai_ev_2leg, ai_ev_3leg, ai_ev_4leg
+               ai_edge, ai_ev_2leg, ai_ev_3leg, ai_ev_4leg, prediction
         FROM predictions
         WHERE game_date = ?
           AND is_smart_pick IS NOT NULL
@@ -190,23 +190,29 @@ async def sync_smart_picks(sport: str, game_date: str):
                             ai_edge = ?,
                             ai_ev_2leg = ?,
                             ai_ev_3leg = ?,
-                            ai_ev_4leg = ?
+                            ai_ev_4leg = ?,
+                            prediction = ?
                         WHERE game_date = ?
                           AND player_name = ?
                           AND prop_type = ?
                           AND line = ?'''
         for row in rows:
             player_name, prop_type, line, is_smart, ai_tier, odds_type, \
-                ai_edge, ai_ev_2leg, ai_ev_3leg, ai_ev_4leg = row
+                ai_edge, ai_ev_2leg, ai_ev_3leg, ai_ev_4leg, prediction = row
             norm = _normalize_name(player_name)
+            # Enforce PrizePicks rule: demon/goblin can only be OVER
+            if odds_type in ('goblin', 'demon'):
+                prediction = 'OVER'
             vals = [is_smart, ai_tier, odds_type or 'standard',
                     ai_edge, ai_ev_2leg, ai_ev_3leg, ai_ev_4leg,
+                    prediction or 'OVER',
                     game_date, player_name, prop_type, line]
             stmts_exact.append(libsql_client.Statement(update_sql, vals))
             # Also push normalized variant for diacritics stored without accents
             if norm != player_name:
                 vals_norm = [is_smart, ai_tier, odds_type or 'standard',
                              ai_edge, ai_ev_2leg, ai_ev_3leg, ai_ev_4leg,
+                             prediction or 'OVER',
                              game_date, norm, prop_type, line]
                 stmts_norm.append(libsql_client.Statement(update_sql, vals_norm))
 
