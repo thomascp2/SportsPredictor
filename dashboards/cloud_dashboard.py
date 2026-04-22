@@ -927,11 +927,25 @@ def fetch_performance(sport: str) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def fetch_pnl_local(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
     """
-    Read profit/outcome data directly from local SQLite prediction_outcomes.
-    Used for the investor P&L section. Reads directly from local SQLite.
+    Read profit/outcome data from Turso (primary) or local SQLite (fallback).
     Returns one row per graded prediction with columns:
         game_date, outcome, profit, ai_tier (if available)
     """
+    # --- Turso path ---
+    sql = ("SELECT o.game_date, o.outcome, o.profit, p.confidence_tier as ai_tier "
+           "FROM prediction_outcomes o "
+           "LEFT JOIN predictions p ON p.id = o.prediction_id "
+           "WHERE o.game_date BETWEEN ? AND ? "
+           "  AND o.outcome IN ('HIT','MISS') AND o.profit IS NOT NULL "
+           "ORDER BY o.game_date")
+    raw = _turso_request(sport.lower(), sql, [start_date, end_date])
+    if raw:
+        cols = ["game_date", "outcome", "profit", "ai_tier"]
+        df = pd.DataFrame([dict(zip(cols, [_turso_cell(c) for c in r])) for r in raw])
+        df["profit"] = pd.to_numeric(df["profit"], errors="coerce")
+        return df
+
+    # --- Local SQLite fallback ---
     import os as _os
     PROJECT_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
     db_map = {
@@ -945,7 +959,6 @@ def fetch_pnl_local(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(db_path)
-        # Try to join with predictions for tier; fall back if column missing
         try:
             df = pd.read_sql_query("""
                 SELECT o.game_date, o.outcome, o.profit,
@@ -975,7 +988,29 @@ def fetch_pnl_local(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def fetch_recent_results(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """Fetch graded smart-pick results from local SQLite (all history, no row limit)."""
+    """Fetch graded smart-pick results. Tries Turso HTTP first, falls back to local SQLite."""
+    # --- Turso path ---
+    sql = ("SELECT o.game_date, o.prediction AS ai_prediction, p.ai_tier, "
+           "o.outcome AS result, p.probability AS ai_probability, "
+           "o.prop_type, o.actual_value, o.odds_type "
+           "FROM prediction_outcomes o "
+           "JOIN predictions p "
+           "  ON p.game_date=o.game_date AND p.player_name=o.player_name "
+           " AND p.prop_type=o.prop_type AND p.line=o.line "
+           "WHERE o.game_date BETWEEN ? AND ? "
+           "  AND p.is_smart_pick=1 AND o.outcome IN ('HIT','MISS') "
+           "  AND o.actual_value IS NOT NULL "
+           "ORDER BY o.game_date")
+    raw = _turso_request(sport.lower(), sql, [start_date, end_date])
+    if raw:
+        cols = ["game_date", "ai_prediction", "ai_tier", "result",
+                "ai_probability", "prop_type", "actual_value", "odds_type"]
+        df = pd.DataFrame([dict(zip(cols, [_turso_cell(c) for c in r])) for r in raw])
+        df["ai_probability"] = pd.to_numeric(df["ai_probability"], errors="coerce")
+        df["actual_value"]   = pd.to_numeric(df["actual_value"],   errors="coerce")
+        return df
+
+    # --- Local SQLite fallback ---
     import os as _os3
     PROJECT_ROOT = _os3.path.dirname(_os3.path.dirname(_os3.path.abspath(__file__)))
     db_map = {
@@ -1218,53 +1253,24 @@ def _enrich_game_time(df: "pd.DataFrame", sport: str, game_date: str) -> "pd.Dat
 
 @st.cache_data(ttl=300)
 def fetch_game_predictions(sport: str, game_date: str) -> pd.DataFrame:
-    """Fetch game predictions for the Game Lines tab. Tries Turso first, falls back to local SQLite."""
-    import sqlite3, os, asyncio as _aio
+    """Fetch game predictions for the Game Lines tab. Tries Turso HTTP first, falls back to local SQLite."""
+    import sqlite3, os
 
-    # --- Turso path (primary after VPS migration) ---
-    _GAME_TURSO_CFG = {
-        "NHL": ("TURSO_NHL_URL",  "TURSO_NHL_TOKEN"),
-        "NBA": ("TURSO_NBA_URL",  "TURSO_NBA_TOKEN"),
-        "MLB": ("TURSO_MLB_URL",  "TURSO_MLB_TOKEN"),
-    }
-    turso_cfg = _GAME_TURSO_CFG.get(sport.upper())
-    if turso_cfg:
-        url_env, tok_env = turso_cfg
-        url   = _os.getenv(url_env, "").replace("libsql://", "https://")
-        token = _os.getenv(tok_env, "")
-        if url and token:
-            try:
-                import libsql_client as _lc
-
-                async def _fetch():
-                    client = _lc.create_client(url=url, auth_token=token)
-                    try:
-                        res = await client.execute(
-                            "SELECT home_team, away_team, bet_type, bet_side, line, "
-                            "prediction, probability, edge, confidence_tier, "
-                            "odds_american, implied_probability, "
-                            "model_type, home_elo, away_elo, elo_diff, game_date "
-                            "FROM game_predictions WHERE game_date = ? "
-                            "ORDER BY edge DESC",
-                            [game_date],
-                        )
-                        return res.rows
-                    except Exception:
-                        return None
-                    finally:
-                        await client.close()
-
-                rows = _aio.run(_fetch())
-                if rows:
-                    cols = ["home_team", "away_team", "bet_type", "bet_side", "line",
-                            "prediction", "probability", "edge", "confidence_tier",
-                            "odds_american", "implied_probability",
-                            "model_type", "home_elo", "away_elo", "elo_diff", "game_date"]
-                    df = pd.DataFrame([dict(zip(cols, r)) for r in rows])
-                    df["game_time"] = None  # enriched below from prizepicks_lines
-                    return _enrich_game_time(df, sport, game_date)
-            except Exception:
-                pass  # fall through to local SQLite
+    # --- Turso path (synchronous HTTP — works on Streamlit Cloud) ---
+    cols = ["home_team", "away_team", "bet_type", "bet_side", "line",
+            "prediction", "probability", "edge", "confidence_tier",
+            "odds_american", "implied_probability",
+            "model_type", "home_elo", "away_elo", "elo_diff", "game_date"]
+    sql = ("SELECT home_team, away_team, bet_type, bet_side, line, "
+           "prediction, probability, edge, confidence_tier, "
+           "odds_american, implied_probability, "
+           "model_type, home_elo, away_elo, elo_diff, game_date "
+           "FROM game_predictions WHERE game_date = ? ORDER BY edge DESC")
+    raw_rows = _turso_request(sport.lower(), sql, [game_date])
+    if raw_rows:
+        df = pd.DataFrame([dict(zip(cols, [_turso_cell(c) for c in r])) for r in raw_rows])
+        df["game_time"] = None
+        return _enrich_game_time(df, sport, game_date)
 
     # --- Local SQLite fallback ---
     PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -3265,7 +3271,7 @@ QUERY PATTERNS:
 
         sb_client = _sb_get_client()
         if not sb_client:
-            st.warning("XAI_API_KEY not found. StatBot requires Grok access. Set XAI_API_KEY in .env or environment.")
+            st.info("StatBot is available on the local dashboard. Natural language DB queries require a private API key not exposed in the public view.")
         else:
             user_q = st.chat_input("Ask a question about the data...", key="statbot_input")
             if user_q:
@@ -3342,6 +3348,13 @@ QUERY PATTERNS:
             f'<div class="terminal-refresh">Last loaded: {now_str}</div>',
             unsafe_allow_html=True,
         )
+
+        # System tab reads local files — only meaningful when running on the local machine.
+        import os as _sys_os
+        _state_file = _sys_os.path.join(_sys_os.path.dirname(_sys_os.path.dirname(_sys_os.path.abspath(__file__))), "data", "orchestrator_state.json")
+        if not _sys_os.path.exists(_state_file):
+            st.info("System monitor runs on the local orchestrator machine. Pipeline status, model counts, and DB health are not available in the cloud view.")
+            st.stop()
 
         if st.button("Force refresh", key="sys_refresh"):
             st.cache_data.clear()
