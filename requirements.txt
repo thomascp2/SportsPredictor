@@ -15,8 +15,11 @@ xgboost>=2.0.0
 streamlit>=1.28.0
 plotly>=5.17.0
 
-# Cloud Sync (Supabase)
-supabase>=2.0.0
+# Cloud Sync (Turso — local sync only; dashboard uses HTTP directly)
+libsql-client>=0.3.0
+
+# StatBot natural language query
+openai>=1.0.0
 
 # Optional: Testing
 pytest>=7.4.0

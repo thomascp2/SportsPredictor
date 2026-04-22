@@ -22,6 +22,30 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 import sys, os as _os
 sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "shared"))
+
+# ── Secrets bootstrap (Streamlit Cloud + local fallback) ─────────────────────
+# On Streamlit Cloud, credentials live in st.secrets (injected from the Cloud UI).
+# Locally, they come from .env. Either way, push everything into os.environ so
+# all os.getenv() calls throughout the file work without modification.
+def _bootstrap_secrets():
+    # 1. Streamlit Cloud secrets
+    try:
+        for _k, _v in st.secrets.items():
+            if isinstance(_v, str):
+                _os.environ.setdefault(_k, _v)
+    except Exception:
+        pass
+    # 2. Local .env fallback
+    _env = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), ".env")
+    if _os.path.exists(_env):
+        with open(_env, encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _, _v = _line.partition("=")
+                    _os.environ.setdefault(_k.strip(), _v.strip())
+_bootstrap_secrets()
+
 try:
     from project_config import BREAK_EVEN as _PROJECT_BREAK_EVEN
 except ImportError:
