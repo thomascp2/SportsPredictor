@@ -389,7 +389,7 @@ def _fmt_time(ts):
 # ── Data fetchers ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
-                direction: Optional[str], tier_filter: list) -> pd.DataFrame:
+                direction: Optional[str], tier_filter: tuple) -> pd.DataFrame:
     """
     Load today's smart picks. Priority order:
       1. Turso  — cloud SQLite; always current; works from any machine
@@ -513,7 +513,7 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
                 "ai_edge":        edge,
                 "ai_tier":        _v(raw_row[8]) or "—",
                 "ai_ev_4leg":     None,
-                "game_time":      None,
+                "game_time":      _v(raw_row[10]) if len(raw_row) > 10 else None,
                 "model_source":   model_src,
             })
         return rows
@@ -1770,7 +1770,7 @@ def main():
             df_tp = fetch_picks(
                 sport, tp_date,
                 min_prob=0.0, min_edge=0.0,
-                direction=None, tier_filter=[],
+                direction=None, tier_filter=(),
             )
             if df_tp.empty:
                 st.caption(f"No {sport} picks available for today.")
@@ -2060,7 +2060,7 @@ def main():
                                              default=["T1-ELITE", "T2-STRONG", "T3-GOOD"],
                                              key=f"{kp}_tiers")
 
-        df = fetch_picks(sport, game_date, min_prob, min_edge, direction, tier_filter)
+        df = fetch_picks(sport, game_date, min_prob, min_edge, direction, tuple(tier_filter))
 
         if df.empty:
             st.info(f"No picks for {sport} on {game_date} with current filters.")
