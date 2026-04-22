@@ -430,7 +430,7 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
         endpoint = base_url.rstrip("/") + "/v2/pipeline"
         sql = (
             "SELECT player_name, team, opponent, prop_type, line, odds_type, "
-            "prediction, probability, ai_tier, model_version "
+            "prediction, probability, ai_tier, model_version, game_time "
             "FROM predictions "
             "WHERE game_date = ? AND is_smart_pick = 1"
         )
@@ -448,7 +448,7 @@ def fetch_picks(sport: str, game_date: str, min_prob: float, min_edge: float,
                 endpoint,
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                 json=payload,
-                timeout=10,
+                timeout=25,
             )
             resp.raise_for_status()
             data = resp.json()
