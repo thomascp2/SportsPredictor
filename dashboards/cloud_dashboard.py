@@ -359,6 +359,14 @@ st.markdown("""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+def _today_cst() -> date:
+    """Return today's date in America/Chicago — works correctly on Streamlit Cloud (UTC server)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/Chicago")).date()
+    except Exception:
+        return date.today()
+
 def _fmt_time(ts):
     if not ts:
         return ""
@@ -1737,7 +1745,7 @@ def main():
     # TAB 0 — TOP PLAYS  (default home screen)
     # ═══════════════════════════════════════════════════════════════════════════
     with tab_top:
-        tp_date = date.today().isoformat()
+        tp_date = _today_cst().isoformat()
         st.markdown(
             f'<div style="font-size:13px;color:#8b949e;margin-bottom:16px;">'
             f'Best picks for <b style="color:#c9d1d9">{tp_date}</b> &nbsp;·&nbsp; '
@@ -2180,7 +2188,7 @@ def main():
     with tab_nhl:
         nhl_hdr1, nhl_hdr2, nhl_hdr3 = st.columns([1, 1, 1])
         with nhl_hdr1:
-            nhl_date = st.date_input("Date", value=date.today(), key="nhl_date",
+            nhl_date = st.date_input("Date", value=_today_cst(), key="nhl_date",
                                      label_visibility="collapsed").isoformat()
         with nhl_hdr2:
             nhl_gl_tier = st.selectbox("Tier", ["All", "PRIME", "SHARP", "LEAN"],
@@ -2290,7 +2298,7 @@ def main():
     with tab_nba:
         nba_hdr1, nba_hdr2, nba_hdr3 = st.columns([1, 1, 1])
         with nba_hdr1:
-            nba_date = st.date_input("Date", value=date.today(), key="nba_date",
+            nba_date = st.date_input("Date", value=_today_cst(), key="nba_date",
                                      label_visibility="collapsed").isoformat()
         with nba_hdr2:
             nba_gl_tier = st.selectbox("Tier", ["All", "PRIME", "SHARP", "LEAN"],
@@ -2542,7 +2550,7 @@ def main():
     with tab_mlb:
         mlb_hdr1, mlb_hdr2, mlb_hdr3 = st.columns([1, 1, 1])
         with mlb_hdr1:
-            mlb_date = st.date_input("Date", value=date.today(), key="mlb_date",
+            mlb_date = st.date_input("Date", value=_today_cst(), key="mlb_date",
                                      label_visibility="collapsed").isoformat()
         with mlb_hdr2:
             mlb_gl_tier = st.selectbox("Tier", ["All", "PRIME", "SHARP", "LEAN"],
@@ -2602,7 +2610,7 @@ def main():
         with pc2:
             # Date range slider — goes back to Nov 2024 (first data)
             earliest = date(2024, 11, 1)
-            today = date.today()
+            today = _today_cst()
             default_start = today - timedelta(days=30)
             date_range = st.slider(
                 "Date range",
@@ -2876,7 +2884,7 @@ def main():
         # ── Controls row ──────────────────────────────────────────────────────
         gf_c1, gf_c2, gf_c3, gf_c4, gf_c5 = st.columns([2, 1, 1, 1, 1])
         with gf_c1:
-            gf_date = st.date_input("Date", value=date.today(),
+            gf_date = st.date_input("Date", value=_today_cst(),
                                      key="gf_date",
                                      label_visibility="collapsed").isoformat()
         with gf_c2:
