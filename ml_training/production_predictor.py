@@ -390,6 +390,138 @@ class ProductionPredictor:
             return 'T4-LEAN'
         return 'T5-FADE'
 
+    def predict_bma(
+        self,
+        sport: str,
+        prop_type: str,
+        line: float,
+        features: Dict,
+        statistical_prediction: Dict,
+        mab_weights: Dict = None,
+        odds_type: str = 'standard',
+        n_bootstrap: int = 200,
+    ) -> Dict:
+        """
+        Bayesian Model Averaging — return probability distribution across all models.
+
+        Instead of a single blended probability, returns the full distribution:
+          - mean: weighted average across all available models
+          - std: spread (uncertainty measure)
+          - ci_lower/ci_upper: 95% credible interval via bootstrap
+          - confidence: HIGH/MEDIUM/LOW based on std
+          - component_probs: per-model probabilities for inspection
+
+        MAB weights default to equal if not provided. Pass weights from
+        ThompsonSamplingMAB.sample_weights() for dynamic allocation.
+
+        Args:
+            sport: 'nba', 'nhl', 'mlb'
+            prop_type: e.g. 'points'
+            line: betting line
+            features: feature dict
+            statistical_prediction: stat model output (always included as 'stat')
+            mab_weights: dict of model_name → weight (from ThompsonSamplingMAB)
+                         e.g. {'xgb': 0.45, 'stat': 0.25, ...}
+                         If None, equal weights are used.
+            odds_type: 'standard', 'goblin', or 'demon'
+            n_bootstrap: number of bootstrap draws for CI estimation
+
+        Returns:
+            {
+                'prediction':       'OVER' or 'UNDER',
+                'probability':      float,   # BMA mean (directional confidence)
+                'prob_over':        float,   # BMA mean P(OVER)
+                'prob_std':         float,   # uncertainty — lower is better
+                'ci_lower':         float,   # 2.5th percentile of bootstrap
+                'ci_upper':         float,   # 97.5th percentile
+                'model_confidence': str,     # 'HIGH' / 'MEDIUM' / 'LOW'
+                'component_probs':  dict,    # model_name → prob_over
+                'mab_weights_used': dict,    # actual weights applied
+                'confidence_tier':  str,
+                'expected_value':   float,
+                'model_version':    str,
+            }
+        """
+        # Collect component model probabilities
+        component_probs: Dict[str, float] = {}
+
+        # Statistical model (always available)
+        stat_prob = statistical_prediction.get('probability', 0.5)
+        stat_pred = statistical_prediction.get('prediction', 'OVER')
+        stat_prob_over = stat_prob if stat_pred == 'OVER' else (1.0 - stat_prob)
+        component_probs['stat'] = float(stat_prob_over)
+
+        # ML model (if available and not degenerate)
+        if self.is_model_available(sport, prop_type, line):
+            cached = self._get_cached_model(sport, prop_type, line)
+            if not self._is_model_degenerate(cached['metadata']):
+                try:
+                    ml_result = self.predict(sport, prop_type, line, features, odds_type=odds_type)
+                    component_probs['xgb'] = float(ml_result.get('ml_prob_over', 0.5))
+                except Exception:
+                    pass
+
+        # Normalize MAB weights to only the models we actually have probs for
+        available_models = list(component_probs.keys())
+
+        if mab_weights and all(m in mab_weights for m in available_models):
+            raw_weights = {m: mab_weights[m] for m in available_models}
+        else:
+            # Equal weights fallback
+            raw_weights = {m: 1.0 / len(available_models) for m in available_models}
+
+        # Normalize weights
+        total_w = sum(raw_weights.values())
+        weights_used = {m: w / total_w for m, w in raw_weights.items()}
+
+        # BMA mean
+        bma_prob_over = sum(component_probs[m] * weights_used[m] for m in available_models)
+
+        # Bootstrap CI: resample model weights with Dirichlet noise
+        rng = np.random.default_rng(seed=42)
+        bootstrap_probs = []
+        weight_values = np.array([weights_used[m] for m in available_models])
+        prob_values   = np.array([component_probs[m] for m in available_models])
+
+        for _ in range(n_bootstrap):
+            # Add Dirichlet noise to weights (concentration = 5 → mild perturbation)
+            noisy_weights = rng.dirichlet(weight_values * 5 + 0.5)
+            bootstrap_probs.append(float(np.dot(noisy_weights, prob_values)))
+
+        bootstrap_array = np.array(bootstrap_probs)
+        prob_std  = float(np.std(bootstrap_array))
+        ci_lower  = float(np.percentile(bootstrap_array, 2.5))
+        ci_upper  = float(np.percentile(bootstrap_array, 97.5))
+
+        # Confidence label based on std
+        if prob_std < 0.03:
+            model_confidence = 'HIGH'
+        elif prob_std < 0.07:
+            model_confidence = 'MEDIUM'
+        else:
+            model_confidence = 'LOW'
+
+        # Direction and final confidence
+        prediction   = 'OVER' if bma_prob_over > 0.5 else 'UNDER'
+        final_prob   = bma_prob_over if prediction == 'OVER' else (1.0 - bma_prob_over)
+        confidence_tier = self._assign_confidence_tier(final_prob, odds_type)
+        expected_value  = statistical_prediction.get('expected_value', line)
+
+        return {
+            'prediction':       prediction,
+            'probability':      round(final_prob, 4),
+            'prob_over':        round(bma_prob_over, 4),
+            'prob_std':         round(prob_std, 4),
+            'ci_lower':         round(ci_lower, 4),
+            'ci_upper':         round(ci_upper, 4),
+            'model_confidence': model_confidence,
+            'component_probs':  {m: round(p, 4) for m, p in component_probs.items()},
+            'mab_weights_used': {m: round(w, 4) for m, w in weights_used.items()},
+            'confidence_tier':  confidence_tier,
+            'expected_value':   expected_value,
+            'model_version':    'bma_v2',
+        }
+
     def clear_cache(self):
         """Clear the model cache (useful after retraining)"""
         self._model_cache.clear()
