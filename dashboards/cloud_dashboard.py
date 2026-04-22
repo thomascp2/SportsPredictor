@@ -2386,6 +2386,14 @@ def main():
                 return float("nan")
 
         # ── Load ML predictions ─────────────────────────────────────────────
+        import unicodedata as _ud
+
+        def _norm_pname(name):
+            if not name:
+                return ""
+            n = _ud.normalize("NFKD", str(name))
+            return "".join(c for c in n if not _ud.combining(c)).lower().strip()
+
         ml_df = pd.DataFrame()
         if _DUCK.exists():
             try:
@@ -2397,6 +2405,8 @@ def main():
                     WHERE game_date = '{target_date}'
                 """).fetchdf()
                 _dc.close()
+                if not ml_df.empty:
+                    ml_df["_name_norm"] = ml_df["player_name"].apply(_norm_pname)
             except Exception as _e:
                 st.warning(f"ML predictions unavailable: {_e}")
         else:
@@ -2476,6 +2486,11 @@ def main():
                     (ml_df["player_name"] == pname) &
                     (ml_df["prop"] == prop)
                 ]
+                if ml_match.empty and "_name_norm" in ml_df.columns:
+                    ml_match = ml_df[
+                        (ml_df["_name_norm"] == _norm_pname(pname)) &
+                        (ml_df["prop"] == prop)
+                    ]
                 if not ml_match.empty:
                     mu = float(ml_match.iloc[0]["predicted_value"])
                     if pd.notna(mu):

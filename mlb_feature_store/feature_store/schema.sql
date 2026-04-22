@@ -111,3 +111,9 @@ CREATE TABLE IF NOT EXISTS ml_grading_log (
     graded_at  TIMESTAMP DEFAULT current_timestamp,
     rows_graded INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS name_aliases (
+    fs_name        VARCHAR PRIMARY KEY,
+    canonical_name VARCHAR NOT NULL,
+    updated_at     TIMESTAMP DEFAULT current_timestamp
+);

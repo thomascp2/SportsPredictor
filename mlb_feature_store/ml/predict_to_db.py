@@ -18,7 +18,9 @@ Safeguards applied before inference:
 """
 
 import argparse
+import sqlite3
 import sys
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +33,72 @@ from ml.predict import HITTER_PROPS, PITCHER_PROPS, load_model, p_over, PROP_LIN
 from feature_store.build_duckdb import get_connection, initialize_schema
 
 MODEL_VERSION = "xgboost_v1"
+
+_STAT_DB = Path(__file__).resolve().parents[2] / "mlb" / "database" / "mlb_predictions.db"
+
+
+def _norm_name(name: str) -> str:
+    if not name:
+        return ""
+    n = unicodedata.normalize("NFKD", str(name))
+    return "".join(c for c in n if not unicodedata.combining(c)).lower().strip()
+
+
+def _load_stat_pitchers(date: str) -> dict[str, str]:
+    """Return {normalized_name: canonical_name} for pitchers in the stat model for date."""
+    if not _STAT_DB.exists():
+        print(f"  Warning: stat model DB not found at {_STAT_DB}")
+        return {}
+    try:
+        con = sqlite3.connect(str(_STAT_DB))
+        rows = con.execute(
+            "SELECT DISTINCT player_name FROM predictions "
+            "WHERE game_date = ? AND prop_type IN ('strikeouts','outs_recorded','pitcher_walks')",
+            (date,)
+        ).fetchall()
+        con.close()
+        return {_norm_name(r[0]): r[0] for r in rows}
+    except Exception as e:
+        print(f"  Warning: could not load stat model pitchers: {e}")
+        return {}
+
+
+def _load_alias_table(conn: duckdb.DuckDBPyConnection) -> dict[str, str]:
+    """Return {fs_name: canonical_name} from the persistent name_aliases table."""
+    rows = conn.execute("SELECT fs_name, canonical_name FROM name_aliases").fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def _update_alias_table(
+    conn: duckdb.DuckDBPyConnection,
+    fs_names: list[str],
+    stat_norm_map: dict[str, str],
+    existing: dict[str, str],
+) -> dict[str, str]:
+    """
+    Fuzzy-match any fs_names not yet in the alias table against stat_norm_map,
+    persist new matches, and return the updated full alias dict.
+    """
+    new_rows = []
+    for fs_name in fs_names:
+        if fs_name in existing:
+            continue
+        norm = _norm_name(fs_name)
+        canonical = stat_norm_map.get(norm)
+        if canonical:
+            new_rows.append((fs_name, canonical))
+            existing[fs_name] = canonical
+
+    if new_rows:
+        alias_df = pd.DataFrame(new_rows, columns=["fs_name", "canonical_name"])
+        conn.execute("""
+            INSERT INTO name_aliases (fs_name, canonical_name)
+            SELECT fs_name, canonical_name FROM alias_df
+            ON CONFLICT (fs_name) DO NOTHING
+        """)
+        print(f"  Name aliases: added {len(new_rows)} new mappings")
+
+    return existing
 
 # ---------------------------------------------------------------------------
 # Feature clip bounds — keep inference inside the training distribution.
@@ -118,6 +186,37 @@ def _fetch_pitcher_features(conn: duckdb.DuckDBPyConnection, date: str) -> pd.Da
     return _clip_features(df, PITCHER_CLIP)
 
 
+def _fetch_pitcher_features_for_starters(
+    conn: duckdb.DuckDBPyConnection,
+    stat_norm_map: dict[str, str],
+    lookback_days: int = 30,
+) -> pd.DataFrame:
+    """
+    Fetch the most recent features for each pitcher who appears in today's stat model
+    starter list, using up to `lookback_days` of history. This decouples the feature
+    date from the prediction date so pitchers who last started 1-2 weeks ago still
+    get predictions.
+    """
+    from datetime import date as _date, timedelta
+    cutoff = (_date.today() - timedelta(days=lookback_days)).isoformat()
+    df = conn.execute(f"""
+        SELECT DISTINCT ON (pf.pitcher_id)
+               pf.pitcher_id AS player_id, p.player_name,
+               pf.avg_velocity, pf.whiff_rate, pf.xwoba_allowed,
+               pf.velocity_trend_7d, pf.park_adjusted_xwoba
+        FROM pitcher_features pf
+        LEFT JOIN players p ON pf.pitcher_id = p.player_id
+        WHERE pf.date >= '{cutoff}'
+        ORDER BY pf.pitcher_id, pf.date DESC
+    """).fetchdf()
+    if df.empty:
+        return df
+    # Keep only pitchers that fuzzy-match today's starters
+    df["_norm"] = df["player_name"].apply(_norm_name)
+    df = df[df["_norm"].isin(stat_norm_map)].drop(columns=["_norm"])
+    return _clip_features(df, PITCHER_CLIP)
+
+
 def _run_models(
     df: pd.DataFrame,
     props: list[str],
@@ -187,28 +286,61 @@ def predict_to_db(date_str: str | None = None, force: bool = False) -> int:
         return existing
 
     hitter_df  = _fetch_hitter_features(rw_conn, date)
-    pitcher_df = _fetch_pitcher_features(rw_conn, date)
-
-    if hitter_df.empty and pitcher_df.empty:
-        # Fall back to latest available features — common on game day before
-        # Statcast data lands (usually 24hrs after games complete).
+    if hitter_df.empty:
         latest = _latest_feature_date(rw_conn)
         if latest and latest != date:
-            print(f"  {date}: no features — using latest available ({latest})")
-            hitter_df  = _fetch_hitter_features(rw_conn, latest)
-            pitcher_df = _fetch_pitcher_features(rw_conn, latest)
-        if hitter_df.empty and pitcher_df.empty:
-            print(f"  {date}: no features found — run backfill first")
+            print(f"  {date}: no hitter features — using latest available ({latest})")
+            hitter_df = _fetch_hitter_features(rw_conn, latest)
+        if hitter_df.empty:
+            print(f"  {date}: no hitter features found — run backfill first")
             rw_conn.close()
             return 0
 
-    # Build starter set once (used for all starter-only pitcher props)
+    # Pitchers: load today's starters from stat model, then fetch their most
+    # recent features from the feature store (up to 30 days back). This handles
+    # the case where a starter last pitched 5-10 days ago and has no entry for today.
+    stat_pitchers = _load_stat_pitchers(date)
+    if stat_pitchers:
+        pitcher_df = _fetch_pitcher_features_for_starters(rw_conn, stat_pitchers)
+        print(f"  Pitcher features: {len(pitcher_df)} starters matched from feature store")
+    else:
+        print(f"  Warning: no stat model pitchers for {date} — falling back to date-locked pitcher features")
+        pitcher_df = _fetch_pitcher_features(rw_conn, date)
+        if pitcher_df.empty:
+            latest = _latest_feature_date(rw_conn)
+            if latest and latest != date:
+                pitcher_df = _fetch_pitcher_features(rw_conn, latest)
+
+    # Build starter set (historical filter for reliever exclusion — belt-and-suspenders)
     starter_ids = _get_starter_pitcher_ids(rw_conn)
-    print(f"  Starter filter: {len(starter_ids)} qualified starters identified")
+    print(f"  Historical starter filter: {len(starter_ids)} qualified starters")
 
     rows = []
     rows += _run_models(hitter_df,  HITTER_PROPS)
     rows += _run_models(pitcher_df, PITCHER_PROPS, starter_ids=starter_ids)
+
+    # ── Pitcher name resolution via alias lookup table ────────────────────
+    # pitcher_df was already filtered to today's starters, but the player_name
+    # in the feature store may differ from the stat model canonical name.
+    # Build/update the alias table and apply canonical names so the dashboard join works.
+    if stat_pitchers and not pitcher_df.empty:
+        alias_map = _load_alias_table(rw_conn)
+        fs_pitcher_names = list(pitcher_df["player_name"].dropna().unique())
+        alias_map = _update_alias_table(rw_conn, fs_pitcher_names, stat_pitchers, alias_map)
+
+        resolved, skipped = [], 0
+        for r in rows:
+            if r["prop"] not in PITCHER_PROPS:
+                resolved.append(r)
+                continue
+            canonical = alias_map.get(r.get("player_name", ""))
+            if canonical:
+                resolved.append({**r, "player_name": canonical})
+            else:
+                skipped += 1
+        rows = resolved
+        if skipped:
+            print(f"  Name alias: {skipped} pitcher rows still unmatched after alias lookup")
 
     if not rows:
         print(f"  {date}: no predictions generated — models may be missing")
