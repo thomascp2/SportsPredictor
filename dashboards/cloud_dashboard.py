@@ -3354,9 +3354,7 @@ QUERY PATTERNS:
         _state_file = _sys_os.path.join(_sys_os.path.dirname(_sys_os.path.dirname(_sys_os.path.abspath(__file__))), "data", "orchestrator_state.json")
         if not _sys_os.path.exists(_state_file):
             st.info("System monitor runs on the local orchestrator machine. Pipeline status, model counts, and DB health are not available in the cloud view.")
-            st.stop()
-
-        if st.button("Force refresh", key="sys_refresh"):
+        if _sys_os.path.exists(_state_file) and st.button("Force refresh", key="sys_refresh"):
             st.cache_data.clear()
             st.rerun()
 
