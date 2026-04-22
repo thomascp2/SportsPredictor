@@ -5,7 +5,27 @@
 
 ---
 
+## Status Summary (as of 2026-04-21)
+
+| Phase | Status | Commit |
+|-------|--------|--------|
+| 1 — Git cleanup | ✅ COMPLETE | 4b5bc02b |
+| 2 — Kill VPS | ✅ COMPLETE | ac6eb42b |
+| 3A — Turso gap audit | ✅ COMPLETE | — |
+| 3B — Fill Turso gaps | ✅ COMPLETE | 6f032dd1 + f82ec62a |
+| 3C — Dashboard cleanup | ✅ COMPLETE | 4fb6a81d |
+| 3D — Orchestrator cleanup | ✅ COMPLETE | 4fb6a81d |
+| 3E — Archive Supabase code | ✅ COMPLETE | 4fb6a81d |
+| 3F — ai_edge backfill | ✅ COMPLETE | f82ec62a |
+| 4 — Streamlit Cloud deploy | 🔲 NEXT | — |
+| 5 — File cleanup | 🔲 PARTIAL | — |
+
+**The codebase is now Supabase-free.** All cloud writes go through Turso. Dashboard reads Turso with SQLite fallback.
+
+---
+
 ## Phase 1 — Git Cleanup ✅ COMPLETE
+
 - [x] Added parlay_lottery/, gsd_module/, *.duckdb, mlb_feature_store/.venv+data/, session log patterns to .gitignore
 - [x] Untracked start_orchestrator.bat (had API keys — was incorrectly committed)
 - [x] Deleted vpslog*.txt and Next Session*.txt junk files
@@ -16,6 +36,7 @@
 ---
 
 ## Phase 2 — Kill VPS Connection ✅ COMPLETE
+
 - [x] Confirmed no Windows Task Scheduler tasks pointing at VPS
 - [x] Archived entire deploy/ folder → _archive/deploy_vps_migration/ (commit ac6eb42b)
   - fetch_and_push_pp.bat (SCP'd prizepicks_lines.db to 159.203.93.232)
@@ -27,9 +48,7 @@
 
 ---
 
-## Phase 3 — Supabase → Turso Migration (IN PROGRESS)
-
-### Rule: Fill Turso gaps FIRST, then cut Supabase write path, then clean code.
+## Phase 3 — Supabase → Turso Migration ✅ COMPLETE
 
 ### 3A — Audit: What Supabase has that Turso doesn't ✅ AUDITED
 
@@ -51,24 +70,18 @@
 | daily_games | Live game scores (NBA/NHL) | Add game_scores table to Turso; redirect game_sync.py |
 | model_performance | Daily aggregate hit rates | Compute from Turso prediction_outcomes on demand; skip sync |
 
-### 3B — Fill Turso Gaps ✅ COMPLETE (commit 6f032dd1)
+### 3B — Fill Turso Gaps ✅ COMPLETE (6f032dd1)
 
 - [x] Step 1: ALTER TABLE run on all 4 SQLite DBs — added ai_edge, ai_ev_2/3/4leg, game_time.
   Golf also got odds_type (was missing). Applied directly to local .db files.
 - [x] Step 2: supabase_sync.py SQLite write-back now also persists ai_edge + ai_ev_* so Turso
-  picks them up on next smart-picks sync. (The write-back to SQLite stays even after Supabase
-  is fully removed — it's how Turso gets these values.)
+  picks them up on next smart-picks sync.
 - [x] Step 3: sync_game_times() added to turso_sync.py — reads prizepicks_lines.db, UPDATEs
   predictions.game_time in Turso. Wired into run_sync 'all' + new 'game-times' operation.
 - [x] Step 4: sync_game_scores() + GAME_SCORES_DDL added to turso_sync.py — game_scores table
   mirrors Supabase daily_games schema exactly.
 - [x] Step 5: game_sync.py fully rewritten — Turso HTTP pipeline replaces Supabase client.
   Removed _lock_started_games (was locking daily_props, a Supabase-only concept).
-- [x] Step 6: Backfill historical ai_edge — complete (f82ec62a):
-  - Ran turso_migrate --fix-schema to add ai_edge/ai_ev_*/game_time to all 4 Turso DBs
-  - Computed ai_edge directly from probability + breakeven formula for 131,559 SQLite rows
-  - Synced to Turso: NBA 52,458 rows (32 dates), NHL 18,606 (32 dates), MLB 25,285 (15 dates)
-  - Fixed pp-sync: added SmartPickSelector write-back as step 2 so future runs populate ai_edge in SQLite before Turso reads it
 
 ### 3C — Remove Supabase from Dashboard ✅ COMPLETE (4fb6a81d)
 
@@ -86,37 +99,61 @@
 - [x] supabase_local_sync imports removed from H+B and SZLN operations
 
 ### 3E — Archive Supabase Sync Code ✅ COMPLETE (4fb6a81d)
+
 - [x] sync/supabase_sync.py → _archive/supabase_sync.py
 - [x] sync/backfill_smart_picks.py → _archive/
 - [x] sync/backfill_supabase.py → _archive/
 - [x] sync/purge_stale_rows.py → _archive/
 - [x] sync/config.py: removed SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-- [ ] Supabase account: leave dormant for 2 weeks before deleting
+- [ ] Supabase account: leave dormant until ~May 5 then delete
+
+### 3F — ai_edge Backfill + pp-sync Fix ✅ COMPLETE (f82ec62a)
+
+- [x] Ran `turso_migrate --fix-schema` — added ai_edge, ai_ev_2/3/4leg, game_time, odds_type to
+  all 4 Turso DBs (game_lines over/under_odds also added as bonus)
+- [x] Computed ai_edge directly from `(probability - breakeven) * 100` for 131,559 SQLite smart-pick rows
+- [x] Synced to Turso: NBA 52,458 rows (32 dates), NHL 18,606 (32 dates), MLB 25,285 (15 dates)
+- [x] Fixed orchestrator pp-sync: added SmartPickSelector write-back as step 2 (was only in
+  archived supabase_sync.py). Going forward, every pp-sync run populates ai_edge in SQLite
+  before Turso reads it.
 
 ---
 
-## Phase 4 — Remote Access via Streamlit Cloud (TODO)
+## Phase 4 — Remote Access via Streamlit Cloud 🔲 NEXT
 
-1. Finish Phase 3 first (dashboard reads Turso, no Supabase)
-2. Set TURSO_*_URL and TURSO_*_TOKEN env vars in Streamlit Cloud secrets UI
-3. Deploy dashboards/cloud_dashboard.py to share.streamlit.io
-4. Dashboard becomes accessible from any browser, no local machine needed
-5. Orchestrator (predictions, grading) still runs locally on desktop
+**Goal:** Dashboard accessible from any browser without the local machine running.
+
+### Pre-deploy checklist
+- [x] Dashboard reads Turso (no Supabase dependencies remaining)
+- [x] All Turso credentials read via `os.getenv()` — compatible with st.secrets
+- [ ] requirements.txt updated: remove `supabase`, add `libsql-client`
+- [ ] `.streamlit/secrets.toml` template committed (values redacted)
+- [ ] Shared module imports wrapped in try/except (shared/ won't exist on Cloud)
+
+### Deploy steps
+1. Fix requirements.txt and add `.streamlit/secrets.toml` template → commit + push
+2. Go to share.streamlit.io → New app
+3. Repo: thomascp2/SportsPredictor, Branch: master, File: dashboards/cloud_dashboard.py
+4. In app settings → Secrets, add all TURSO_*_URL and TURSO_*_TOKEN values
+5. Deploy → get permanent URL
+6. Test: Top Plays tab, NHL/NBA/MLB tabs, System tab Turso row counts
+
+### Streamlit Cloud limitations to know
+- No local SQLite files — dashboard falls back gracefully (local-only features disabled)
+- No SmartPickSelector path — Turso primary path is what Cloud sees
+- No prizepicks_lines.db — game_time shown from Turso (populated by pp-sync)
+- shared/ modules unavailable — project_config import already wrapped in try/except
 
 ---
 
-## Phase 5 — Remaining File Cleanup (PARTIAL)
+## Phase 5 — Remaining File Cleanup 🔲 PARTIAL
 
 **Deleted:**
-- [x] mlb/database/mlb_game_predictions.db (0 bytes)
+- [x] mlb/database/mlb_game_predictions.db (0 bytes, unused)
 - [x] nhl/database/nhl_predictions.db (0 bytes, deprecated)
 
 **Still TODO:**
-- [ ] nhl/database/hits_blocks.db (experimental, no sync plan — delete when NHL season confirmed over)
-
-**Archive these files (to _archive/):**
-- sync/supabase_sync.py (after orchestrator write path removed in 3D)
-- shared/supabase_local_sync.py (if it exists in main tree)
+- [ ] nhl/database/hits_blocks.db — delete when NHL season confirmed fully over (playoffs TBD)
 
 **Do NOT touch:**
 - PEGASUS — leave entirely as-is
@@ -126,18 +163,17 @@
 
 ---
 
-## Turso Sync Operations (current + planned)
+## Turso Sync Operations (all working)
 
 | Operation | Status | Tables |
 |-----------|--------|--------|
 | predictions | ✅ working | predictions |
-| smart-picks | ✅ working | predictions (UPDATE is_smart_pick, ai_tier, odds_type) |
+| smart-picks | ✅ working | predictions (UPDATE is_smart_pick, ai_tier, odds_type, ai_edge, ai_ev_*) |
 | grading | ✅ working | prediction_outcomes |
 | game-predictions | ✅ working | game_predictions |
 | game-outcomes | ✅ working | game_prediction_outcomes |
 | game-times | ✅ working | predictions (UPDATE game_time) |
-| game-scores | ✅ working | game_scores (new table) |
-| smart-picks edge | ✅ working | predictions (UPDATE ai_edge, ai_ev_*) |
+| game-scores | ✅ working | game_scores |
 
 ---
 
@@ -147,28 +183,30 @@
 We are finishing the simplification of SportsPredictor to SQLite local + Turso cloud only.
 VPS is killed. Supabase is fully removed from code. FreePicks mobile app is dead.
 
-CURRENT STATE (all committed, pushed to master):
-- Phase 1 ✅ Git cleanup (4b5bc02b)
-- Phase 2 ✅ VPS archived (ac6eb42b)
-- Phase 3A ✅ Turso gap audit complete
-- Phase 3B ✅ Turso gaps filled (6f032dd1)
-- Phase 3C ✅ Dashboard: all Supabase call sites removed, System tab replaced (4fb6a81d)
-- Phase 3D ✅ Orchestrator: SUPABASE_SYNC_AVAILABLE=False, all sync paths → Turso (4fb6a81d)
-- Phase 3E ✅ Archived: supabase_sync.py, backfill_*.py, purge_stale_rows.py, config.py cleaned (4fb6a81d)
-- Phase 5 PARTIAL: deleted mlb_game_predictions.db, nhl_predictions.db (0-byte files)
+CURRENT STATE (all committed, pushed to master at 54f54aef / f82ec62a):
+- Phase 1 ✅ Git cleanup
+- Phase 2 ✅ VPS archived
+- Phase 3 ✅ FULLY COMPLETE — Supabase removed from dashboard, orchestrator, and sync layer.
+  All ai_edge/ev values backfilled into Turso (NBA 52K, NHL 18K, MLB 25K rows, last 35 days).
+  pp-sync now includes SmartPickSelector write-back step so ai_edge stays current going forward.
+- Phase 5 PARTIAL: deleted 0-byte dead DBs; hits_blocks.db pending (NHL season TBD)
 
-REMAINING TASKS:
+NEXT: Phase 4 — Streamlit Cloud deploy.
 
-1. Phase 4 — Streamlit Cloud deploy for remote access:
-   Dashboard already reads Turso. Set TURSO_*_URL + TURSO_*_TOKEN in Streamlit Cloud secrets.
-   Deploy dashboards/cloud_dashboard.py to share.streamlit.io → permanent public URL.
+Pre-deploy work needed:
+1. requirements.txt: remove supabase>=2.0.0 line, add libsql-client
+2. Create .streamlit/secrets.toml template with redacted values (commit it)
+3. Verify shared/ module imports are try/except safe for Cloud (project_config already is)
+4. Commit + push, then deploy to share.streamlit.io
 
-3. Phase 5 remaining:
-   - Delete nhl/database/hits_blocks.db when NHL season confirmed over
+Deploy: share.streamlit.io → New app → thomascp2/SportsPredictor → dashboards/cloud_dashboard.py
+Secrets to add in Cloud UI: TURSO_NHL_URL, TURSO_NHL_TOKEN, TURSO_NBA_URL, TURSO_NBA_TOKEN,
+                              TURSO_MLB_URL, TURSO_MLB_TOKEN, TURSO_GOLF_URL, TURSO_GOLF_TOKEN
 
 Key files:
 - SIMPLIFY_PLAN.md — this plan
-- dashboards/cloud_dashboard.py — Turso-only, no Supabase
-- orchestrator.py — SUPABASE_SYNC_AVAILABLE=False, all writes go to Turso
+- dashboards/cloud_dashboard.py — Turso-only, no Supabase, Cloud-ready
+- requirements.txt — needs libsql-client, remove supabase
+- orchestrator.py — SUPABASE_SYNC_AVAILABLE=False, all writes → Turso
 - sync/turso_sync.py — the only cloud sync layer
 ```
