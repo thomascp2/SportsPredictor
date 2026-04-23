@@ -160,6 +160,150 @@ def _fix_profit_backfill(cursor: sqlite3.Cursor, dry_run: bool) -> dict:
     return {"label": "NULL profit backfill", "before": before, "fixed": before if not dry_run else 0}
 
 
+PP_LINES_DB = ROOT / "shared" / "prizepicks_lines.db"
+
+# Map internal sport names to PrizePicks league names in prizepicks_lines
+SPORT_TO_LEAGUE = {"NHL": "NHL", "NBA": "NBA", "MLB": "MLB"}
+
+
+def _fix_odds_type_labels(cursor: sqlite3.Cursor, sport: str, dry_run: bool) -> dict:
+    """
+    Re-label odds_type in prediction_outcomes using prizepicks_lines as ground truth.
+
+    Root cause: the V6 prediction generator fetched all lines (standard + goblin + demon)
+    and generated predictions for every line, but stored ALL of them with odds_type='standard'
+    in the predictions table. This means goblin/demon line predictions are miscounted as
+    standard picks and their profit/edge math is wrong.
+
+    Fix: join prediction_outcomes to prizepicks_lines on (player_name, game_date, prop_type, line).
+    Where a match exists, overwrite odds_type with the correct value from prizepicks_lines.
+    """
+    if not PP_LINES_DB.exists():
+        return {"label": "Odds_type relabel from prizepicks_lines (PP DB not found)", "before": 0, "fixed": 0}
+
+    league = SPORT_TO_LEAGUE.get(sport, sport)
+
+    # Attach the PP lines DB so we can cross-reference in a single query
+    cursor.execute(f"ATTACH DATABASE '{str(PP_LINES_DB)}' AS ppdb")
+
+    # Count how many rows have wrong odds_type (labeled standard but PP says otherwise)
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM prediction_outcomes o
+        JOIN ppdb.prizepicks_lines pp
+          ON LOWER(pp.player_name) = LOWER(o.player_name)
+         AND pp.fetch_date         = o.game_date
+         AND LOWER(pp.prop_type)   = LOWER(o.prop_type)
+         AND pp.line               = o.line
+         AND pp.league             = ?
+        WHERE COALESCE(o.odds_type, 'standard') != pp.odds_type
+    """, (league,))
+    before = cursor.fetchone()[0]
+
+    if not dry_run and before:
+        cursor.execute("""
+            UPDATE prediction_outcomes
+            SET odds_type = (
+                SELECT pp.odds_type
+                FROM ppdb.prizepicks_lines pp
+                WHERE LOWER(pp.player_name) = LOWER(prediction_outcomes.player_name)
+                  AND pp.fetch_date         = prediction_outcomes.game_date
+                  AND LOWER(pp.prop_type)   = LOWER(prediction_outcomes.prop_type)
+                  AND pp.line               = prediction_outcomes.line
+                  AND pp.league             = ?
+                LIMIT 1
+            )
+            WHERE id IN (
+                SELECT o.id
+                FROM prediction_outcomes o
+                JOIN ppdb.prizepicks_lines pp
+                  ON LOWER(pp.player_name) = LOWER(o.player_name)
+                 AND pp.fetch_date         = o.game_date
+                 AND LOWER(pp.prop_type)   = LOWER(o.prop_type)
+                 AND pp.line               = o.line
+                 AND pp.league             = ?
+                WHERE COALESCE(o.odds_type, 'standard') != pp.odds_type
+            )
+        """, (league, league))
+
+    cursor.execute("DETACH DATABASE ppdb")
+    return {"label": "Odds_type relabel from prizepicks_lines (mislabeled goblin/demon as standard)", "before": before, "fixed": before if not dry_run else 0}
+
+
+def _fix_line_duplication(cursor: sqlite3.Cursor, sport: str, dry_run: bool) -> dict:
+    """
+    Tag duplicate lines as DUPLICATE_LINE after odds_type has been corrected.
+
+    After _fix_odds_type_labels runs, 'true' duplicates are cases where a player still
+    has multiple rows with the same odds_type for the same game/prop/direction.
+    For each such group, keep the row whose line appears in prizepicks_lines (i.e. PP
+    actually offered that line); tag extras as DUPLICATE_LINE.
+
+    For any group not matchable to prizepicks_lines (pre-Dec 2025 history), fall back
+    to keeping the row with the median line value.
+    """
+    if not PP_LINES_DB.exists():
+        return {"label": "Line dedup via prizepicks_lines (PP DB not found)", "before": 0, "fixed": 0}
+
+    league = SPORT_TO_LEAGUE.get(sport, sport)
+    cursor.execute(f"ATTACH DATABASE '{str(PP_LINES_DB)}' AS ppdb")
+
+    # Find all groups with >1 clean HIT/MISS row per player/game/prop/direction/odds_type
+    cursor.execute("""
+        SELECT player_name, game_date, prop_type, prediction, odds_type, COUNT(*) AS n
+        FROM prediction_outcomes
+        WHERE outcome IN ('HIT','MISS')
+          AND data_quality_flag IS NULL
+        GROUP BY player_name, game_date, prop_type, prediction, odds_type
+        HAVING COUNT(*) > 1
+    """)
+    dupe_groups = cursor.fetchall()
+    before = sum(r[5] - 1 for r in dupe_groups)  # excess rows
+
+    if not dry_run and before:
+        tagged = 0
+        for player, game_date, prop_type, prediction, odds_type, n in dupe_groups:
+            # Get all outcome row ids + lines for this group
+            cursor.execute("""
+                SELECT id, line FROM prediction_outcomes
+                WHERE player_name = ? AND game_date = ? AND prop_type = ?
+                  AND prediction = ? AND COALESCE(odds_type,'standard') = ?
+                  AND outcome IN ('HIT','MISS') AND data_quality_flag IS NULL
+                ORDER BY line
+            """, (player, game_date, prop_type, prediction, odds_type or 'standard'))
+            rows = cursor.fetchall()  # [(id, line), ...]
+            lines_in_group = [r[1] for r in rows]
+
+            # Find which lines PP actually offered for this player/prop/date/odds_type
+            cursor.execute("""
+                SELECT line FROM ppdb.prizepicks_lines
+                WHERE LOWER(player_name) = LOWER(?)
+                  AND fetch_date = ? AND LOWER(prop_type) = LOWER(?)
+                  AND odds_type = ? AND league = ?
+            """, (player, game_date, prop_type, odds_type or 'standard', league))
+            pp_lines = {r[0] for r in cursor.fetchall()}
+
+            # Keep rows that match a real PP line; if none match (old data), keep median
+            keep_ids = {row_id for row_id, line in rows if line in pp_lines}
+            if not keep_ids:
+                median_line = sorted(lines_in_group)[len(lines_in_group) // 2]
+                keep_ids = {row_id for row_id, line in rows if line == median_line}
+                if not keep_ids:
+                    keep_ids = {rows[len(rows) // 2][0]}  # fallback: middle row
+
+            # Tag everything not in keep_ids
+            for row_id, line in rows:
+                if row_id not in keep_ids:
+                    cursor.execute(
+                        "UPDATE prediction_outcomes SET data_quality_flag = 'DUPLICATE_LINE' WHERE id = ?",
+                        (row_id,)
+                    )
+                    tagged += 1
+
+    cursor.execute("DETACH DATABASE ppdb")
+    return {"label": "Line dedup (mislabeled/duplicate PP lines → DUPLICATE_LINE)", "before": before, "fixed": before if not dry_run else 0}
+
+
 def _ensure_quality_column(cursor: sqlite3.Cursor) -> None:
     try:
         cursor.execute("ALTER TABLE prediction_outcomes ADD COLUMN data_quality_flag TEXT")
@@ -173,31 +317,30 @@ def _smart_pick_rate(cursor: sqlite3.Cursor) -> str:
     return f"{smart}/{total} ({smart/total*100:.1f}%)" if total else "0/0"
 
 
+_CLEAN_FLAG = "(data_quality_flag IS NULL OR data_quality_flag = 'LOGIC_VIOLATION_CORRECTED')"
+
+
 def _true_win_rate(cursor: sqlite3.Cursor) -> str:
-    """Win rate excluding VOID/DNP/IMPOSSIBLE records."""
-    total = _count(cursor, """
+    """Win rate: clean rows only (no VOID, no impossible combos, no duplicate lines)."""
+    total = _count(cursor, f"""
         SELECT COUNT(*) FROM prediction_outcomes
-        WHERE outcome IN ('HIT','MISS')
-          AND (data_quality_flag IS NULL OR data_quality_flag = 'LOGIC_VIOLATION_CORRECTED')
+        WHERE outcome IN ('HIT','MISS') AND {_CLEAN_FLAG}
     """)
-    hits = _count(cursor, """
+    hits = _count(cursor, f"""
         SELECT COUNT(*) FROM prediction_outcomes
-        WHERE outcome = 'HIT'
-          AND (data_quality_flag IS NULL OR data_quality_flag = 'LOGIC_VIOLATION_CORRECTED')
+        WHERE outcome = 'HIT' AND {_CLEAN_FLAG}
     """)
     return f"{hits}/{total} ({hits/total*100:.1f}%)" if total else "0/0"
 
 
 def _smart_win_rate(cursor: sqlite3.Cursor) -> str:
-    total = _count(cursor, """
+    total = _count(cursor, f"""
         SELECT COUNT(*) FROM prediction_outcomes
-        WHERE is_smart_pick = 1 AND outcome IN ('HIT','MISS')
-          AND (data_quality_flag IS NULL OR data_quality_flag = 'LOGIC_VIOLATION_CORRECTED')
+        WHERE is_smart_pick = 1 AND outcome IN ('HIT','MISS') AND {_CLEAN_FLAG}
     """)
-    hits = _count(cursor, """
+    hits = _count(cursor, f"""
         SELECT COUNT(*) FROM prediction_outcomes
-        WHERE is_smart_pick = 1 AND outcome = 'HIT'
-          AND (data_quality_flag IS NULL OR data_quality_flag = 'LOGIC_VIOLATION_CORRECTED')
+        WHERE is_smart_pick = 1 AND outcome = 'HIT' AND {_CLEAN_FLAG}
     """)
     return f"{hits}/{total} ({hits/total*100:.1f}%)" if total else "0/0"
 
@@ -220,8 +363,10 @@ def clean_sport(sport: str, db_path: Path, dry_run: bool) -> None:
         _fix_impossible_combos(cursor, dry_run),
         _fix_dnp_inflation(cursor, dry_run),
         _fix_logic_violations(cursor, dry_run),
-        _fix_profit_backfill(cursor, dry_run),
+        _fix_odds_type_labels(cursor, sport, dry_run),   # must run before dedup + profit backfill
+        _fix_profit_backfill(cursor, dry_run),           # recomputes profit with corrected odds_type
         _fix_smart_pick_sync(cursor, dry_run),
+        _fix_line_duplication(cursor, sport, dry_run),   # must run after odds_type is correct
     ]
 
     if not dry_run:
