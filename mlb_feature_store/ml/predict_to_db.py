@@ -311,13 +311,20 @@ def predict_to_db(date_str: str | None = None, force: bool = False) -> int:
             if latest and latest != date:
                 pitcher_df = _fetch_pitcher_features(rw_conn, latest)
 
-    # Build starter set (historical filter for reliever exclusion — belt-and-suspenders)
-    starter_ids = _get_starter_pitcher_ids(rw_conn)
-    print(f"  Historical starter filter: {len(starter_ids)} qualified starters")
+    # When stat_pitchers is available, pitcher_df is already gated to today's
+    # PrizePicks starters — the historical avg-outs filter would incorrectly cut
+    # legitimate starters (e.g. Ohtani at 11.1 avg outs, Kay at 3 appearances).
+    # Only apply the historical filter as a fallback when we have no stat model gate.
+    if stat_pitchers:
+        pitcher_starter_ids = None
+        print(f"  Starter gate: using stat model ({len(pitcher_df)} pitchers) — skipping historical avg-outs filter")
+    else:
+        pitcher_starter_ids = _get_starter_pitcher_ids(rw_conn)
+        print(f"  Starter gate: using historical filter ({len(pitcher_starter_ids)} qualified)")
 
     rows = []
     rows += _run_models(hitter_df,  HITTER_PROPS)
-    rows += _run_models(pitcher_df, PITCHER_PROPS, starter_ids=starter_ids)
+    rows += _run_models(pitcher_df, PITCHER_PROPS, starter_ids=pitcher_starter_ids)
 
     # ── Pitcher name resolution via alias lookup table ────────────────────
     # pitcher_df was already filtered to today's starters, but the player_name

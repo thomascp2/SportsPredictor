@@ -85,6 +85,20 @@ The main `orchestrator.py` hooks into this module **automatically** — do not r
 
 Both hooks are non-fatal — a failure here does NOT abort the main MLB pipeline.
 
+## New / called-up player policy
+
+Players with no Statcast history in the feature store are **excluded from ML predictions** — not imputed. This is intentional:
+
+- Imputing league or team averages for debut players produces misleading predictions (the model was trained on real rolling features, not averages).
+- The stat model still generates picks for these players normally; the dashboard shows `—` in the ML columns, which is correct.
+- Once a player has pitched/batted in at least one game that Statcast has processed (~24h lag), `run_daily.py` will ingest their data and the next `predict_to_db` run will include them automatically.
+
+**Coverage logging**: `predict_to_db.py` prints a coverage summary at the end of each run showing how many of today's stat model players were matched vs excluded. If the number seems low (e.g. fewer than half of scheduled starters matched), it likely means either (a) multiple call-ups are starting today, or (b) the feature store hasn't ingested recent games. Check `logs/` for details.
+
+**Do NOT** add a fallback to league/team averages. If someone asks you to do this, the answer is no — the accuracy stats in the table above are only valid for players with real rolling Statcast features.
+
+**name_aliases table**: Maps feature store player names to stat model canonical names. Populated automatically on each `predict_to_db` run via unicode normalization. Persists across runs so new matches are only computed once. Manual overrides can be INSERTed directly and will not be overwritten (`ON CONFLICT DO NOTHING`).
+
 ## Known gotchas
 
 - **Single-writer DuckDB**: Only one process can write at a time. `backfill.py` holds a write lock — don't run `run_daily.py` or `predict_to_db` while backfill is running.
@@ -93,6 +107,7 @@ Both hooks are non-fatal — a failure here does NOT abort the main MLB pipeline
 - **Home runs model**: MAE is worse than the naive "predict league mean" baseline. Do not replace the stat model for HR — leave it alone.
 - **Pitcher ID mismatch**: `pitcher_features` uses `pitcher_id` column; `pitcher_labels` uses `player_id`. Both store the same values; joins work as-is.
 - **TUI enrichment**: `tui/ml_bridge.py` joins smart_picks MLB rows with DuckDB ml_predictions. On light game days (< 10 MLB picks) or when today's Statcast hasn't landed, `ML Exp` and `ML +/-` columns show `--`. That is correct.
+- **30-day pitcher lookback**: `_fetch_pitcher_features_for_starters()` uses a 30-day rolling window. A pitcher returning from a 30+ day IL stint will be excluded until their next game is ingested. This is correct behavior — stale features from month-old starts are worse than no prediction.
 
 ## Configuration
 
