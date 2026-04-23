@@ -774,6 +774,13 @@ class SmartPickSelector:
             if prediction == 'OVER' and prop_type in ('steals', 'blocked_shots', 'fantasy', 'turnovers'):
                 continue
 
+            # Suppress demon OVER — 29.41% actual hit rate vs 45.45% break-even (Apr 2026 audit).
+            # Statistical model overestimates probability for lines 1-1.5σ above standard;
+            # the Normal distribution doesn't account for the fat left-tail of rare big games.
+            # Guard is permanent until next full retrain with demon-specific calibration.
+            if pp['odds_type'] == 'demon' and prediction == 'OVER':
+                continue
+
             # Dynamic break-even derived from σ-distance and PAYOUTS table
             break_even = self.compute_break_even(pp['odds_type'], sigma_distance)
             edge = (probability - break_even) * 100

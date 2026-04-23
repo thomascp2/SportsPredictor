@@ -33,6 +33,10 @@ from pathlib import Path
 from v2_config import DB_PATH, LEARNING_MODE
 from v2_discord_notifications import send_discord_notification
 
+_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(_ROOT))
+from shared.pp_rules_validator import validate_prediction, correct_outcome
+
 
 # ============================================================================
 # RELIABILITY UTILITIES
@@ -488,6 +492,8 @@ def grade_predictions(game_date: str) -> Dict:
     # Idempotent migrations — run once, safe to repeat
     for migration in [
         "ALTER TABLE prediction_outcomes ADD COLUMN profit REAL",
+        "ALTER TABLE prediction_outcomes ADD COLUMN is_smart_pick INTEGER DEFAULT 0",
+        "ALTER TABLE prediction_outcomes ADD COLUMN odds_type TEXT DEFAULT 'standard'",
         "ALTER TABLE prediction_outcomes RENAME COLUMN predicted_outcome TO prediction",
         "ALTER TABLE prediction_outcomes RENAME COLUMN actual_stat_value TO actual_value",
     ]:
@@ -500,7 +506,7 @@ def grade_predictions(game_date: str) -> Dict:
     # Get predictions for date
     cursor.execute('''
         SELECT id, player_name, team, opponent, prop_type, line,
-               prediction, probability, confidence_tier
+               prediction, probability, confidence_tier, is_smart_pick, odds_type
         FROM predictions
         WHERE game_date = ?
     ''', (game_date,))
@@ -549,23 +555,31 @@ def grade_predictions(game_date: str) -> Dict:
     
     for pred in predictions:
         pred_id, player_name, team, opponent, prop_type, line, prediction, probability, tier = pred
-        
+        is_smart_pick = pred[9]
+        odds_type     = pred[10] or 'standard'
+
+        # Block impossible combos (demon/goblin + UNDER)
+        combo_check = validate_prediction(odds_type, prediction)
+        if not combo_check:
+            print(f'[BLOCKED] {player_name} {prop_type}: {combo_check.reason}')
+            continue
+
         # Find player's actual stats using fuzzy matching
         actual, match_type = find_player_stats(player_name, actual_stats)
-        
+
         if not actual:
             results['match_stats']['not_found'] += 1
             not_found_count += 1
             if len(not_found_examples) < 5:
                 not_found_examples.append(f'{player_name} ({team})')
             continue
-        
+
         # Track match type
         if match_type.startswith('fuzzy_'):
             results['match_stats']['fuzzy'] += 1
         elif match_type in results['match_stats']:
             results['match_stats'][match_type] += 1
-        
+
         # Get actual stat value
         if prop_type == 'points':
             actual_value = actual['points']
@@ -582,31 +596,31 @@ def grade_predictions(game_date: str) -> Dict:
         else:
             print(f'[WARN] Unknown prop type: {prop_type}')
             continue
-        
-        # Determine outcome
-        if prediction == 'OVER':
-            hit = actual_value > line
-        else:  # UNDER
-            hit = actual_value < line
-        
-        outcome = 'HIT' if hit else 'MISS'
 
-        # Determine what actually happened
+        # Use validator — handles DNP (actual=0 → VOID), push, logic errors
+        outcome = correct_outcome(odds_type, prediction, actual_value, line)
         actual_outcome = 'OVER' if actual_value > line else 'UNDER'
 
-        profit = 90.91 if outcome == 'HIT' else -100.0
+        if outcome == 'HIT':
+            profit = 120.0 if odds_type == 'demon' else (31.25 if odds_type == 'goblin' else 90.91)
+        elif outcome == 'MISS':
+            profit = -100.0
+        else:
+            profit = 0.0  # VOID / PUSH
 
-        # Store in database
         cursor.execute('''
             INSERT INTO prediction_outcomes
             (prediction_id, game_date, player_name, prop_type, line,
              prediction, predicted_probability,
-             actual_value, actual_outcome, outcome, graded_at, profit)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             actual_value, actual_outcome, outcome, graded_at, profit,
+             is_smart_pick, odds_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (pred_id, game_date, player_name, prop_type, line,
               prediction, probability, actual_value, actual_outcome, outcome,
-              datetime.now().isoformat(), profit))
-        
+              datetime.now().isoformat(), profit,
+              is_smart_pick, odds_type))
+
+        hit = (outcome == 'HIT')
         # Update stats
         results['total'] += 1
         if hit:

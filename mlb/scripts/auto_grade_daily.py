@@ -37,12 +37,15 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent))
+_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(_ROOT))
 from mlb_config import (
     DB_PATH, BACKUPS_DIR, get_db_connection, initialize_database, CORE_PROPS,
     is_over_only_line,
 )
 from mlb_stats_api import MLBStatsAPI, PitcherBoxscore, BatterBoxscore
 from generate_predictions_daily import backup_database
+from shared.pp_rules_validator import validate_prediction, correct_outcome
 
 
 # ============================================================================
@@ -102,13 +105,14 @@ class MLBGrader:
         print(f"[MLB Grader] Grading predictions for {target_date}")
         print(f"{'='*60}")
 
-        # Ensure profit column exists (idempotent migration)
+        # Ensure profit and is_smart_pick columns exist (idempotent migration)
         with sqlite3.connect(self.db_path) as _mc:
-            try:
-                _mc.execute("ALTER TABLE prediction_outcomes ADD COLUMN profit REAL")
-                _mc.commit()
-            except Exception:
-                pass  # Column already exists
+            for col in [("profit", "REAL"), ("is_smart_pick", "INTEGER DEFAULT 0"), ("odds_type", "TEXT DEFAULT 'standard'")]:
+                try:
+                    _mc.execute(f"ALTER TABLE prediction_outcomes ADD COLUMN {col[0]} {col[1]}")
+                    _mc.commit()
+                except Exception:
+                    pass  # Column already exists
 
         # Backup database first
         backup_database(self.db_path, BACKUPS_DIR)
@@ -281,6 +285,11 @@ class MLBGrader:
                     if extract_fn:
                         actual_value = extract_fn(batter)
 
+                # Block impossible combos before grading
+                combo_check = validate_prediction(odds_type, prediction)
+                if not combo_check:
+                    continue  # Silent skip — impossible combo shouldn't exist in predictions
+
                 if actual_value is None:
                     # DNP or unknown prop — void
                     self._save_outcome(conn, pred['id'], target_date, game_id,
@@ -289,27 +298,25 @@ class MLBGrader:
                     void += 1
                     continue
 
-                # Grade: did the actual value exceed the line?
-                actual_over = actual_value > line
-                hit = (prediction == 'OVER' and actual_over) or \
-                      (prediction == 'UNDER' and not actual_over)
+                # Use validator to compute correct outcome (DNP=0→VOID, push handled)
+                outcome = correct_outcome(odds_type, prediction, actual_value, line)
 
-                outcome = 'HIT' if hit else 'MISS'
-
-                # Calculate profit based on odds_type ($100 unit)
+                # Profit: HIT/MISS only; PUSH/VOID are 0
                 if outcome == 'HIT':
                     if odds_type == 'goblin':
-                        profit = 31.25  # -320 odds
+                        profit = 31.25   # -320 odds
                     elif odds_type == 'demon':
-                        profit = 120.0  # +120 odds
+                        profit = 120.0   # +120 odds
                     else:
-                        profit = 90.91  # -110 odds
-                else:
+                        profit = 90.91   # -110 odds
+                elif outcome == 'MISS':
                     profit = -100.0
+                else:
+                    profit = 0.0
 
                 self._save_outcome(conn, pred['id'], target_date, game_id,
                                    player_name, prop_type, line, prediction,
-                                   actual_value, outcome, profit, odds_type)
+                                   actual_value, outcome, profit, odds_type, pred.get('is_smart_pick', 0))
                 graded += 1
 
             except Exception as e:
@@ -335,7 +342,7 @@ class MLBGrader:
         """
         # Level 1: Exact match
         cursor = conn.execute('''
-            SELECT id, player_name, prop_type, line, prediction, probability
+            SELECT id, player_name, prop_type, line, prediction, probability, is_smart_pick, odds_type
             FROM predictions
             WHERE game_date = ?
               AND team = ?
@@ -349,7 +356,7 @@ class MLBGrader:
 
         # Level 2: Case-insensitive
         cursor = conn.execute('''
-            SELECT id, player_name, prop_type, line, prediction, probability
+            SELECT id, player_name, prop_type, line, prediction, probability, is_smart_pick, odds_type
             FROM predictions
             WHERE game_date = ?
               AND team = ?
@@ -365,7 +372,7 @@ class MLBGrader:
         last_name = player_name.split()[-1] if player_name else ''
         if last_name:
             cursor = conn.execute('''
-                SELECT id, player_name, prop_type, line, prediction, probability
+                SELECT id, player_name, prop_type, line, prediction, probability, is_smart_pick, odds_type
                 FROM predictions
                 WHERE game_date = ?
                   AND team = ?
@@ -379,7 +386,7 @@ class MLBGrader:
 
         # Level 4: Fuzzy match against all ungraded predictions for this team/date
         cursor = conn.execute('''
-            SELECT id, player_name, prop_type, line, prediction, probability
+            SELECT id, player_name, prop_type, line, prediction, probability, is_smart_pick, odds_type
             FROM predictions
             WHERE game_date = ?
               AND team = ?
@@ -484,17 +491,17 @@ class MLBGrader:
     def _save_outcome(self, conn: sqlite3.Connection, prediction_id: int, game_date: str,
                        game_id: str, player_name: str, prop_type: str, line: float,
                        prediction: str, actual_value: Optional[float], outcome: str,
-                       profit: float = 0.0, odds_type: str = 'standard') -> None:
+                       profit: float = 0.0, odds_type: str = 'standard', is_smart_pick: int = 0) -> None:
         """Save a single prediction outcome to the prediction_outcomes table."""
         conn.execute('''
             INSERT OR IGNORE INTO prediction_outcomes (
                 prediction_id, game_date, game_id, player_name,
-                prop_type, line, prediction, actual_value, outcome, created_at, profit, odds_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                prop_type, line, prediction, actual_value, outcome, created_at, profit, odds_type, is_smart_pick
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             prediction_id, game_date, game_id, player_name,
             prop_type, line, prediction, actual_value, outcome,
-            datetime.now().isoformat(), profit, odds_type
+            datetime.now().isoformat(), profit, odds_type, is_smart_pick
         ))
 
     def _void_predictions(self, conn: sqlite3.Connection, game_date: str,

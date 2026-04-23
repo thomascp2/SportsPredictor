@@ -10,13 +10,17 @@ This solves the API lag issue permanently.
 
 import sqlite3
 from datetime import datetime, timedelta
+from pathlib import Path
 from fuzzywuzzy import fuzz
 import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(_ROOT))
 from nba_config import DB_PATH, DISCORD_WEBHOOK_URL
 from espn_nba_api import ESPNNBAApi
+from shared.pp_rules_validator import validate_outcome, correct_outcome
 
 
 class MultiAPIGrader:
@@ -40,16 +44,17 @@ class MultiAPIGrader:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # Ensure profit column exists (idempotent migration)
-        try:
-            cursor.execute("ALTER TABLE prediction_outcomes ADD COLUMN profit REAL")
-            conn.commit()
-        except Exception:
-            pass  # Column already exists
+        # Ensure profit and is_smart_pick columns exist (idempotent migration)
+        for col in [("profit", "REAL"), ("is_smart_pick", "INTEGER DEFAULT 0"), ("odds_type", "TEXT DEFAULT 'standard'")]:
+            try:
+                cursor.execute(f"ALTER TABLE prediction_outcomes ADD COLUMN {col[0]} {col[1]}")
+                conn.commit()
+            except Exception:
+                pass  # Column already exists
 
         # Get predictions to grade
         cursor.execute("""
-            SELECT id, game_id, player_name, prop_type, line, prediction, probability, odds_type
+            SELECT id, game_id, player_name, prop_type, line, prediction, probability, odds_type, is_smart_pick
             FROM predictions
             WHERE game_date = ?
               AND id NOT IN (SELECT prediction_id FROM prediction_outcomes)
@@ -91,18 +96,34 @@ class MultiAPIGrader:
         
         for pred in predictions:
             pred_id, game_id, player_name, prop_type, line, prediction, probability, odds_type = pred
-            
+
+            # Block impossible combos before doing any work
+            from shared.pp_rules_validator import validate_prediction
+            combo_check = validate_prediction(odds_type, prediction)
+            if not combo_check:
+                ungraded.append((player_name, f"BLOCKED: {combo_check.reason}"))
+                continue
+
             match_result = self._find_player_stats(player_name, all_player_stats)
-            
+
             if match_result is None:
                 ungraded.append((player_name, "No match found"))
                 continue
-            
+
             player_stats, match_tier, match_score = match_result
 
-            # Skip DNP players
+            # DNP: 0 minutes → VOID, not a stat outcome
             if player_stats.get('minutes', 1) == 0:
-                ungraded.append((player_name, "DNP (0 minutes played)"))
+                cursor.execute("""
+                    INSERT INTO prediction_outcomes
+                    (prediction_id, game_id, game_date, player_name, prop_type, line,
+                     prediction, actual_value, outcome, match_tier, match_score, profit, odds_type, is_smart_pick)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'VOID', ?, ?, 0, ?, ?)
+                """, (
+                    pred_id, game_id, target_date, player_name, prop_type, line,
+                    prediction, 0, match_tier, match_score, odds_type, pred[8]
+                ))
+                graded_count += 1
                 continue
 
             actual_value = self._get_stat_value(player_stats, prop_type)
@@ -111,32 +132,32 @@ class MultiAPIGrader:
                 ungraded.append((player_name, f"Unknown prop type: {prop_type}"))
                 continue
 
-            if prediction == 'OVER':
-                outcome = 'HIT' if actual_value > line else 'MISS'
-            else:
-                outcome = 'HIT' if actual_value <= line else 'MISS'
+            # Use validator to compute correct outcome (catches push, logic errors)
+            outcome = correct_outcome(odds_type, prediction, actual_value, line)
 
-            # Calculate profit based on odds_type ($100 unit)
+            # Profit: only HIT/MISS generate profit/loss; PUSH/VOID are 0
             if outcome == 'HIT':
                 if odds_type == 'goblin':
-                    profit = 31.25  # -320 odds
+                    profit = 31.25   # -320 odds
                 elif odds_type == 'demon':
-                    profit = 120.0  # +120 odds
+                    profit = 120.0   # +120 odds
                 else:
-                    profit = 90.91  # -110 odds
-            else:
+                    profit = 90.91   # -110 odds
+            elif outcome == 'MISS':
                 profit = -100.0
+            else:
+                profit = 0.0
 
             cursor.execute("""
                 INSERT INTO prediction_outcomes
                 (prediction_id, game_id, game_date, player_name, prop_type, line,
-                 prediction, actual_value, outcome, match_tier, match_score, profit, odds_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 prediction, actual_value, outcome, match_tier, match_score, profit, odds_type, is_smart_pick)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 pred_id, game_id, target_date, player_name, prop_type, line,
-                prediction, actual_value, outcome, match_tier, match_score, profit, odds_type
+                prediction, actual_value, outcome, match_tier, match_score, profit, odds_type, pred[8]
             ))
-            
+
             graded_count += 1
             if outcome == 'HIT':
                 hit_count += 1
