@@ -168,7 +168,7 @@ def _fetch_nhl_roster_all(store) -> dict[str, str]:
             continue
 
         records: list[dict] = []
-        for group in ("forwards", "defense", "goalies"):
+        for group in ("forwards", "defensemen", "goalies"):
             for p in body.get(group, []):
                 pid      = str(p.get("id", ""))
                 first    = p.get("firstName", {}).get("default", "")

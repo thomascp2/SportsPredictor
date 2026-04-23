@@ -65,11 +65,17 @@ _EXCEPTIONS: dict[tuple[str, str], str] = {
     ("PJ Tucker",          "NBA"): "P.J. Tucker",
     ("RJ Barrett",         "NBA"): "RJ Barrett",
     ("TJ McConnell",       "NBA"): "T.J. McConnell",
+    # Special characters — fuzzy score too low for these accent mismatches
+    ("Nikola Vucevic",     "NBA"): "Nikola Vučević",
     ("Wander Franco",      "MLB"): "Wander Franco",
     ("Josh Jung",          "MLB"): "Josh Jung",
     ("Ha-Seong Kim",       "MLB"): "Ha-Seong Kim",
     ("Ji-Man Choi",        "MLB"): "Ji-Man Choi",
     ("Sean Murphy",        "MLB"): "Sean Murphy",
+    ("Francisco Alvarez",  "MLB"): "Francisco Álvarez",
+    ("Ronald Acuna Jr.",   "MLB"): "Ronald Acuña",
+    ("Fernando Tatis Jr.", "MLB"): "Fernando Tatís",
+    ("Munetaka Murakami",  "MLB"): "Munetaka Murakami",
 }
 
 
@@ -177,6 +183,18 @@ class NameNormalizer:
             if score >= self.threshold:
                 logger.debug(f"[Norm] Fuzzy: '{name}' -> '{match}' ({score})")
                 return match
+
+            # 3b. Strip generational suffix (Jr./Sr./III/II) and retry fuzzy
+            stripped = name
+            for suffix in (" Jr.", " Sr.", " III", " II"):
+                if stripped.endswith(suffix):
+                    stripped = stripped[: -len(suffix)].strip()
+                    break
+            if stripped != name:
+                best2 = process.extractOne(stripped, canonical_list, scorer=fuzz.token_sort_ratio)
+                if best2 and best2[1] >= self.threshold:
+                    logger.debug(f"[Norm] Fuzzy (suffix-stripped): '{name}' -> '{best2[0]}' ({best2[1]})")
+                    return best2[0]
 
         # 4. Last-name fallback (only when unambiguous)
         last_name = name.strip().split()[-1].lower() if name.strip() else ""
