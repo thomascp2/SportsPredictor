@@ -354,6 +354,41 @@ def _fix_line_duplication(cursor: sqlite3.Cursor, sport: str, dry_run: bool,
     return {"label": "Line dedup (mislabeled/duplicate PP lines -> DUPLICATE_LINE)", "before": before, "fixed": before if not dry_run else 0}
 
 
+def _fix_trivial_lines(cursor: sqlite3.Cursor, sport: str, dry_run: bool) -> dict:
+    """Flag picks that hit ~100% due to trivially-set PP lines, not model skill.
+    These inflate baseline win rates. Outcome is left unchanged; flag excludes from clean stats.
+    MLB only: batter_strikeouts demon UNDER line<=1.5 and hrr demon UNDER line<=2.5."""
+    if sport.upper() != 'MLB':
+        return {"label": "Trivial line flag (MLB only — skipped)", "before": 0, "fixed": 0}
+
+    before = _count(cursor, """
+        SELECT COUNT(*) FROM prediction_outcomes
+        WHERE data_quality_flag IS NULL
+          AND outcome IN ('HIT','MISS')
+          AND (
+            (prop_type='batter_strikeouts' AND LOWER(COALESCE(odds_type,'standard'))='demon'
+             AND LOWER(prediction)='under' AND line <= 1.5)
+            OR (prop_type='hrr' AND LOWER(COALESCE(odds_type,'standard'))='demon'
+             AND LOWER(prediction)='under' AND line <= 2.5)
+          )
+    """)
+    if not dry_run and before:
+        cursor.execute("""
+            UPDATE prediction_outcomes
+            SET data_quality_flag = 'TRIVIAL_LINE'
+            WHERE data_quality_flag IS NULL
+              AND outcome IN ('HIT','MISS')
+              AND (
+                (prop_type='batter_strikeouts' AND LOWER(COALESCE(odds_type,'standard'))='demon'
+                 AND LOWER(prediction)='under' AND line <= 1.5)
+                OR (prop_type='hrr' AND LOWER(COALESCE(odds_type,'standard'))='demon'
+                 AND LOWER(prediction)='under' AND line <= 2.5)
+              )
+        """)
+    return {"label": "Trivial line (batter_strikeouts/hrr demon UNDER low lines -> TRIVIAL_LINE)",
+            "before": before, "fixed": before if not dry_run else 0}
+
+
 def _ensure_quality_column(cursor: sqlite3.Cursor) -> None:
     try:
         cursor.execute("ALTER TABLE prediction_outcomes ADD COLUMN data_quality_flag TEXT")
@@ -423,6 +458,7 @@ def clean_sport(sport: str, db_path: Path, dry_run: bool) -> None:
         _fix_profit_backfill(cursor, dry_run),                         # recomputes profit with corrected odds_type
         _fix_smart_pick_sync(cursor, dry_run),
         _fix_line_duplication(cursor, sport, dry_run, pp_line_set),    # must run after odds_type is correct
+        _fix_trivial_lines(cursor, sport, dry_run),                    # flag trivial-line 100% props (MLB only)
     ]
 
     if not dry_run:

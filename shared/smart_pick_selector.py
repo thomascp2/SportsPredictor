@@ -815,6 +815,11 @@ class SmartPickSelector:
             if self.sport == 'MLB' and prediction == 'UNDER' and prop_type in ('outs_recorded', 'earned_runs'):
                 continue
 
+            # Suppress MLB hrr OVER — 36-43% hit rate across all odds types vs 45.45% demon BE (388 samples).
+            # Re-evaluate at ~50K graded MLB rows (~Aug 2026).
+            if self.sport == 'MLB' and prediction == 'OVER' and prop_type == 'hrr':
+                continue
+
             # Dynamic break-even derived from σ-distance and PAYOUTS table
             break_even = self.compute_break_even(pp['odds_type'], sigma_distance)
             edge = (probability - break_even) * 100
