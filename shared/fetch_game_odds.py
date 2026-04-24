@@ -158,6 +158,10 @@ def _fetch_espn_odds(sport: str, game_date: str) -> List[Dict]:
 
         espn_id = str(event.get("id") or comp.get("id") or "")
 
+        # Lock odds once a game is live or final — pre-game lines are the ones we bet on
+        status_state = event.get("status", {}).get("type", {}).get("state", "pre")
+        game_started = status_state in ("in", "post")
+
         # Try getting odds from scoreboard first (NBA has them inline)
         odds_data = _extract_scoreboard_odds(comp)
 
@@ -206,6 +210,7 @@ def _fetch_espn_odds(sport: str, game_date: str) -> List[Dict]:
             "home_implied_prob": home_prob,
             "away_implied_prob": away_prob,
             "odds_provider": odds_data.get("odds_provider", "ESPN"),
+            "game_started": game_started,
         })
 
     return results
@@ -413,8 +418,16 @@ def save_odds_to_db(sport: str, db_path: str, odds_list: List[Dict]) -> int:
         abs_spread = abs(spread) if spread is not None else None
 
         try:
-            conn.execute("""
-                INSERT OR REPLACE INTO game_lines
+            # Once a game is live or final, lock the pre-game odds in place.
+            # Live odds are volatile and meaningless for pre-game predictions.
+            if odds.get("game_started"):
+                insert_mode = "INSERT OR IGNORE"
+                print(f"  [ODDS] {odds['away_team']}@{odds['home_team']} already started — locking pre-game odds")
+            else:
+                insert_mode = "INSERT OR REPLACE"
+
+            conn.execute(f"""
+                {insert_mode} INTO game_lines
                 (game_id, game_date, home_team, away_team, spread, abs_spread,
                  over_under, home_moneyline, away_moneyline,
                  home_implied_prob, away_implied_prob,

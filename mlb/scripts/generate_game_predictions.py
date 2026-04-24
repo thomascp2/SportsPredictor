@@ -172,13 +172,21 @@ def main():
     print(f"  MLB Game Predictions - {game_date}")
     print(f"{'='*60}")
 
-    # Check for existing predictions
+    # Always refresh schedule first — starters change and clean data is non-negotiable
+    print(f"\n  Step 0a: Refreshing game schedule + probable starters...")
+    try:
+        from fetch_game_schedule import GameScheduleFetcher
+        GameScheduleFetcher(DB_PATH).fetch_and_save(game_date)
+    except Exception as e:
+        print(f"  [WARN] Schedule refresh failed (proceeding with cached data): {e}")
+
+    # Check for existing predictions (after schedule refresh so game_context is always current)
     if not args.force and already_predicted(DB_PATH, game_date):
         print(f"  [SKIP] Predictions already exist for {game_date}. Use --force to overwrite.")
         return
 
-    # Step 0: Fetch real odds from ESPN and save to game_lines table
-    print(f"\n  Step 0: Fetching real sportsbook lines...")
+    # Step 0b: Fetch real odds from ESPN and save to game_lines table
+    print(f"\n  Step 0b: Fetching real sportsbook lines...")
     odds_data = fetch_and_save_odds("mlb", DB_PATH, game_date)
 
     # Fetch games

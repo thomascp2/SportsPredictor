@@ -89,11 +89,26 @@ class GameScheduleFetcher:
         saved_count = 0
 
         try:
+            now_utc = datetime.utcnow()
+
             for game in games:
                 # Skip postponed games
                 if game.status == 'postponed':
                     print(f"[Schedule] Skipping postponed: {game.away_team} @ {game.home_team}")
                     continue
+
+                # Lock context for games already in progress — starter changes at that
+                # point are mid-game swaps and live odds are degenerate territory.
+                if game.game_time_utc:
+                    try:
+                        game_start = datetime.fromisoformat(
+                            game.game_time_utc.replace('Z', '+00:00')
+                        ).replace(tzinfo=None)
+                        if game_start <= now_utc and game.status in ('live', 'final'):
+                            print(f"[Schedule] {game.away_team} @ {game.home_team} already started — skipping context update")
+                            continue
+                    except Exception:
+                        pass
 
                 # Get odds for this matchup
                 odds_key = (game.away_team, game.home_team)
