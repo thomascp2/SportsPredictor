@@ -365,7 +365,8 @@ CREATE TABLE IF NOT EXISTS predictions (
     features_json TEXT,
     model_version TEXT,
     prediction_batch_id TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    ml_prob_over REAL
 );
 
 CREATE TABLE IF NOT EXISTS prediction_outcomes (

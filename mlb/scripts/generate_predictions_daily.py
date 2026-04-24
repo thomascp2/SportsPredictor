@@ -27,7 +27,9 @@ import sys
 import json
 import sqlite3
 import shutil
+import unicodedata
 from datetime import datetime
+from math import floor
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -218,6 +220,9 @@ class MLBDailyPredictor:
         print(f"  Skipped (TBD starter): {skipped_tbd}")
         print(f"  Skipped (insufficient data): {skipped_data}")
         print(f"  Errors: {errors}")
+
+        # Backfill XGBoost probabilities into ml_prob_over for BMA accumulation
+        backfill_ml_prob_over(self.db_path, target_date)
 
         return summary
 
@@ -462,6 +467,115 @@ class MLBDailyPredictor:
 # ============================================================================
 # Database backup utility
 # ============================================================================
+
+def _norm(name: str) -> str:
+    n = unicodedata.normalize("NFKD", str(name))
+    return "".join(c for c in n if not unicodedata.combining(c)).lower().strip()
+
+
+# DuckDB prop name → stat model prop_type name (where they differ)
+_DUCKDB_TO_STAT_PROP = {"walks": "pitcher_walks"}
+
+
+def _p_over(predicted_mean: float, line: float) -> float:
+    """P(actual > line) using Poisson CDF. Mirrors mlb_feature_store/ml/predict.py."""
+    try:
+        from scipy.stats import poisson
+        if predicted_mean <= 0:
+            return 0.0
+        return float(1.0 - poisson.cdf(int(line), mu=predicted_mean))
+    except ImportError:
+        return None
+
+
+def backfill_ml_prob_over(db_path: str, target_date: str) -> int:
+    """
+    After stat predictions are generated, join with DuckDB XGBoost predictions to
+    populate ml_prob_over on each matching prediction row.
+
+    Returns number of rows updated.
+    """
+    _DUCKDB_PATH = Path(__file__).resolve().parents[2] / "mlb_feature_store" / "data" / "mlb.duckdb"
+    if not _DUCKDB_PATH.exists():
+        print(f"[ML-Prob] DuckDB not found at {_DUCKDB_PATH} — skipping ml_prob_over backfill")
+        return 0
+
+    try:
+        import duckdb
+    except ImportError:
+        print("[ML-Prob] duckdb not installed — skipping ml_prob_over backfill")
+        return 0
+
+    # Ensure column exists
+    with sqlite3.connect(db_path) as mc:
+        try:
+            mc.execute("ALTER TABLE predictions ADD COLUMN ml_prob_over REAL")
+        except Exception:
+            pass
+
+    try:
+        duck = duckdb.connect(str(_DUCKDB_PATH), read_only=True)
+
+        # Load XGBoost predictions for this date (or fall back to latest available)
+        preds_df = duck.execute(
+            "SELECT player_name, prop, predicted_value FROM ml_predictions WHERE game_date = ?",
+            [target_date]
+        ).fetchdf()
+
+        if preds_df.empty:
+            print(f"[ML-Prob] No DuckDB ML predictions for {target_date} — skipping")
+            duck.close()
+            return 0
+
+        # Load name aliases: fs_name → canonical_name (canonical = stat model name)
+        try:
+            aliases = duck.execute("SELECT fs_name, canonical_name FROM name_aliases").fetchdf()
+            alias_map = dict(zip(aliases["fs_name"], aliases["canonical_name"]))
+        except Exception:
+            alias_map = {}
+
+        duck.close()
+
+        # Build lookup: (canonical_name_lower, stat_prop_type) → predicted_value
+        lookup: Dict[tuple, float] = {}
+        for _, row in preds_df.iterrows():
+            fs_name = row["player_name"] or ""
+            canonical = alias_map.get(fs_name, fs_name)
+            stat_prop = _DUCKDB_TO_STAT_PROP.get(row["prop"], row["prop"])
+            key = (_norm(canonical), stat_prop)
+            lookup[key] = float(row["predicted_value"])
+
+        # Update SQLite predictions
+        updated = 0
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT id, player_name, prop_type, line FROM predictions "
+                "WHERE game_date = ? AND ml_prob_over IS NULL",
+                (target_date,)
+            ).fetchall()
+
+            for row_id, player_name, prop_type, line in rows:
+                predicted_value = lookup.get((_norm(player_name), prop_type))
+                if predicted_value is None:
+                    continue
+                prob = _p_over(predicted_value, line)
+                if prob is None:
+                    continue
+                conn.execute(
+                    "UPDATE predictions SET ml_prob_over = ? WHERE id = ?",
+                    (round(prob, 4), row_id)
+                )
+                updated += 1
+
+            conn.commit()
+
+        print(f"[ML-Prob] ml_prob_over backfilled: {updated}/{len(rows)} predictions for {target_date}")
+        return updated
+
+    except Exception as e:
+        print(f"[ML-Prob] backfill_ml_prob_over failed: {e}")
+        return 0
+
 
 def backup_database(db_path: str = None, backups_dir: str = None) -> Optional[str]:
     """

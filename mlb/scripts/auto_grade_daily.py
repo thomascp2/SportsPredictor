@@ -113,6 +113,12 @@ class MLBGrader:
                     _mc.commit()
                 except Exception:
                     pass  # Column already exists
+            # ml_prob_over lives on predictions table (XGBoost P(OVER) for BMA)
+            try:
+                _mc.execute("ALTER TABLE predictions ADD COLUMN ml_prob_over REAL")
+                _mc.commit()
+            except Exception:
+                pass
 
         # Backup database first
         backup_database(self.db_path, BACKUPS_DIR)
@@ -177,6 +183,12 @@ class MLBGrader:
         # Print accuracy metrics
         self._print_accuracy_report(target_date)
 
+        # Update MAB with today's grading results (non-fatal)
+        try:
+            self._update_mab(target_date)
+        except Exception as e:
+            print(f"[MAB] Update failed (non-fatal): {e}")
+
         summary = {
             'date': target_date,
             'graded': graded,
@@ -186,6 +198,109 @@ class MLBGrader:
         }
         print(f"\n[MLB Grader] Summary: {summary}")
         return summary
+
+    # =========================================================================
+    # MAB update (Thompson Sampling — stat + xgb arms)
+    # =========================================================================
+
+    def _update_mab(self, target_date: str) -> None:
+        """Update MAB state from today's graded outcomes for stat and xgb arms."""
+        _HLSS = Path(__file__).resolve().parents[3] / "hlss"
+        if str(_HLSS) not in sys.path:
+            sys.path.insert(0, str(_HLSS))
+        from ml_training.mab_weighting import ThompsonSamplingMAB
+
+        mab = ThompsonSamplingMAB()
+        _STAT_TO_DUCKDB = {"pitcher_walks": "walks"}
+
+        def _norm(name: str) -> str:
+            import unicodedata as _ud
+            n = _ud.normalize("NFKD", str(name))
+            return "".join(c for c in n if not _ud.combining(c)).lower().strip()
+
+        def _p_over_local(predicted_mean: float, line: float):
+            try:
+                from scipy.stats import poisson
+                if predicted_mean <= 0:
+                    return None
+                return float(1.0 - poisson.cdf(int(line), mu=predicted_mean))
+            except ImportError:
+                return None
+
+        # Fetch graded outcomes
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            outcomes = [dict(r) for r in conn.execute("""
+                SELECT player_name, prop_type, line, prediction, actual_value, outcome
+                FROM prediction_outcomes
+                WHERE game_date = ? AND outcome IN ('HIT', 'MISS')
+            """, (target_date,)).fetchall()]
+
+        if not outcomes:
+            print(f"[MAB] No HIT/MISS outcomes for {target_date} — skipping")
+            return
+
+        # Stat arm updates
+        for row in outcomes:
+            mab.update('mlb', row['prop_type'], 'stat',
+                       correct=(row['outcome'] == 'HIT'),
+                       line=row['line'], game_date=target_date)
+        print(f"[MAB] Stat arm: {len(outcomes)} updates")
+
+        # XGBoost arm — load DuckDB ml_predictions
+        xgb_updated = 0
+        _DUCKDB_PATH = Path(__file__).resolve().parents[2] / "mlb_feature_store" / "data" / "mlb.duckdb"
+
+        if _DUCKDB_PATH.exists():
+            try:
+                import duckdb
+                duck = duckdb.connect(str(_DUCKDB_PATH), read_only=True)
+
+                try:
+                    aliases = duck.execute("SELECT fs_name, canonical_name FROM name_aliases").fetchall()
+                    alias_map = {_norm(fs): _norm(can) for fs, can in aliases}
+                except Exception:
+                    alias_map = {}
+
+                ml_rows = duck.execute("""
+                    SELECT p.player_name, mp.prop, mp.predicted_value, mp.line
+                    FROM ml_predictions mp
+                    JOIN players p ON mp.player_id = p.player_id
+                    WHERE mp.game_date = ?
+                """, [target_date]).fetchall()
+                duck.close()
+
+                ml_lookup = {}
+                for pname, prop, predicted_value, ml_line in ml_rows:
+                    key = (alias_map.get(_norm(pname), _norm(pname)), prop)
+                    ml_lookup[key] = (predicted_value, ml_line)
+
+                for row in outcomes:
+                    duckdb_prop = _STAT_TO_DUCKDB.get(row['prop_type'], row['prop_type'])
+                    ml_entry = ml_lookup.get((_norm(row['player_name']), duckdb_prop))
+                    if ml_entry is None:
+                        continue
+
+                    predicted_value, _ = ml_entry
+                    grade_line = row['line']
+                    prob_over = _p_over_local(predicted_value, grade_line)
+                    if prob_over is None or row['actual_value'] is None:
+                        continue
+
+                    xgb_direction = 'OVER' if prob_over > 0.5 else 'UNDER'
+                    actual_direction = 'OVER' if float(row['actual_value']) > grade_line else 'UNDER'
+                    mab.update('mlb', row['prop_type'], 'xgb',
+                               correct=(xgb_direction == actual_direction),
+                               line=grade_line, game_date=target_date)
+                    xgb_updated += 1
+
+            except Exception as e:
+                print(f"[MAB] XGB arm failed: {e}")
+        else:
+            print(f"[MAB] DuckDB not found — xgb arm skipped")
+
+        mab.save()
+        print(f"[MAB] Saved. Stat: {len(outcomes)}, XGB: {xgb_updated} for {target_date}")
 
     # =========================================================================
     # Per-game grading
