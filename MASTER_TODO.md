@@ -68,18 +68,63 @@
 - ✅ Push clean repo to GitHub
 
 ### Phase 2 — VPS Deployment & V1 Stabilization ⬜ NEXT
-- ⬜ Provision Ubuntu 24.04 DigitalOcean droplet (8GB RAM recommended)
+**⚠️ SERVER CHANGE: Switched from DigitalOcean → Oracle Cloud Free Tier (Ampere ARM)**
+Oracle Cloud Always Free: 4x Ampere A1 cores (ARM64/aarch64) + 24GB RAM — significantly more powerful than DO's $24/mo x86 droplet at no cost.
+
+#### ARM Compatibility Check (Oracle Ampere A1 = aarch64)
+All key dependencies ship ARM64 wheels — no source compilation needed:
+
+| Package | ARM64 Wheel? | Notes |
+|---------|-------------|-------|
+| `numpy>=1.24` | ✅ | Official ARM64 wheels on PyPI |
+| `scikit-learn>=1.3` | ✅ | Official ARM64 wheels |
+| `xgboost>=2.0` | ✅ | ARM64 wheels since v1.6 |
+| `scipy` | ✅ | ARM64 wheels |
+| `duckdb>=1.1.3` | ✅ | ARM64 wheels |
+| `libsql-client>=0.3` | ✅ | Pure Python (no native ext) |
+| `streamlit` | ✅ | Pure Python |
+| `crewai` (Phase 4) | ✅ | Pure Python |
+| `lightgbm` | ✅ | ARM64 wheels |
+| `pandas` | ✅ | ARM64 wheels |
+
+**One potential issue:** `tui-terminal/src/kalshi.rs` (Rust binary) must be compiled on ARM — it won't run a Windows or x86 Linux binary. When Phase 5 wires the Kalshi Rust CLI, `cargo build --release` must run on the Oracle VPS itself.
+
+#### Oracle Cloud Setup Steps
+- ⬜ Create Oracle Cloud account → Always Free tier (no credit card charge)
+- ⬜ Provision VM: **VM.Standard.A1.Flex** — 4 OCPUs, 24GB RAM, Ubuntu 22.04 ARM64
+- ⬜ Open ingress rules: port 22 (SSH), 8502 (dashboard), 8600 (PEGASUS API)
+- ⬜ `ssh ubuntu@<OCI_IP>` — confirm ARM: `uname -m` should return `aarch64`
+- ⬜ `sudo apt update && sudo apt install -y python3-pip python3-venv git screen`
 - ⬜ `git clone https://github.com/thomascp2/Agentic-Agency-SP-V1-V2.git /hlss`
-- ⬜ `python3 -m venv /hlss/.venv && pip install -r requirements.txt`
-- ⬜ `cp .env.example .env` — fill in all secrets from `start_orchestrator.bat`
-- ⬜ `mkdir -p nhl/database nba/database mlb/database golf/database`
-- ⬜ `scp` 4 SQLite DBs from Windows → VPS
-- ⬜ `scp mlb_feature_store/data/mlb.duckdb` from Windows → VPS
+- ⬜ `python3 -m venv /hlss/.venv && source /hlss/.venv/bin/activate`
+- ⬜ `pip install -r requirements.txt && pip install -r mlb_feature_store/requirements.txt`
+- ⬜ **ARM smoke test:** `python -c "import xgboost, duckdb, sklearn; print('ARM OK')"` — must pass before proceeding
+- ⬜ `cp .env.example .env` — fill in all secrets from `start_orchestrator.bat` on Windows
+- ⬜ `mkdir -p nhl/database nba/database mlb/database golf/database mlb_feature_store/data`
+- ⬜ Transfer SQLite DBs from Windows (use WinSCP, scp via WSL, or rsync):
+  ```
+  scp nhl/database/nhl_predictions_v2.db ubuntu@<OCI_IP>:/hlss/nhl/database/
+  scp nba/database/nba_predictions.db ubuntu@<OCI_IP>:/hlss/nba/database/
+  scp mlb/database/mlb_predictions.db ubuntu@<OCI_IP>:/hlss/mlb/database/
+  scp golf/database/golf_predictions.db ubuntu@<OCI_IP>:/hlss/golf/database/
+  scp mlb_feature_store/data/mlb.duckdb ubuntu@<OCI_IP>:/hlss/mlb_feature_store/data/
+  ```
 - ⬜ Smoke test: `python orchestrator.py --sport nba --mode once --operation prediction`
 - ⬜ Smoke test: `python orchestrator.py --sport nba --mode once --operation grading`
-- ⬜ Set up systemd service OR screen session for continuous mode
+- ⬜ Set up systemd service (preferred over screen — survives reboots):
+  ```ini
+  # /etc/systemd/system/freepicks.service
+  [Service]
+  User=ubuntu
+  WorkingDirectory=/hlss
+  EnvironmentFile=/hlss/.env
+  ExecStart=/hlss/.venv/bin/python orchestrator.py --sport all --mode continuous
+  Restart=on-failure
+  RestartSec=30
+  ```
+- ⬜ `sudo systemctl enable freepicks && sudo systemctl start freepicks`
 - ⬜ Test dashboard: `streamlit run dashboards/cloud_dashboard.py --server.port 8502`
-- ⬜ Optional: set up GitHub Actions CI/CD (`.github/workflows/deploy.yml`)
+- ⬜ Optional: GitHub Actions CI/CD — add `VPS_HOST` + `VPS_SSH_KEY` as repo secrets
 
 ### Phase 3 — The Founder Agent ⏸ (after Phase 2)
 - ⬜ Send Founder prompt to `claude-sonnet-4-6` on fresh VPS
