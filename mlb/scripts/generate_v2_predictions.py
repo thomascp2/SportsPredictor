@@ -59,12 +59,21 @@ except ImportError:
     _COLD_START_PRIORS = {'stat': (6, 4), 'xgb': (7, 3)}
     print("[V2] WARNING: ml_training.mab_weighting not found — using cold-start priors")
 
+# V2 DATA BOUNDARY: This system starts accumulating from 2026-04-25 forward.
+# ml_v2.db contains no V1 predictions or outcomes.
+# player_game_logs copied from V1 for stat model feature extraction only.
+# MAB state initialized from cold-start priors — no V1 grading history.
+
 # Break-even values — keep in sync with smart_pick_selector.py + supabase_sync.py
 _BREAK_EVEN = {
     'standard': 0.5238,
     'goblin':   0.7619,
     'demon':    0.4545,
 }
+
+# Models actively producing predictions. MAB only samples from these arms.
+# Add 'rf' and 'lr' here once their models are trained and predict_to_db writes them.
+ACTIVE_MODELS = ['stat', 'xgb']
 
 _DUCKDB_PATH = Path(__file__).resolve().parents[2] / "mlb_feature_store" / "data" / "mlb.duckdb"
 _DUCKDB_TO_STAT_PROP = {"walks": "pitcher_walks"}
