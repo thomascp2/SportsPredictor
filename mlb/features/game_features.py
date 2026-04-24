@@ -197,7 +197,10 @@ class MLBGameFeatureExtractor:
                 # weight 0.60-0.65. Add a K/9 or FIP-based tier adjustment here
                 # once we have enough outcomes to validate the multiplier.
                 LEAGUE_AVG_ERA = 4.00
-                SP_WEIGHT = 0.50
+                # SP_WEIGHT calibrated retroactively on 226 graded games (Apr 24 2026).
+                # Optimal was 0.20; using 0.25 conservatively pending 500-game threshold.
+                # Re-run: python mlb/features/game_features.py --calibrate
+                SP_WEIGHT = 0.25
 
                 # Guard: cap ERA inputs to prevent tiny or extreme sample sizes
                 # from producing nonsensical adjustment factors.
@@ -571,11 +574,12 @@ class MLBGameFeatureExtractor:
                 continue
 
         if len(games) < min_games:
+            # Use --min-games 200 to run with current season data (~226 games available Apr 24)
             return {
                 "ready": False,
                 "reason": f"Only {len(games)} graded total rows with SP data — need {min_games}",
                 "games": len(games),
-                "target_date": "~Aug 2026 (mid-season)",
+                "target_date": "~Aug 2026 (mid-season) for 500-game threshold",
             }
 
         LEAGUE_AVG_ERA = 4.00
