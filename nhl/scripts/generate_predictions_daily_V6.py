@@ -314,7 +314,7 @@ def get_all_pp_player_lines(target_date: str) -> dict:
 
     placeholders = ','.join(['?' for _ in ODDS_TYPES])
     cursor.execute(f'''
-        SELECT player_name, prop_type, line
+        SELECT player_name, prop_type, line, odds_type
         FROM prizepicks_lines
         WHERE fetch_date = ?
         AND league = 'NHL'
@@ -323,17 +323,19 @@ def get_all_pp_player_lines(target_date: str) -> dict:
         ORDER BY player_name, prop_type, line
     ''', (target_date, *ODDS_TYPES))
 
-    # Organize by player
+    # Organize by player; also build a lookup for post-generation odds_type backfill
     player_lines = {}
+    odds_type_map = {}  # (player_lower, prop, line) -> odds_type
     for row in cursor.fetchall():
-        player, prop, line = row
+        player, prop, line, odds_type = row
         if player not in player_lines:
             player_lines[player] = {'points': [], 'shots': [], 'hits': [], 'blocked_shots': []}
         if prop in player_lines[player]:
             player_lines[player][prop].append(line)
+        odds_type_map[(player.lower(), prop, line)] = odds_type
 
     conn.close()
-    return player_lines
+    return player_lines, odds_type_map
 
 
 # ============================================================================
@@ -679,7 +681,7 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
     else:
         use_pp_lines = True
         # Get all PP lines organized by player
-        pp_player_lines = get_all_pp_player_lines(target_date)
+        pp_player_lines, pp_odds_type_map = get_all_pp_player_lines(target_date)
         print(f"[PP] Found lines for {len(pp_player_lines)} NHL players")
     print()
 
@@ -905,7 +907,27 @@ def generate_predictions_for_date(target_date: str, force: bool = False) -> int:
         print(f'[INTEL] Players skipped (OUT/scratched): {skipped_intel}')
         print()
 
-    if use_pp_lines:
+    if use_pp_lines and pp_odds_type_map:
+        # Backfill odds_type on today's predictions using PP lines ground truth.
+        # The statistical engine _save_prediction() doesn't accept odds_type, so we
+        # update after generation using the map built from prizepicks_lines.
+        db_conn = sqlite3.connect(DB_PATH)
+        db_cur = db_conn.cursor()
+        db_cur.execute(
+            "SELECT id, LOWER(player_name), prop_type, line FROM predictions WHERE game_date = ?",
+            (target_date,)
+        )
+        updates = []
+        for row_id, player_l, prop, line in db_cur.fetchall():
+            correct = pp_odds_type_map.get((player_l, prop, line))
+            if correct:
+                updates.append((correct, row_id))
+        if updates:
+            db_cur.executemany("UPDATE predictions SET odds_type = ? WHERE id = ?", updates)
+            db_conn.commit()
+            print(f'[ODDS_TYPE] Backfilled odds_type on {len(updates)} predictions')
+        db_conn.close()
+
         print('PRIZEPICKS MATCHING:')
         print(f'  Players matched to PP: {pp_matched_players}')
         print(f'  Players unmatched (fallback): {pp_unmatched_players}')

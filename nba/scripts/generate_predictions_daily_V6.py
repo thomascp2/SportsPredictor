@@ -172,7 +172,7 @@ class NBADailyPredictorV6:
         Get all PrizePicks lines for NBA, organized by player.
 
         Returns:
-            Dict: {player_name: {prop_type: [lines]}}
+            Dict: {player_name: {prop_type: [(line, odds_type), ...]}}
         """
         if not PP_AVAILABLE:
             return {}
@@ -182,7 +182,7 @@ class NBADailyPredictorV6:
 
         placeholders = ','.join(['?' for _ in ODDS_TYPES])
         cursor.execute(f'''
-            SELECT player_name, prop_type, line
+            SELECT player_name, prop_type, line, odds_type
             FROM prizepicks_lines
             WHERE fetch_date = ?
             AND league = 'NBA'
@@ -193,7 +193,7 @@ class NBADailyPredictorV6:
         # Organize by player
         player_lines = {}
         for row in cursor.fetchall():
-            player, prop, line = row
+            player, prop, line, odds_type = row
 
             # Map PP prop to our internal name
             internal_prop = PP_TO_INTERNAL.get(prop.lower(), prop.lower())
@@ -207,7 +207,7 @@ class NBADailyPredictorV6:
             if internal_prop not in player_lines[player]:
                 player_lines[player][internal_prop] = []
 
-            player_lines[player][internal_prop].append(line)
+            player_lines[player][internal_prop].append((line, odds_type))
 
         conn.close()
         return player_lines
@@ -389,7 +389,7 @@ class NBADailyPredictorV6:
 
                     # Generate predictions for each prop/line combo
                     for prop_type, lines in player_pp_lines.items():
-                        for line in lines:
+                        for line, odds_type in lines:
                             try:
                                 # Statistical predictor always runs (provides features + fallback)
                                 stat_result = self.predictor.predict_prop(
@@ -412,7 +412,8 @@ class NBADailyPredictorV6:
                                     # Save prediction
                                     self._save_prediction(
                                         conn, game['game_id'], target_date, player_name,
-                                        team, opponent, home_away, prop_type, line, result
+                                        team, opponent, home_away, prop_type, line, result,
+                                        odds_type=odds_type
                                     )
 
                                     total_predictions += 1
@@ -555,7 +556,7 @@ class NBADailyPredictorV6:
         )
 
     def _save_prediction(self, conn, game_id, game_date, player_name, team, opponent,
-                        home_away, prop_type, line, result):
+                        home_away, prop_type, line, result, odds_type: str = 'standard'):
         """Save prediction to database."""
         player_name = self._normalize_name(player_name)
         cursor = conn.cursor()
@@ -573,8 +574,8 @@ class NBADailyPredictorV6:
                  f_max_streak, f_trend_slope, f_home_away_split, f_games_played,
                  f_insufficient_data, f_season_avg, f_l10_avg, f_l5_avg,
                  f_season_std, f_l10_std, f_trend_acceleration, f_avg_minutes,
-                 f_consistency_score, features_json, expected_value)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 f_consistency_score, features_json, expected_value, odds_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 game_id, game_date, player_name, team, opponent, home_away,
                 prop_type, line, result['prediction'], result['probability'],
@@ -599,6 +600,7 @@ class NBADailyPredictorV6:
                 features.get('f_consistency_score', 0),
                 features_json,
                 result.get('expected_value'),
+                odds_type,
             ))
         except sqlite3.IntegrityError:
             pass  # Duplicate prediction
