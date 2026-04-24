@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "shared"))
 from mlb_config import DB_PATH
 from grade_game_predictions import GamePredictionGrader
 from game_discord_notifications import send_game_grading_alert
+from elo_engine import EloEngine, TEAM_ALIASES
 
 
 def fetch_final_scores(db_path: str, game_date: str) -> int:
@@ -172,6 +173,44 @@ def fetch_final_scores(db_path: str, game_date: str) -> int:
     return updated
 
 
+def update_elo_ratings(db_path: str, game_date: str) -> int:
+    """Update MLB Elo ratings from newly scored games on game_date."""
+    elo = EloEngine(sport="mlb")
+    elo.load()  # OK if file missing — starts from defaults
+
+    aliases = TEAM_ALIASES.get("mlb", {})
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    games = []
+    for table in ("game_context", "games"):
+        try:
+            rows = conn.execute(f"""
+                SELECT home_team, away_team, home_score, away_score
+                FROM {table}
+                WHERE game_date = ? AND home_score IS NOT NULL AND away_score IS NOT NULL
+            """, (game_date,)).fetchall()
+            if rows:
+                games = rows
+                break
+        except Exception:
+            continue
+    conn.close()
+
+    updated = 0
+    for g in games:
+        home = aliases.get(g["home_team"], g["home_team"])
+        away = aliases.get(g["away_team"], g["away_team"])
+        elo.update(home, away, g["home_score"], g["away_score"], game_date)
+        updated += 1
+
+    if updated:
+        elo.save()
+        print(f"  [ELO] Updated {updated} game(s) — ratings saved")
+
+    return updated
+
+
 def main():
     parser = argparse.ArgumentParser(description="Grade MLB Game Predictions")
     parser.add_argument("date", nargs="?",
@@ -193,6 +232,9 @@ def main():
         print(f"  [MLB] No final scores available for {game_date}")
         print(f"  Games may not have been played or aren't finished yet.")
         return
+
+    # Step 1b: Update Elo ratings from final scores
+    update_elo_ratings(DB_PATH, game_date)
 
     # Step 2: Grade predictions
     print(f"\n  Step 2: Grading predictions...")

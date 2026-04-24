@@ -74,6 +74,21 @@ SPORT_TEAMS = {
     "mlb": MLB_TEAMS,
 }
 
+# Non-standard abbreviations used in some data sources → canonical form
+TEAM_ALIASES = {
+    "mlb": {
+        "AZ": "ARI",
+        "SD": "SDP",
+        "SF": "SFG",
+        "TB": "TBR",
+        "KC": "KCR",
+        "CWS": "CHW",
+        "ATH": "OAK",
+    },
+    "nhl": {},
+    "nba": {},
+}
+
 
 class EloEngine:
     """Sport-agnostic Elo rating engine with persistence."""
@@ -314,11 +329,14 @@ class EloEngine:
         games = cursor.fetchall()
         conn.close()
 
+        aliases = TEAM_ALIASES.get(self.sport, {})
         processed = 0
         for game in games:
+            home = aliases.get(game["home_team"], game["home_team"])
+            away = aliases.get(game["away_team"], game["away_team"])
             self.update(
-                home_team=game["home_team"],
-                away_team=game["away_team"],
+                home_team=home,
+                away_team=away,
                 home_score=game["home_score"],
                 away_score=game["away_score"],
                 game_date=game["game_date"],
