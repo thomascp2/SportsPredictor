@@ -809,6 +809,12 @@ class SmartPickSelector:
             if self.sport == 'MLB' and prediction == 'UNDER' and prop_type == 'pitcher_walks':
                 continue
 
+            # Suppress MLB outs_recorded UNDER — 38.3% hit rate vs 52.38% BE → -14.1% edge.
+            # Suppress MLB earned_runs UNDER — 30.4% hit rate vs 52.38% BE → -22.0% edge.
+            # Re-evaluate at ~50K graded MLB rows (~Aug 2026).
+            if self.sport == 'MLB' and prediction == 'UNDER' and prop_type in ('outs_recorded', 'earned_runs'):
+                continue
+
             # Dynamic break-even derived from σ-distance and PAYOUTS table
             break_even = self.compute_break_even(pp['odds_type'], sigma_distance)
             edge = (probability - break_even) * 100
