@@ -177,15 +177,46 @@ class MLBGameFeatureExtractor:
             away_sp_ip = features["gf_away_sp_innings"]
 
             if home_sp_ip > 0 or away_sp_ip > 0:
-                # SP covers ~50% of total run prevention; adjust offense vs SP quality.
-                # away SP pitches to home batters; home SP pitches to away batters.
-                # Factor < 1.0 = elite SP (suppresses runs), > 1.0 = poor SP (inflates runs).
+                # SP ERA adjustment for predicted total.
+                #
+                # SP_WEIGHT = 0.50 is a reasonable prior for a typical MLB starter
+                # (~5-6 innings). It means a SP with ERA half the league average
+                # (e.g. 2.00 vs 4.00) reduces expected runs by 25% (not 50%), which
+                # is conservative and intentional — the bullpen covers the rest.
+                #
+                # CALIBRATION NOTE (recalibrate when game_prediction_outcomes has
+                # 500+ graded total rows with real SP data):
+                #   Run: python mlb/features/game_features.py --calibrate
+                #   The calibrate_sp_weight() method will compute the SP_WEIGHT
+                #   that minimizes RMSE on historical predicted vs actual totals.
+                #   Expected recalibration window: ~Aug 2026 (mid-season with full
+                #   starter workloads and enough outcomes to trust the signal).
+                #
+                # KNOWN LIMITATION: SP_WEIGHT doesn't scale with ace quality.
+                # An elite front-line SP (ERA < 2.50, K/9 > 11) likely warrants
+                # weight 0.60-0.65. Add a K/9 or FIP-based tier adjustment here
+                # once we have enough outcomes to validate the multiplier.
                 LEAGUE_AVG_ERA = 4.00
                 SP_WEIGHT = 0.50
-                away_sp_adj = ((1 - SP_WEIGHT) + SP_WEIGHT * away_sp_era / LEAGUE_AVG_ERA
+
+                # Guard: cap ERA inputs to prevent tiny or extreme sample sizes
+                # from producing nonsensical adjustment factors.
+                # Floor at 1.50 (no active SP is truly sub-1.50 over a full season).
+                # Ceiling at 7.00 (above this ERA the SP likely won't finish the game).
+                home_sp_era_capped = max(1.50, min(7.00, home_sp_era))
+                away_sp_era_capped = max(1.50, min(7.00, away_sp_era))
+
+                away_sp_adj = ((1 - SP_WEIGHT) + SP_WEIGHT * away_sp_era_capped / LEAGUE_AVG_ERA
                                if away_sp_ip > 0 else 1.0)
-                home_sp_adj = ((1 - SP_WEIGHT) + SP_WEIGHT * home_sp_era / LEAGUE_AVG_ERA
+                home_sp_adj = ((1 - SP_WEIGHT) + SP_WEIGHT * home_sp_era_capped / LEAGUE_AVG_ERA
                                if home_sp_ip > 0 else 1.0)
+
+                # Final safety clamp: adjustment factor must stay in [0.55, 1.45].
+                # Prevents edge cases (e.g. 1-inning SP sample) from collapsing or
+                # exploding the predicted total.
+                away_sp_adj = max(0.55, min(1.45, away_sp_adj))
+                home_sp_adj = max(0.55, min(1.45, home_sp_adj))
+
                 home_expected = home_rpg * away_sp_adj
                 away_expected = away_rpg * home_sp_adj
                 features["gf_predicted_total"] = round((home_expected + away_expected) * park_runs, 1)
@@ -492,14 +523,135 @@ class MLBGameFeatureExtractor:
     def feature_count(self) -> int:
         return len(DEFAULT_FEATURES)
 
+    def calibrate_sp_weight(self, min_games: int = 500) -> dict:
+        """
+        Find the SP_WEIGHT that minimizes RMSE on historical total predictions.
+
+        Reads graded outcomes (game_prediction_outcomes) joined with the
+        features_json stored at prediction time, then does a grid search over
+        SP_WEIGHT in [0.20, 0.80] to find the value that produces the lowest
+        root-mean-square error between predicted and actual totals.
+
+        Returns a dict with 'weight', 'rmse', 'games', and 'ready' flag.
+        Call this from the CLI: python mlb/features/game_features.py --calibrate
+
+        DATA GATE: Returns ready=False if fewer than min_games graded total
+        rows with real SP data exist. Do not update SP_WEIGHT in code until
+        ready=True and the improvement over 0.50 baseline is >= 0.1 RMSE.
+        """
+        import json as _json
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+
+        try:
+            rows = conn.execute("""
+                SELECT gp.features_json, gpo.actual_total
+                FROM game_predictions gp
+                JOIN game_prediction_outcomes gpo
+                    ON gp.id = gpo.prediction_id
+                WHERE gp.bet_type = 'total'
+                  AND gpo.actual_total IS NOT NULL
+                  AND gpo.actual_total > 0
+            """).fetchall()
+        except Exception as e:
+            conn.close()
+            return {"ready": False, "reason": str(e), "games": 0}
+
+        conn.close()
+
+        # Keep only rows where at least one SP had real IP data
+        games = []
+        for r in rows:
+            try:
+                f = _json.loads(r["features_json"])
+                if f.get("gf_home_sp_innings", 0) > 0 or f.get("gf_away_sp_innings", 0) > 0:
+                    games.append((f, r["actual_total"]))
+            except Exception:
+                continue
+
+        if len(games) < min_games:
+            return {
+                "ready": False,
+                "reason": f"Only {len(games)} graded total rows with SP data — need {min_games}",
+                "games": len(games),
+                "target_date": "~Aug 2026 (mid-season)",
+            }
+
+        LEAGUE_AVG_ERA = 4.00
+
+        def rmse_for_weight(weight):
+            errors = []
+            for f, actual in games:
+                h_ip = f.get("gf_home_sp_innings", 0)
+                a_ip = f.get("gf_away_sp_innings", 0)
+                h_era = max(1.50, min(7.00, f.get("gf_home_sp_era", 4.00)))
+                a_era = max(1.50, min(7.00, f.get("gf_away_sp_era", 4.00)))
+                park = f.get("gf_park_runs_factor", 1.00)
+
+                a_adj = max(0.55, min(1.45, (1 - weight) + weight * a_era / LEAGUE_AVG_ERA)) if a_ip > 0 else 1.0
+                h_adj = max(0.55, min(1.45, (1 - weight) + weight * h_era / LEAGUE_AVG_ERA)) if h_ip > 0 else 1.0
+
+                predicted = (f.get("gf_home_rpg", 4.5) * a_adj + f.get("gf_away_rpg", 4.5) * h_adj) * park
+                errors.append((predicted - actual) ** 2)
+            return (sum(errors) / len(errors)) ** 0.5
+
+        best_weight, best_rmse = 0.50, rmse_for_weight(0.50)
+        for w in [round(x * 0.05, 2) for x in range(4, 17)]:  # 0.20 to 0.80
+            r = rmse_for_weight(w)
+            if r < best_rmse:
+                best_rmse, best_weight = r, w
+
+        baseline_rmse = rmse_for_weight(0.50)
+        improvement = baseline_rmse - best_rmse
+
+        return {
+            "ready": True,
+            "weight": best_weight,
+            "rmse": round(best_rmse, 4),
+            "baseline_rmse": round(baseline_rmse, 4),
+            "improvement": round(improvement, 4),
+            "games": len(games),
+            "update_code": improvement >= 0.10,
+            "note": "Update SP_WEIGHT in game_features.py only if improvement >= 0.10 RMSE",
+        }
+
 
 if __name__ == "__main__":
+    import argparse as _ap
+
+    parser = _ap.ArgumentParser(description="MLB Game Feature Extractor")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="Calibrate SP_WEIGHT from graded outcomes")
+    parser.add_argument("--min-games", type=int, default=500,
+                        help="Minimum graded games required for calibration (default: 500)")
+    args = parser.parse_args()
+
     extractor = MLBGameFeatureExtractor()
-    features = extractor.extract("2026-04-15", "NYY", "BOS",
-                                  venue="Yankee Stadium",
-                                  home_starter="Gerrit Cole",
-                                  away_starter="Brayan Bello")
-    print(f"\nMLB Game Features ({len(features)} total):")
-    print("-" * 50)
-    for k, v in sorted(features.items()):
-        print(f"  {k:<35} {v}")
+
+    if args.calibrate:
+        print("\nCalibrating SP_WEIGHT from historical outcomes...")
+        result = extractor.calibrate_sp_weight(min_games=args.min_games)
+        if not result["ready"]:
+            print(f"  NOT READY: {result['reason']}")
+            print(f"  Games with SP data so far: {result['games']}")
+            print(f"  Check again: {result.get('target_date', 'when more data is available')}")
+        else:
+            print(f"  Games used:      {result['games']}")
+            print(f"  Optimal weight:  {result['weight']}")
+            print(f"  Optimal RMSE:    {result['rmse']}")
+            print(f"  Baseline RMSE:   {result['baseline_rmse']} (weight=0.50)")
+            print(f"  Improvement:     {result['improvement']:.4f} RMSE")
+            if result["update_code"]:
+                print(f"\n  ACTION: improvement >= 0.10 — update SP_WEIGHT to {result['weight']} in game_features.py")
+            else:
+                print(f"\n  HOLD: improvement < 0.10 — keep SP_WEIGHT at 0.50 for now")
+    else:
+        features = extractor.extract("2026-04-15", "NYY", "BOS",
+                                      venue="Yankee Stadium",
+                                      home_starter="Gerrit Cole",
+                                      away_starter="Brayan Bello")
+        print(f"\nMLB Game Features ({len(features)} total):")
+        print("-" * 50)
+        for k, v in sorted(features.items()):
+            print(f"  {k:<35} {v}")
