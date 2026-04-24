@@ -171,9 +171,29 @@ class MLBGameFeatureExtractor:
             away_rapg = features["gf_away_rapg"]
             park_runs = features["gf_park_runs_factor"]
 
-            features["gf_predicted_total"] = round(
-                ((home_rpg + away_rapg + away_rpg + home_rapg) / 2) * park_runs, 1
-            )
+            home_sp_era = features["gf_home_sp_era"]
+            away_sp_era = features["gf_away_sp_era"]
+            home_sp_ip = features["gf_home_sp_innings"]
+            away_sp_ip = features["gf_away_sp_innings"]
+
+            if home_sp_ip > 0 or away_sp_ip > 0:
+                # SP covers ~50% of total run prevention; adjust offense vs SP quality.
+                # away SP pitches to home batters; home SP pitches to away batters.
+                # Factor < 1.0 = elite SP (suppresses runs), > 1.0 = poor SP (inflates runs).
+                LEAGUE_AVG_ERA = 4.00
+                SP_WEIGHT = 0.50
+                away_sp_adj = ((1 - SP_WEIGHT) + SP_WEIGHT * away_sp_era / LEAGUE_AVG_ERA
+                               if away_sp_ip > 0 else 1.0)
+                home_sp_adj = ((1 - SP_WEIGHT) + SP_WEIGHT * home_sp_era / LEAGUE_AVG_ERA
+                               if home_sp_ip > 0 else 1.0)
+                home_expected = home_rpg * away_sp_adj
+                away_expected = away_rpg * home_sp_adj
+                features["gf_predicted_total"] = round((home_expected + away_expected) * park_runs, 1)
+            else:
+                features["gf_predicted_total"] = round(
+                    ((home_rpg + away_rapg + away_rpg + home_rapg) / 2) * park_runs, 1
+                )
+
             features["gf_predicted_margin"] = round(
                 (home_rpg - home_rapg) - (away_rpg - away_rapg), 2
             )
