@@ -39,7 +39,7 @@ from mlb_config import (
     DB_PATH, BACKUPS_DIR, CORE_PROPS, PITCHER_PROPS, BATTER_PROPS,
     get_player_type, get_db_connection, initialize_database,
     mlb_has_games, MIN_PITCHER_STARTS_FOR_PREDICTION, MIN_BATTER_GAMES_FOR_PREDICTION,
-    is_over_only_line, MODEL_TYPE,
+    is_over_only_line, MODEL_TYPE, get_line_type,
 )
 from fetch_game_schedule import GameScheduleFetcher
 from statistical_predictions import MLBStatisticalEngine
@@ -287,7 +287,8 @@ class MLBDailyPredictor:
                         continue
 
                     self._save_prediction(conn, pred, target_date, str(game.game_id),
-                                          team, opponent, home_away, 'pitcher', batch_id)
+                                          team, opponent, home_away, 'pitcher', batch_id,
+                                          odds_type=get_line_type(prop_type, line))
                     saved += 1
 
                 except Exception as e:
@@ -375,7 +376,8 @@ class MLBDailyPredictor:
                         continue
 
                     self._save_prediction(conn, pred, target_date, str(game.game_id),
-                                          team, opponent, home_away, 'batter', batch_id)
+                                          team, opponent, home_away, 'batter', batch_id,
+                                          odds_type=get_line_type(prop_type, line))
                     saved += 1
 
                 except Exception as e:
@@ -390,15 +392,16 @@ class MLBDailyPredictor:
 
     def _save_prediction(self, conn: sqlite3.Connection, pred: Dict, game_date: str,
                           game_id: str, team: str, opponent: str, home_away: str,
-                          player_type: str, batch_id: str) -> None:
+                          player_type: str, batch_id: str, odds_type: str = 'standard') -> None:
         """Insert a single prediction into the database."""
         conn.execute('''
             INSERT INTO predictions (
                 game_date, game_id, player_name, team, opponent,
                 home_away, player_type, prop_type, line,
                 prediction, probability, confidence_tier, expected_value,
-                features_json, model_version, prediction_batch_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                features_json, model_version, prediction_batch_id, created_at,
+                odds_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             game_date,
             game_id,
@@ -417,6 +420,7 @@ class MLBDailyPredictor:
             pred.get('model_version', ''),
             batch_id,
             datetime.now().isoformat(),
+            odds_type,
         ))
 
     def _get_proxy_lineup(self, conn: sqlite3.Connection, team: str, target_date: str,

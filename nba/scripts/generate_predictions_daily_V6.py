@@ -63,7 +63,7 @@ PP_DB_PATH = Path(__file__).parent.parent.parent / "shared" / "prizepicks_lines.
 # Supported props (what we can predict)
 # Note: Must match internal names from PP_TO_INTERNAL mapping
 SUPPORTED_PROPS = ['points', 'rebounds', 'assists', 'threes', 'pra', 'pts_rebs',
-                   'pts_asts', 'rebs_asts', 'steals', 'blocked_shots', 'turnovers',
+                   'pts_asts', 'rebs_asts', 'steals', 'turnovers',
                    'stocks', 'fantasy']
 
 # Map PP prop names to our internal names
@@ -78,7 +78,6 @@ PP_TO_INTERNAL = {
     'pts_asts': 'pts_asts',
     'rebs_asts': 'rebs_asts',
     'steals': 'steals',
-    'blocked_shots': 'blocked_shots',
     'turnovers': 'turnovers',
     'blks_stls': 'stocks',
     'blks+stls': 'stocks',

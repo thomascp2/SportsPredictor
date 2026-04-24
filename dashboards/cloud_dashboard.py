@@ -793,6 +793,7 @@ def fetch_under_baselines(sport: str) -> dict:
         "COUNT(*) AS n "
         "FROM prediction_outcomes "
         "WHERE outcome IN ('HIT','MISS') "
+        "  AND data_quality_flag IS NULL "
         "GROUP BY prop_type, line"
     )
     rows = _turso_request(sport.lower(), sql)
@@ -913,6 +914,8 @@ def fetch_performance(sport: str) -> pd.DataFrame:
                       COUNT(*) AS total_picks
                FROM prediction_outcomes
                WHERE outcome IN ('HIT','MISS')
+                 AND is_smart_pick = 1
+                 AND data_quality_flag IS NULL
                GROUP BY game_date
                ORDER BY game_date DESC
                LIMIT 30""",
@@ -937,6 +940,7 @@ def fetch_pnl_local(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
            "LEFT JOIN predictions p ON p.id = o.prediction_id "
            "WHERE o.game_date BETWEEN ? AND ? "
            "  AND o.outcome IN ('HIT','MISS') AND o.profit IS NOT NULL "
+           "  AND o.data_quality_flag IS NULL "
            "ORDER BY o.game_date")
     raw = _turso_request(sport.lower(), sql, [start_date, end_date])
     if raw:
@@ -968,6 +972,7 @@ def fetch_pnl_local(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
                 WHERE o.game_date BETWEEN ? AND ?
                   AND o.outcome IN ('HIT','MISS')
                   AND o.profit IS NOT NULL
+                  AND o.data_quality_flag IS NULL
                 ORDER BY o.game_date
             """, conn, params=(start_date, end_date))
         except Exception:
@@ -977,6 +982,7 @@ def fetch_pnl_local(sport: str, start_date: str, end_date: str) -> pd.DataFrame:
                 WHERE game_date BETWEEN ? AND ?
                   AND outcome IN ('HIT','MISS')
                   AND profit IS NOT NULL
+                  AND data_quality_flag IS NULL
                 ORDER BY game_date
             """, conn, params=(start_date, end_date))
             df["ai_tier"] = None
@@ -1000,6 +1006,7 @@ def fetch_recent_results(sport: str, start_date: str, end_date: str) -> pd.DataF
            "WHERE o.game_date BETWEEN ? AND ? "
            "  AND p.is_smart_pick=1 AND o.outcome IN ('HIT','MISS') "
            "  AND o.actual_value IS NOT NULL "
+           "  AND o.data_quality_flag IS NULL "
            "ORDER BY o.game_date")
     raw = _turso_request(sport.lower(), sql, [start_date, end_date])
     if raw:
@@ -1044,6 +1051,7 @@ def fetch_recent_results(sport: str, start_date: str, end_date: str) -> pd.DataF
                  AND p.is_smart_pick = 1
                  AND o.outcome IN ('HIT','MISS')
                  AND o.actual_value IS NOT NULL
+                 AND o.data_quality_flag IS NULL
                ORDER BY o.game_date""",
             conn,
             params=(start_date, end_date),

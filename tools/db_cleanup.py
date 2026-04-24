@@ -271,9 +271,8 @@ def _fix_line_duplication(cursor: sqlite3.Cursor, sport: str, dry_run: bool,
             }
             if not keep_ids:
                 median_line = sorted(lines_in_group)[len(lines_in_group) // 2]
-                keep_ids = {row_id for row_id, line in rows if line == median_line}
-                if not keep_ids:
-                    keep_ids = {rows[len(rows) // 2][0]}
+                matching = [row_id for row_id, line in rows if line == median_line]
+                keep_ids = {matching[0]} if matching else {rows[len(rows) // 2][0]}
 
             tag_ids = [(row_id,) for row_id, _ in rows if row_id not in keep_ids]
             if tag_ids:
