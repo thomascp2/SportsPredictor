@@ -100,3 +100,8 @@ nba/data/nba_schedule_cache.json
 tui-terminal/target/
 tui-terminal/**/*.gif
 tui-terminal/Bookmark Archive*/
+
+#data
+/data
+/logs
+env.bat
