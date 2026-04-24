@@ -258,6 +258,28 @@ class MLBGrader:
         if not predictions:
             return graded, void, errors
 
+        # DNP guard: batter in box score with no plate appearances is a ghost entry
+        # (projected lineup player who was scratched). Void all their predictions.
+        if player_type == 'batter' and batter:
+            played = (batter.at_bats > 0 or batter.walks > 0 or batter.runs > 0)
+            if not played:
+                for pred in predictions:
+                    self._save_outcome(conn, pred['id'], target_date, game_id,
+                                       player_name, pred['prop_type'], pred['line'],
+                                       pred['prediction'], None, 'VOID')
+                    void += 1
+                return graded, void, errors
+
+        # DNP guard: pitcher with 0 outs recorded didn't pitch
+        if player_type == 'pitcher' and pitcher:
+            if (pitcher.outs_recorded or 0) == 0:
+                for pred in predictions:
+                    self._save_outcome(conn, pred['id'], target_date, game_id,
+                                       player_name, pred['prop_type'], pred['line'],
+                                       pred['prediction'], None, 'VOID')
+                    void += 1
+                return graded, void, errors
+
         for pred in predictions:
             prop_type = pred['prop_type']
             line = pred['line']

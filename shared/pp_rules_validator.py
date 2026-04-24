@@ -78,12 +78,13 @@ def validate_outcome(
     d = (direction or "").lower().strip()
     outcome = (proposed_outcome or "").upper().strip()
 
-    # DNP check: actual_value is None or 0 means player didn't record stats
-    if actual_value is None or actual_value == 0:
+    # DNP check: actual_value is None means player didn't play (no stats recorded).
+    # actual_value == 0 is a real zero-stat game (e.g. 0 points, 0 shots) and grades normally.
+    if actual_value is None:
         if outcome in ("HIT", "MISS"):
             return ValidationResult(
                 False,
-                f"Player recorded actual_value={actual_value} (DNP/no stats). "
+                f"Player recorded actual_value=None (DNP). "
                 f"Outcome must be VOID or DNP, not {outcome}."
             )
         return ValidationResult(True)
@@ -133,7 +134,7 @@ def correct_outcome(
     if not pred_check:
         return "VOID"
 
-    if actual_value is None or actual_value == 0:
+    if actual_value is None:
         return "VOID"
 
     d = (direction or "").lower().strip()

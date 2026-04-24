@@ -3,10 +3,10 @@ Database Cleanup — Fix Data Contamination
 ==========================================
 Fixes four known contamination issues in all sport DBs:
 
-  1. Impossible combo: demon/goblin + UNDER  → outcome = VOID, flagged
-  2. DNP inflation:    actual_value = 0      → outcome = VOID (was HIT/MISS)
-  3. Profit backfill:  rows with NULL profit  → computed from odds_type
-  4. Logic violations: OVER HIT but actual < line, UNDER HIT but actual > line → corrected
+  1. Impossible combo: demon/goblin + UNDER  -> outcome = VOID, flagged
+  2. DNP inflation:    actual_value = 0      -> outcome = VOID (was HIT/MISS)
+  3. Profit backfill:  rows with NULL profit  -> computed from odds_type
+  4. Logic violations: OVER HIT but actual < line, UNDER HIT but actual > line -> corrected
 
 Safe to re-run — uses UPDATE, never DELETE.
 Prints before/after counts per sport.
@@ -61,10 +61,11 @@ def _fix_impossible_combos(cursor: sqlite3.Cursor, dry_run: bool) -> dict:
 
 
 def _fix_dnp_inflation(cursor: sqlite3.Cursor, dry_run: bool) -> dict:
-    """Players who recorded 0 must be VOID, not HIT/MISS."""
+    """Players with actual_value IS NULL truly didn't play — VOID them.
+    actual_value = 0 is a real zero-stat game and grades normally."""
     before = _count(cursor, """
         SELECT COUNT(*) FROM prediction_outcomes
-        WHERE (actual_value IS NULL OR actual_value = 0)
+        WHERE actual_value IS NULL
           AND outcome IN ('HIT','MISS')
     """)
     if not dry_run and before:
@@ -72,10 +73,79 @@ def _fix_dnp_inflation(cursor: sqlite3.Cursor, dry_run: bool) -> dict:
             UPDATE prediction_outcomes
             SET outcome = 'VOID',
                 data_quality_flag = 'DNP_INFLATION'
-            WHERE (actual_value IS NULL OR actual_value = 0)
+            WHERE actual_value IS NULL
               AND outcome IN ('HIT','MISS')
         """)
-    return {"label": "DNP inflation (actual=0 graded HIT/MISS)", "before": before, "fixed": before if not dry_run else 0}
+    return {"label": "DNP inflation (actual=NULL -> VOID)", "before": before, "fixed": before if not dry_run else 0}
+
+
+def _rescue_dnp_misclassifications(cursor: sqlite3.Cursor, sport: str, dry_run: bool) -> dict:
+    """
+    Retroactively fix rows flagged as DNP_INFLATION where the player actually played.
+    Cross-references player_game_logs with sport-specific 'played' discriminators:
+      NBA: minutes > 0
+      NHL: toi_seconds > 0
+      MLB batters: at_bats > 0 OR walks_drawn > 0 OR runs > 0
+      MLB pitchers: outs_recorded > 0
+    Reclassifies outcome as proper HIT/MISS and clears the flag.
+    """
+    sport = sport.lower()
+
+    if sport == 'nba':
+        played_cond = "gl.minutes > 0"
+    elif sport == 'nhl':
+        played_cond = "gl.toi_seconds > 0"
+    elif sport == 'mlb':
+        played_cond = """(
+            (gl.player_type = 'batter'  AND (gl.at_bats > 0 OR gl.walks_drawn > 0 OR gl.runs > 0))
+            OR (gl.player_type = 'pitcher' AND gl.outs_recorded > 0)
+        )"""
+    else:
+        return {"label": f"DNP rescue ({sport})", "before": 0, "fixed": 0}
+
+    before = _count(cursor, f"""
+        SELECT COUNT(*) FROM prediction_outcomes po
+        WHERE po.data_quality_flag = 'DNP_INFLATION'
+          AND po.actual_value = 0
+          AND EXISTS (
+            SELECT 1 FROM player_game_logs gl
+            WHERE gl.player_name = po.player_name
+              AND gl.game_date = po.game_date
+              AND {played_cond}
+          )
+    """)
+
+    if not dry_run and before:
+        # Reclassify: OVER + actual=0 -> MISS; UNDER + actual=0 -> HIT (0 < any positive line)
+        cursor.execute(f"""
+            UPDATE prediction_outcomes
+            SET data_quality_flag = NULL,
+                outcome = CASE
+                    WHEN LOWER(prediction) = 'over'  THEN 'MISS'
+                    WHEN LOWER(prediction) = 'under' THEN 'HIT'
+                    ELSE outcome
+                END,
+                profit = CASE
+                    WHEN LOWER(prediction) = 'over' THEN -100.0
+                    WHEN LOWER(prediction) = 'under' THEN
+                        CASE LOWER(COALESCE(odds_type, 'standard'))
+                            WHEN 'goblin' THEN 31.25
+                            WHEN 'demon'  THEN 120.0
+                            ELSE 90.91
+                        END
+                    ELSE 0.0
+                END
+            WHERE data_quality_flag = 'DNP_INFLATION'
+              AND actual_value = 0
+              AND EXISTS (
+                SELECT 1 FROM player_game_logs gl
+                WHERE gl.player_name = prediction_outcomes.player_name
+                  AND gl.game_date = prediction_outcomes.game_date
+                  AND {played_cond}
+              )
+        """)
+
+    return {"label": f"DNP rescue — misclassified zero-stat games ({sport})", "before": before, "fixed": before if not dry_run else 0}
 
 
 def _fix_logic_violations(cursor: sqlite3.Cursor, dry_run: bool) -> dict:
@@ -115,7 +185,7 @@ def _fix_logic_violations(cursor: sqlite3.Cursor, dry_run: bool) -> dict:
 
 def _fix_smart_pick_sync(cursor: sqlite3.Cursor, dry_run: bool) -> dict:
     """
-    Sync is_smart_pick from predictions → prediction_outcomes.
+    Sync is_smart_pick from predictions -> prediction_outcomes.
     This fixes rows graded before pp-sync ran (pp-sync sets is_smart_pick in predictions
     after grading already wrote is_smart_pick=0 into outcomes).
     """
@@ -347,6 +417,7 @@ def clean_sport(sport: str, db_path: Path, dry_run: bool) -> None:
     fixes = [
         _fix_impossible_combos(cursor, dry_run),
         _fix_dnp_inflation(cursor, dry_run),
+        _rescue_dnp_misclassifications(cursor, sport, dry_run),        # restore zero-stat games flagged as DNP
         _fix_logic_violations(cursor, dry_run),
         _fix_odds_type_labels(cursor, sport, dry_run, pp_odds_map),   # must run before dedup + profit backfill
         _fix_profit_backfill(cursor, dry_run),                         # recomputes profit with corrected odds_type

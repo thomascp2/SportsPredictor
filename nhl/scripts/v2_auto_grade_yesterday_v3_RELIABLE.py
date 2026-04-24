@@ -580,6 +580,24 @@ def grade_predictions(game_date: str) -> Dict:
         elif match_type in results['match_stats']:
             results['match_stats'][match_type] += 1
 
+        # DNP: player on roster but 0 TOI → no stat outcome
+        if actual.get('toi_seconds', 0) == 0:
+            outcome = 'VOID'
+            actual_value = None
+            actual_outcome = 'UNDER'
+            profit = 0.0
+            cursor.execute('''
+                INSERT INTO prediction_outcomes
+                (prediction_id, game_date, player_name, prop_type, line,
+                 prediction, predicted_probability,
+                 actual_value, actual_outcome, outcome, graded_at, profit,
+                 is_smart_pick, odds_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (pred_id, game_date, player_name, prop_type, line,
+                  prediction, probability, actual_value, actual_outcome, outcome,
+                  graded_at, profit, is_smart_pick, odds_type))
+            continue
+
         # Get actual stat value
         if prop_type == 'points':
             actual_value = actual['points']
@@ -597,7 +615,7 @@ def grade_predictions(game_date: str) -> Dict:
             print(f'[WARN] Unknown prop type: {prop_type}')
             continue
 
-        # Use validator — handles DNP (actual=0 → VOID), push, logic errors
+        # Use validator — actual=None is DNP/VOID; actual=0 is a real zero-stat game
         outcome = correct_outcome(odds_type, prediction, actual_value, line)
         actual_outcome = 'OVER' if actual_value > line else 'UNDER'
 

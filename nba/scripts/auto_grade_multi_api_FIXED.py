@@ -112,7 +112,7 @@ class MultiAPIGrader:
 
             player_stats, match_tier, match_score = match_result
 
-            # DNP: 0 minutes → VOID, not a stat outcome
+            # DNP: 0 minutes → VOID. Store None so validator treats it as true DNP.
             if player_stats.get('minutes', 1) == 0:
                 cursor.execute("""
                     INSERT INTO prediction_outcomes
@@ -121,7 +121,7 @@ class MultiAPIGrader:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'VOID', ?, ?, 0, ?, ?)
                 """, (
                     pred_id, game_id, target_date, player_name, prop_type, line,
-                    prediction, 0, match_tier, match_score, odds_type, pred[8]
+                    prediction, None, match_tier, match_score, odds_type, pred[8]
                 ))
                 graded_count += 1
                 continue
