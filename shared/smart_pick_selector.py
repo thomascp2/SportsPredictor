@@ -794,6 +794,21 @@ class SmartPickSelector:
             if self.sport == 'NHL' and prediction == 'UNDER' and prop_type == 'points':
                 continue
 
+            # Suppress NHL shots UNDER — 44.3% hit rate vs 52.38% BE → -8.1% edge (10K+ rows).
+            # Re-evaluate Oct 2026.
+            if self.sport == 'NHL' and prediction == 'UNDER' and prop_type == 'shots':
+                continue
+
+            # Suppress NBA turnovers UNDER — 46.8% hit rate vs 52.38% BE → -5.6% edge (54K+ rows).
+            # Re-evaluate Oct 2026.
+            if self.sport == 'NBA' and prediction == 'UNDER' and prop_type == 'turnovers':
+                continue
+
+            # Suppress MLB pitcher_walks UNDER — 43.3% hit rate vs 52.38% BE → -9.1% edge.
+            # Re-evaluate at ~50K graded MLB rows (~Aug 2026).
+            if self.sport == 'MLB' and prediction == 'UNDER' and prop_type == 'pitcher_walks':
+                continue
+
             # Dynamic break-even derived from σ-distance and PAYOUTS table
             break_even = self.compute_break_even(pp['odds_type'], sigma_distance)
             edge = (probability - break_even) * 100
