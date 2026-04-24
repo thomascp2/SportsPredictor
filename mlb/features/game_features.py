@@ -135,13 +135,25 @@ class MLBGameFeatureExtractor:
             game_date: YYYY-MM-DD
             home_team, away_team: Team abbreviations
             venue: Stadium name (for park factors)
-            home_starter, away_starter: Starting pitcher names (optional)
+            home_starter, away_starter: Starting pitcher names (optional — auto-looked up from game_context)
         """
         features = dict(DEFAULT_FEATURES)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
 
         try:
+            # Auto-lookup starters from game_context if not provided
+            if not home_starter or not away_starter:
+                row = conn.execute("""
+                    SELECT home_starter, away_starter
+                    FROM game_context
+                    WHERE home_team = ? AND away_team = ? AND game_date = ?
+                    LIMIT 1
+                """, (home_team, away_team, game_date)).fetchone()
+                if row:
+                    home_starter = home_starter or row["home_starter"]
+                    away_starter = away_starter or row["away_starter"]
+
             self._add_team_stats(conn, features, home_team, away_team, game_date)
             self._add_pitcher_stats(conn, features, home_starter, away_starter, game_date)
             self._add_park_factors(features, venue, home_team)

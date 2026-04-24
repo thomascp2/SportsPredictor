@@ -236,6 +236,16 @@ def main():
     # Step 1b: Update Elo ratings from final scores
     update_elo_ratings(DB_PATH, game_date)
 
+    # Step 1c: Rebuild team rolling stats from latest game logs
+    try:
+        import subprocess
+        collector = os.path.join(SCRIPT_DIR, "team_stats_collector.py")
+        subprocess.run([sys.executable, collector, "--rebuild"],
+                       capture_output=True, timeout=120)
+        print(f"  [TEAM STATS] Rolling stats refreshed")
+    except Exception as e:
+        print(f"  [TEAM STATS] Refresh failed: {e}")
+
     # Step 2: Grade predictions
     print(f"\n  Step 2: Grading predictions...")
     grader = GamePredictionGrader(sport="mlb", db_path=DB_PATH)
