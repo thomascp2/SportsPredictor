@@ -781,6 +781,19 @@ class SmartPickSelector:
             if pp['odds_type'] == 'demon' and prediction == 'OVER':
                 continue
 
+            # Suppress confirmed-losing UNDER props (Apr 2026 audit, 54K+ graded NBA rows):
+            #   NBA steals UNDER:       11.7% hit rate vs 52.38% BE → -40.7% edge
+            #   NBA blocked_shots UNDER: 18.9% hit rate vs 52.38% BE → -33.5% edge
+            # PP sets lines so low that UNDER almost never wins — model cannot overcome this.
+            # Predictions still generated/stored; re-evaluate at Oct 2026 retrain.
+            if self.sport == 'NBA' and prediction == 'UNDER' and prop_type in ('steals', 'blocked_shots'):
+                continue
+
+            # Suppress NHL points UNDER — 20.2% hit rate vs 52.38% BE → -32.2% edge (10K+ rows).
+            # PP sets points lines near 0.5 making UNDER near-impossible. Re-evaluate Oct 2026.
+            if self.sport == 'NHL' and prediction == 'UNDER' and prop_type == 'points':
+                continue
+
             # Dynamic break-even derived from σ-distance and PAYOUTS table
             break_even = self.compute_break_even(pp['odds_type'], sigma_distance)
             edge = (probability - break_even) * 100
