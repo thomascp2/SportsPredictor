@@ -183,6 +183,12 @@ class MLBGrader:
         # Print accuracy metrics
         self._print_accuracy_report(target_date)
 
+        # Grade ml_v2_predictions → ml_v2_outcomes (non-fatal)
+        try:
+            self._grade_v2_predictions(target_date)
+        except Exception as e:
+            print(f"[V2 Grader] Failed (non-fatal): {e}")
+
         # Update MAB with today's grading results (non-fatal)
         try:
             self._update_mab(target_date)
@@ -198,6 +204,117 @@ class MLBGrader:
         }
         print(f"\n[MLB Grader] Summary: {summary}")
         return summary
+
+    # =========================================================================
+    # V2 outcomes (ml_v2_predictions → ml_v2_outcomes)
+    # =========================================================================
+
+    def _grade_v2_predictions(self, target_date: str) -> None:
+        """
+        Populate ml_v2_outcomes by joining ml_v2_predictions with already-graded
+        prediction_outcomes for the same date.
+
+        Does not re-fetch boxscores — piggybacks on the graded prediction_outcomes
+        rows written in the main grading pass above.
+        """
+        with sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.row_factory = sqlite3.Row
+
+            # Create table if first run
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ml_v2_outcomes (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    v2_prediction_id INTEGER REFERENCES ml_v2_predictions(id),
+                    game_date        DATE,
+                    player_name      TEXT,
+                    prop_type        TEXT,
+                    line             REAL,
+                    prediction       TEXT,
+                    actual_value     REAL,
+                    outcome          TEXT,
+                    prob_over        REAL,
+                    bma_correct      INTEGER,
+                    created_at       TEXT,
+                    UNIQUE(v2_prediction_id)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_ml_v2_outcomes_date
+                ON ml_v2_outcomes (game_date)
+            """)
+
+            # Join ml_v2_predictions with graded prediction_outcomes on (player, prop, line, date)
+            rows = conn.execute("""
+                SELECT
+                    v2.id          AS v2_id,
+                    v2.player_name,
+                    v2.prop_type,
+                    v2.line,
+                    v2.prediction  AS v2_prediction,
+                    v2.prob_over,
+                    po.actual_value,
+                    po.outcome
+                FROM ml_v2_predictions v2
+                JOIN prediction_outcomes po
+                  ON  po.game_date  = v2.game_date
+                  AND LOWER(po.player_name) = LOWER(v2.player_name)
+                  AND po.prop_type  = v2.prop_type
+                  AND po.line       = v2.line
+                WHERE v2.game_date = ?
+                  AND v2.id NOT IN (SELECT v2_prediction_id FROM ml_v2_outcomes
+                                    WHERE v2_prediction_id IS NOT NULL)
+            """, (target_date,)).fetchall()
+
+            if not rows:
+                print(f"[V2 Grader] No ml_v2_predictions to grade for {target_date}")
+                return
+
+            written = 0
+            for row in rows:
+                actual    = row['actual_value']
+                outcome   = row['outcome']
+                direction = row['v2_prediction']   # 'OVER' or 'UNDER'
+
+                # bma_correct: did BMA direction match actual?
+                if outcome in ('HIT', 'MISS') and actual is not None:
+                    actual_dir  = 'OVER' if float(actual) > row['line'] else 'UNDER'
+                    bma_correct = 1 if direction == actual_dir else 0
+                else:
+                    bma_correct = None  # VOID — don't count
+
+                conn.execute("""
+                    INSERT OR IGNORE INTO ml_v2_outcomes (
+                        v2_prediction_id, game_date, player_name, prop_type, line,
+                        prediction, actual_value, outcome,
+                        prob_over, bma_correct, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    row['v2_id'], target_date,
+                    row['player_name'], row['prop_type'], row['line'],
+                    direction, actual, outcome,
+                    row['prob_over'], bma_correct,
+                    datetime.now().isoformat(),
+                ))
+                written += 1
+
+            conn.commit()
+
+        # Summary
+        with sqlite3.connect(self.db_path) as conn:
+            stats = conn.execute("""
+                SELECT
+                    COUNT(*) as total,
+                    SUM(bma_correct) as correct,
+                    SUM(CASE WHEN outcome = 'VOID' THEN 1 ELSE 0 END) as voids
+                FROM ml_v2_outcomes WHERE game_date = ?
+            """, (target_date,)).fetchone()
+
+        total   = stats[0] or 0
+        correct = stats[1] or 0
+        voids   = stats[2] or 0
+        graded  = total - voids
+        acc     = f"{correct / graded * 100:.1f}%" if graded > 0 else "n/a"
+        print(f"[V2 Grader] {written} rows written | BMA accuracy: {correct}/{graded} = {acc} (VOID: {voids})")
 
     # =========================================================================
     # MAB update (Thompson Sampling — stat + xgb arms)

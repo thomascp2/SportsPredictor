@@ -293,7 +293,7 @@ class SportConfig:
         self.db_path = self.project_root / "database" / "mlb_predictions.db"
 
         # Scripts
-        self.prediction_script = "scripts/generate_predictions_daily.py"
+        self.prediction_script = "scripts/generate_v2_predictions.py"
         self.grading_script = "scripts/auto_grade_daily.py"
         self.schedule_script = "scripts/fetch_game_schedule.py"
 
