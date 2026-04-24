@@ -1,5 +1,5 @@
 # MASTER TODO — FreePicks / SportsPredictor / Apex Arb
-**Last compiled: 2026-04-23**
+**Last compiled: 2026-04-24**
 **Sources:** Session logs Apr 23 (morning/evening/night/DNP-fix), V2_MIGRATION_STRATEGY.md, hlss/MASTER_PLAN.md, docs/ROADMAP.md, docs/TODO.md
 
 ---
@@ -32,17 +32,17 @@
 
 | Priority | Task | Detail |
 |----------|------|--------|
-| **HIGH** | **Confirmed-losing prop guards** | Requires user confirmation per CLAUDE.md before adding to `smart_pick_selector.py`. Guards ready to add: |
-| | NHL shots UNDER | 44.3% hit rate vs 52.38% BE → -8.1% edge |
-| | NHL points UNDER | 20.2% hit rate → -32.2% edge |
-| | NHL hits UNDER | 40.0% hit rate → -12.4% edge (40 samples) |
-| | NBA turnovers UNDER | 46.8% hit rate → -5.6% edge |
-| | NBA blocked_shots UNDER | 18.9% hit rate → -33.5% edge |
-| | NBA steals UNDER | 11.7% hit rate → -40.7% edge |
-| | MLB hrr UNDER | 48.3% hit rate → -4.1% edge |
-| | MLB outs_recorded UNDER | 38.3% hit rate → -14.1% edge |
-| | MLB pitcher_walks UNDER | 43.3% hit rate → -9.1% edge |
-| | MLB earned_runs UNDER | 30.4% hit rate → -22.0% edge |
+| ✅ | **Confirmed-losing prop guards** | 8 guards added Apr 24 to both SportsPredictor and SportsPredictor_linux. Commits: 64a4f483, 1ab4ceec, 914e2270. |
+| | ✅ NHL shots UNDER | 44.3% → -8.1% edge. Re-eval Oct 2026. |
+| | ✅ NHL points UNDER | 20.2% → -32.2% edge. Re-eval Oct 2026. |
+| | ⬜ NHL hits UNDER | Kept visible — 40 samples, still growing. |
+| | ✅ NBA turnovers UNDER | 46.8% → -5.6% edge. Re-eval Oct 2026. |
+| | ✅ NBA blocked_shots UNDER | 18.9% → -33.5% edge. Re-eval Oct 2026. |
+| | ✅ NBA steals UNDER | 11.7% → -40.7% edge. Re-eval Oct 2026. |
+| | ⬜ MLB hrr UNDER | Kept visible — samples still growing. |
+| | ✅ MLB outs_recorded UNDER | 38.3% → -14.1% edge. Re-eval Aug 2026. |
+| | ✅ MLB pitcher_walks UNDER | 43.3% → -9.1% edge. Re-eval Aug 2026. |
+| | ✅ MLB earned_runs UNDER | 30.4% → -22.0% edge. Re-eval Aug 2026. |
 | **MED** | **Investigate trivial-line 99-100% hit props** | NHL points OVER 99% (0.5 lines?), NBA steals goblin OVER 99.5%, NBA blocked_shots 94-96%, MLB batter_strikeouts goblin 100%. Likely needs minimum-line filter or "trivial line" flag. |
 | **MED** | **Mirror all guard changes to SportsPredictor_linux** | Every `smart_pick_selector.py` change must be applied to both `SportsPredictor\` and `SportsPredictor_linux\` then pushed to GitHub. |
 | **LOW** | **Pre-Dec 2025 dedup tie-break** | ~17K rows not in prizepicks_lines DB; median tie-break doesn't handle ties. Low priority. |
@@ -182,15 +182,15 @@ All key dependencies ship ARM64 wheels — no source compilation needed:
 | ⬜ | **Every signal produces True Probability (P) + 95% Confidence Interval (CI)** — CI output not yet wired into pick output schema |
 | ⬜ | **Validate BMA output calibration** — does the BMA's P align with real outcomes within 5% over 500 trials? (Key success metric from MASTER_PLAN) |
 
-### Phase 2 — Linking & Execution Layer ⬜ PARTIALLY DONE
+### Phase 2 — Linking & Execution Layer ✅ COMPLETE (Apr 24 2026)
 
 | Status | Item |
 |--------|------|
 | ✅ | Universal Linker (`linker.py`) — fuzzy name matching across PP/Kalshi/DK |
-| ✅ | `arb_calculator.py` — PP→Kalshi hedge math (the CSA math is written) |
+| ✅ | `arb_calculator.py` — PP→Kalshi hedge math |
 | ✅ | `data_orchestrator/odds_client.py` — The Odds API wrapper |
-| ⬜ | **Kalshi Python API client** — `arb_calculator.py` has the math but no live API calls. `tui-terminal/src/kalshi.rs` is Rust — need Python wrapper or rewrite. Secrets: `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH` |
-| ⬜ | **CSA State Machine** — Step A: place PP promo entry (Taco). Step B: monitor live result. Step C: only if Leg 1 wins, execute Kalshi hedge on Leg 2. "Let it Die" logic if Leg 1 fails |
+| ✅ | **`kalshi_client.py`** — Python REST client for api.elections.kalshi.com. Dual auth (token or RSA key pair). place_order, get_settlement, cancel_order, get_balance. Committed a99322e to hlss remote. |
+| ✅ | **`csa_state_machine.py`** — Full CSA: LEG1_PLACED → HEDGING → SETTLED / LET_IT_DIE. Polls prediction_outcomes, sizes hedge via ArbCalculator, places Kalshi No limit order, persists to SQLite. Committed a99322e. |
 | ⬜ | **DraftKings line scanner** — detect when DK moves a prop (22.5→25.5) while PP is stale |
 
 ### Phase 3 — Snowball & Market-Maker Engine ⏸ (after Phase 2)
