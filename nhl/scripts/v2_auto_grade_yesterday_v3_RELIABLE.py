@@ -554,9 +554,8 @@ def grade_predictions(game_date: str) -> Dict:
     not_found_examples = []
     
     for pred in predictions:
-        pred_id, player_name, team, opponent, prop_type, line, prediction, probability, tier = pred
-        is_smart_pick = pred[9]
-        odds_type     = pred[10] or 'standard'
+        pred_id, player_name, team, opponent, prop_type, line, prediction, probability, tier, is_smart_pick, odds_type = pred
+        odds_type = odds_type or 'standard'
 
         # Block impossible combos (demon/goblin + UNDER)
         combo_check = validate_prediction(odds_type, prediction)
