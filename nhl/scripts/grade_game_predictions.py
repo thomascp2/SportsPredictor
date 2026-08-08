@@ -137,8 +137,10 @@ def main():
 
         # Send Discord notification
         try:
-            send_game_grading_alert("nhl", results)
-            print(f"  [DISCORD] Grading notification sent")
+            if send_game_grading_alert("nhl", results):
+                print(f"  [DISCORD] Grading notification sent")
+            else:
+                print(f"  [DISCORD] NOT SENT - see error above")
         except Exception as e:
             print(f"  [DISCORD] Failed: {e}")
 

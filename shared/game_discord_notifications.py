@@ -20,8 +20,12 @@ import urllib.request
 from datetime import datetime
 from typing import Dict, List, Optional
 
-# Discord webhook — must be set via environment variable (never hardcode)
+# Discord webhook — must be set via environment variable (never hardcode).
+# Resolved per-call (not at import) so env changes take effect without a reimport.
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
+
+# Discord/Cloudflare returns 403 for the default urllib User-Agent.
+USER_AGENT = "FreePicks-GameLines/1.0 (+https://github.com/thomascp2)"
 
 SPORT_EMOJI = {"nhl": "[NHL]", "nba": "[NBA]", "mlb": "[MLB]"}
 TIER_EMOJI = {"SHARP": "[SHARP]", "LEAN": "[LEAN]", "PASS": ""}
@@ -35,21 +39,42 @@ COLOR_MAP = {
 }
 
 
-def _send_webhook(payload: dict) -> bool:
-    """Send a payload to Discord webhook."""
-    if not DISCORD_WEBHOOK_URL:
+def _resolve_webhook(sport: Optional[str] = None) -> str:
+    """
+    Pick the webhook for a sport, falling back to the shared one.
+
+    {SPORT}_DISCORD_WEBHOOK wins so MLB game lines land in #mlb rather than
+    #general. Read at call time, not import time.
+    """
+    if sport:
+        specific = os.getenv(f"{sport.upper()}_DISCORD_WEBHOOK", "")
+        if specific:
+            return specific
+    return os.getenv("DISCORD_WEBHOOK_URL", "")
+
+
+def _send_webhook(payload: dict, sport: Optional[str] = None) -> bool:
+    """Send a payload to Discord webhook. Returns True only on a 2xx."""
+    webhook = _resolve_webhook(sport)
+    if not webhook:
         print("  [DISCORD] No webhook URL configured")
         return False
 
     try:
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            DISCORD_WEBHOOK_URL,
+            webhook,
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
+            },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status in (200, 204)
+            if resp.status in (200, 204):
+                return True
+            print(f"  [DISCORD] Send failed: unexpected HTTP {resp.status}")
+            return False
     except Exception as e:
         print(f"  [DISCORD] Send failed: {e}")
         return False
@@ -111,7 +136,7 @@ def send_game_predictions_alert(sport: str, results: Dict,
     }
 
     payload = {"embeds": [embed]}
-    return _send_webhook(payload)
+    return _send_webhook(payload, sport=sport)
 
 
 def send_game_grading_alert(sport: str, results: Dict) -> bool:
@@ -158,7 +183,7 @@ def send_game_grading_alert(sport: str, results: Dict) -> bool:
     }
 
     payload = {"embeds": [embed]}
-    return _send_webhook(payload)
+    return _send_webhook(payload, sport=sport)
 
 
 def send_convergence_alert(sport: str, game_date: str,
@@ -187,4 +212,4 @@ def send_convergence_alert(sport: str, game_date: str,
     }
 
     payload = {"embeds": [embed]}
-    return _send_webhook(payload)
+    return _send_webhook(payload, sport=sport)

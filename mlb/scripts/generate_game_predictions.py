@@ -238,8 +238,10 @@ def main():
 
     # Send Discord notification
     try:
-        send_game_predictions_alert("mlb", results)
-        print(f"  [DISCORD] Notification sent")
+        if send_game_predictions_alert("mlb", results):
+            print(f"  [DISCORD] Notification sent")
+        else:
+            print(f"  [DISCORD] NOT SENT - see error above")
     except Exception as e:
         print(f"  [DISCORD] Failed: {e}")
 
