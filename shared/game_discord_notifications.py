@@ -27,6 +27,9 @@ DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 # Discord/Cloudflare returns 403 for the default urllib User-Agent.
 USER_AGENT = "FreePicks-GameLines/1.0 (+https://github.com/thomascp2)"
 
+# Discord embed limits.
+FIELD_VALUE_LIMIT = 1024
+
 SPORT_EMOJI = {"nhl": "[NHL]", "nba": "[NBA]", "mlb": "[MLB]"}
 TIER_EMOJI = {"SHARP": "[SHARP]", "LEAN": "[LEAN]", "PASS": ""}
 
@@ -80,6 +83,54 @@ def _send_webhook(payload: dict, sport: Optional[str] = None) -> bool:
         return False
 
 
+def _chunk_into_fields(lines: List[str], name: str,
+                       max_fields: int = 6) -> List[Dict]:
+    """
+    Pack lines into embed fields, each inside a code fence and under Discord's
+    1024-char field limit. Continuation fields get a "(cont.)" heading.
+
+    A single line longer than the budget is hard-truncated so one pathological
+    row can't silently drop the whole field.
+    """
+    budget = FIELD_VALUE_LIMIT - len("```\n\n```")
+    chunks: List[List[str]] = []
+    current: List[str] = []
+    used = 0
+
+    for line in lines:
+        if len(line) > budget:
+            line = line[:budget - 3] + "..."
+        # +1 for the newline joining this line to the previous one
+        cost = len(line) + (1 if current else 0)
+        if current and used + cost > budget:
+            chunks.append(current)
+            current, used = [line], len(line)
+        else:
+            current.append(line)
+            used += cost
+    if current:
+        chunks.append(current)
+
+    dropped = 0
+    if len(chunks) > max_fields:
+        dropped = sum(len(c) for c in chunks[max_fields:])
+        chunks = chunks[:max_fields]
+
+    fields = []
+    for i, chunk in enumerate(chunks):
+        body = "\n".join(chunk)
+        if dropped and i == len(chunks) - 1:
+            note = f"\n... +{dropped} more"
+            if len(body) + len(note) <= budget:
+                body += note
+        fields.append({
+            "name": name if i == 0 else f"{name} (cont.)",
+            "value": f"```\n{body}\n```",
+            "inline": False,
+        })
+    return fields
+
+
 def send_game_predictions_alert(sport: str, results: Dict,
                                  predictions: List[Dict] = None) -> bool:
     """
@@ -104,15 +155,17 @@ def send_game_predictions_alert(sport: str, results: Dict,
     else:
         color = COLOR_MAP["yellow"]
 
-    # Build SHARP plays text
-    sharp_text = ""
+    # Build SHARP plays fields. Discord caps a field value at 1024 chars, so
+    # pack the plays across as many fields as needed rather than truncating.
     if sharp_details:
-        lines = []
-        for detail in sharp_details[:8]:  # Cap at 8 to stay under embed limits
-            lines.append(f"-> {detail}")
-        sharp_text = "\n".join(lines)
+        fields = _chunk_into_fields([f"-> {d}" for d in sharp_details],
+                                    "[SHARP] Top Plays")
     else:
-        sharp_text = "No SHARP plays today"
+        fields = [{
+            "name": "[SHARP] Top Plays",
+            "value": "```\nNo SHARP plays today\n```",
+            "inline": False,
+        }]
 
     # Build embed
     embed = {
@@ -122,13 +175,7 @@ def send_game_predictions_alert(sport: str, results: Dict,
             f"**{sharp_count}** SHARP plays"
         ),
         "color": color,
-        "fields": [
-            {
-                "name": "[SHARP] Top Plays",
-                "value": f"```\n{sharp_text}\n```",
-                "inline": False,
-            },
-        ],
+        "fields": fields,
         "footer": {
             "text": "FreePicks Game Lines | Statistical + ML Ensemble",
         },
